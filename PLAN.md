@@ -146,7 +146,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 
 ### Phase 3: Verification hardening
 
-- [ ] **Task 3.1: Coverage audit — every SPEC.md e2e bullet maps to a named spec** — S/M
+- [x] **Task 3.1: Coverage audit — every SPEC.md e2e bullet maps to a named spec** — S/M
   - **Description:** Since each Phase 1–2 task already ships its own Playwright spec (per CLAUDE.md §6.7's per-change gate), this is an **audit and gap-fill**, not a re-authoring: confirm every bullet in `SPEC.md`'s Testing Strategy has a 1:1 named spec, and write only the genuinely missing ones.
   - **Acceptance:** Full suite green headless; no SPEC.md e2e bullet without a corresponding spec.
   - **Verification:** `pnpm e2e` exits 0.

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    // DOM is required here (unlike tsconfig.json's main/preload build, which
+    // is intentionally DOM-free Node code): @playwright/test's `_electron`
+    // API surface pulls in Electron's own type declarations, which assume a
+    // DOM lib is present, and every spec's `page.evaluate(() => ...)`
+    // callback body type-checks against the real browser globals
+    // (window/document) it runs in once Playwright serializes it across the
+    // CDP boundary -- see PLAN.md Task 3.1's nav.spec.ts fix.
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true
+  },
+  "include": ["e2e"]
+}

@@ -49,8 +49,16 @@ async function assertFunctionalScreen(window: Page, label: string): Promise<void
 test('all 10 nav items route correctly, update active styling, and keep the sim banner visible', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-nav-'));
+  // Isolate Electron's userData dir, not just the sqlite path: the
+  // `.nav__footer-detail` assertion below ('token not connected') is derived
+  // from hasPat() (Nav.tsx), which resolves the PAT file against the real
+  // app.getPath('userData') with no env override (pat-bridge.ts). Without
+  // this, a leftover pat.enc from any manual run would flip the footer to
+  // 'token connected' and fail this spec by accident of machine history --
+  // the same fragility boot-mode.spec.ts / settings.spec.ts isolate against.
+  const userDataDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-nav-userdata-'));
   const app = await electron.launch({
-    args: [appDir],
+    args: [appDir, `--user-data-dir=${userDataDir}`],
     cwd: appDir,
     env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
   });
@@ -109,11 +117,17 @@ test('all 10 nav items route correctly, update active styling, and keep the sim 
     await nav.getByRole('button', { name: 'Overview', exact: true }).click();
     await expect(window.getByText('Enterprise pool burn-down')).toBeVisible();
     const scroll = await window.evaluate(() => {
-      window.scrollTo(0, 99999);
+      // `window` here lexically resolves to the outer Playwright `Page`
+      // variable at the TS level (this callback body is serialized and
+      // re-run inside the real browser context, where `window` is the DOM
+      // global -- see PLAN.md Task 3.1) -- cast once so the assertions below
+      // type-check honestly instead of relying on that runtime-only escape.
+      const browserWindow = window as unknown as Window;
+      browserWindow.scrollTo(0, 99999);
       const banner = document.querySelector('.sim-banner')!.getBoundingClientRect();
       return {
-        pageScrolls: document.documentElement.scrollHeight > window.innerHeight + 1,
-        bannerInViewport: banner.top >= 0 && banner.bottom <= window.innerHeight,
+        pageScrolls: document.documentElement.scrollHeight > browserWindow.innerHeight + 1,
+        bannerInViewport: banner.top >= 0 && banner.bottom <= browserWindow.innerHeight,
       };
     });
     expect(scroll.pageScrolls).toBe(false);
@@ -124,5 +138,6 @@ test('all 10 nav items route correctly, update active styling, and keep the sim 
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true });
   }
 });

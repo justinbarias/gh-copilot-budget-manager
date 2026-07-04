@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "rebuild:electron": "electron-rebuild -f -o better-sqlite3 -m .",
     "dev": "pnpm run rebuild:electron && concurrently -k -n UI,ELECTRON -c blue,green \"pnpm --filter @copilot-budget/ui dev\" \"pnpm run build && wait-on tcp:5173 && electron .\"",
-    "e2e": "pnpm run rebuild:electron && pnpm run build && playwright test"
+    "e2e": "pnpm run rebuild:electron && pnpm run build && pnpm run typecheck:e2e && playwright test",
+    "typecheck:e2e": "tsc -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@copilot-budget/data": "workspace:*"
