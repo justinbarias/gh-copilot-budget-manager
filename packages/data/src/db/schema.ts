@@ -70,3 +70,34 @@ export const budget = sqliteTable('budget', {
   willAlert: integer('will_alert', { mode: 'boolean' }),
   alertRecipients: text('alert_recipients'), // JSON-encoded string[]
 });
+
+// Append-only, hash-chained audit log (CLAUDE.md §6.5 / PLAN.md Task 4.7).
+// No code path in this package updates or deletes a row here -- the only
+// writer is packages/data/src/audit/writer.ts's `appendAuditEvent`, and that
+// module exports no update/delete function. Every apply (manual writes from
+// Phase 4 onward; rebalancer applies from Phase 7) records exactly one row
+// per changed control, chained via prevHash/hash (packages/core's
+// `computeEventHash`/`verifyAuditChain`, packages/core/src/auditChain.ts).
+export const auditEvent = sqliteTable('audit_event', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ts: integer('ts', { mode: 'timestamp_ms' }).notNull(),
+  actor: text('actor').notNull(),
+  action: text('action').notNull(),
+  entityRef: text('entity_ref').notNull(),
+  trigger: text('trigger').notNull(),
+  // JSON-encoded string, or null. Null for a Phase-4 manual apply (there is
+  // no rebalancer envelope to record); populated by Phase 6/7 rebalancer
+  // applies with the envelope size, forecast basis, and -- pending
+  // Checkpoint 4a ratification (see the Task 4.7 migration review packet) --
+  // the per-entity binding constraint, since this table has no dedicated
+  // binding_constraint column.
+  envelopeSnapshot: text('envelope_snapshot'),
+  // JSON-encoded string, or null for an 'add' with no prior state.
+  before: text('before'),
+  // JSON-encoded string, or null for a 'delete' with no resulting state.
+  after: text('after'),
+  justification: text('justification'),
+  dataSnapshotId: integer('data_snapshot_id').references(() => snapshot.id),
+  prevHash: text('prev_hash').notNull(),
+  hash: text('hash').notNull(),
+});

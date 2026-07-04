@@ -18,6 +18,10 @@
       "types": "./dist/msw/index.d.ts",
       "default": "./dist/msw/index.js"
     },
+    "./audit": {
+      "types": "./dist/audit/index.d.ts",
+      "default": "./dist/audit/index.js"
+    },
     "./pat": {
       "types": "./dist/pat/index.d.ts",
       "default": "./dist/pat/index.js"

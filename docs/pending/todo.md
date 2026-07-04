@@ -11,7 +11,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 4.4 `core`: control domain model + desired-vs-live Terraform-style diff [M]
 - [x] 4.5 `core`: write validations — enterprise-cap-below-sum blocker, `$0` ULB, multi-org user, hard-stop override (FR4/§6.3) [S/M]
 - [x] 4.6 `core`: simulate-before-apply v1 — blocks/unblocks, precedence, lowest-headroom-wins (§6.1) [M]
-- [ ] 4.7 `data`: append-only hash-chained `audit_event` + chain verifier ⚠ migration — ask first [M]
+- [x] 4.7 `data`: append-only hash-chained `audit_event` + chain verifier ⚠ migration — ask first [M]
 - [ ] 4.8 `data`: write engine (re-read → drift-abort → apply → audit) + ApiClient write surface ⚠ bridge extension — ask first [M/L]
 
 ### Checkpoint 4a — write foundation
