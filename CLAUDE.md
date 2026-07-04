@@ -176,15 +176,18 @@ Ask the maintainer and record the answers at the top of the repo README; several
 
 ## Commands
 
-_(populate during scaffolding)_
-
 ```
-pnpm install
+pnpm install        # also rebuilds better-sqlite3 for Electron's ABI (postinstall, see note below)
 pnpm dev            # electron + vite dev (simulation mode by default when no PAT)
-pnpm dev:sim        # force simulation mode (MSW)
-pnpm test           # vitest (unit/component, MSW)
+pnpm test           # pnpm -r run test — vitest (unit/component, MSW)
 pnpm e2e            # playwright e2e against MSW (the automated gate)
-pnpm e2e:ui         # playwright interactive
 pnpm build          # build all packages
-pnpm package        # electron-builder -> signed installer
+pnpm package        # electron-builder -> signed installer (not yet implemented)
 ```
+
+**`better-sqlite3` ABI note (read before touching `pnpm test`/`pnpm e2e`/`pnpm dev`):** pnpm stores one physical copy of `better-sqlite3` (content-addressable store, symlinked into `packages/data` and `apps/desktop`). It's a native module, so that one copy can only be compiled against *one* ABI at a time — either Electron's bundled Node, or the plain Node running Vitest — never both. §4's "wire `@electron/rebuild` into a postinstall" is necessary but not sufficient on its own: a postinstall-only rebuild leaves the module Electron-built, which then breaks `packages/data`'s vitest suite (and vice versa). The fix is that **each command re-asserts the ABI it needs as a pre-step**, so they stay order-independent:
+- `apps/desktop`'s `dev` / `e2e` scripts run `rebuild:electron` (`electron-rebuild -f -o better-sqlite3 -m .`) first.
+- `packages/data`'s `test` script runs `pnpm rebuild better-sqlite3` (rebuilds for whatever Node is currently running) first.
+- Root `postinstall` runs `apps/desktop`'s `rebuild:electron` once, so a fresh clone's `pnpm dev`/`pnpm e2e` work immediately without a manual rebuild.
+
+Whichever command ran last wins for anyone reading the binary directly (e.g. `sqlite3` CLI is ABI-independent and safe for ad-hoc inspection; a plain `node -e "require('better-sqlite3')"` is not, once the module's been electron-rebuilt). If you add a new consumer of `better-sqlite3` outside these two packages, give it the same rebuild-as-a-pre-step treatment rather than assuming the module is already in the right ABI.
