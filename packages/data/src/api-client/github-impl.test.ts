@@ -206,4 +206,65 @@ describe('createGitHubApiClient', () => {
     expect(db.select().from(license).all()).toHaveLength(35);
     expect(db.select().from(costCenterMember).all()).toHaveLength(15 + 10 + 10);
   });
+
+  // --- Task 4.8: write engine wiring through the real ApiClient surface ---
+  // (deep engine behaviour -- drift/blocked/partial-failure/no-op -- is
+  // covered exhaustively by write/engine.test.ts against a bare Octokit
+  // instance; these confirm createGitHubApiClient wires getControls/
+  // dryRunPlan/applyPlan to the engine correctly, AND that the API-version
+  // header is actually set, since that hook lives here at client
+  // construction, not in engine.ts.)
+
+  it('getControls returns the live control state, including a cost-center spending limit', async () => {
+    const controls = await client.getControls();
+    const platformBudget = controls.find(
+      (c) => c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform',
+    );
+    expect(platformBudget).toMatchObject({ amountCredits: 60_000, preventFurtherUsage: false });
+  });
+
+  it('dryRunPlan/applyPlan round-trip through the ApiClient surface: dry run previews, apply mutates and audits', async () => {
+    const live = await client.getControls();
+    const desiredControls = live.map((c) =>
+      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 65_000 } : c,
+    );
+
+    const dryRun = await client.dryRunPlan(desiredControls);
+    expect(dryRun.plan.entries).toHaveLength(1);
+    expect(dryRun.validation.isBlocked).toBe(false);
+
+    const applied = await client.applyPlan(dryRun.plan, desiredControls, { actor: 'admin@example.com' });
+    expect(applied.status).toBe('applied');
+    if (applied.status !== 'applied') throw new Error(`expected 'applied', got ${applied.status}`);
+    expect(applied.mutationLog).toHaveLength(1);
+    expect(applied.mutationLog[0]?.path).toContain(BUDGET_IDS.costCenterMetered);
+    expect(applied.auditEvents).toHaveLength(1);
+    expect(applied.auditEvents[0]?.action).toBe('budget.update');
+    expect(applied.auditEvents[0]?.justification).toBeNull();
+  });
+
+  it('sets X-GitHub-Api-Version on every request -- reads and mutations alike', async () => {
+    const seen: { method: string; header: string | null }[] = [];
+    const onRequestStart = ({ request }: { request: Request }) => {
+      if (request.url.includes('api.github.com')) seen.push({ method: request.method, header: request.headers.get('x-github-api-version') });
+    };
+    server.events.on('request:start', onRequestStart);
+
+    try {
+      const live = await client.getControls();
+      const desiredControls = live.map((c) =>
+        c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 65_000 } : c,
+      );
+      const dryRun = await client.dryRunPlan(desiredControls);
+      const applied = await client.applyPlan(dryRun.plan, desiredControls, { actor: 'admin@example.com' });
+      expect(applied.status).toBe('applied');
+    } finally {
+      server.events.removeListener('request:start', onRequestStart);
+    }
+
+    expect(seen.length).toBeGreaterThan(0);
+    const mutations = seen.filter((r) => r.method !== 'GET');
+    expect(mutations.length).toBeGreaterThan(0);
+    for (const r of seen) expect(r.header).toBe('2026-03-10');
+  });
 });

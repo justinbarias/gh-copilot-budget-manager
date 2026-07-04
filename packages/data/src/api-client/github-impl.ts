@@ -4,11 +4,13 @@ import {
   cycleBounds,
   rankHeavyUsers,
   resolveEffectiveUlb,
+  type ControlState,
   type ModelUsageRow,
+  type Plan,
   type UlbCandidate,
 } from '@copilot-budget/core';
 import { ALERTS } from '../msw/fixtures/alerts.js';
-import { SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
+import { API_VERSION, SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
   getSyncStatus as readSyncStatus,
   syncNow as ingestSnapshot,
@@ -16,13 +18,19 @@ import {
   type IngestData,
   type IngestResourceType,
 } from '../sync/sync-now.js';
+import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
+import { fetchLiveControls } from '../write/live-state.js';
+import { paginateAll } from './paginate.js';
 import type { Db } from '../db/client.js';
 import type {
   Alert,
   ApiClient,
+  ApplyPlanInput,
+  ApplyPlanResult,
   CostCenterMemberSummary,
   CostCenterSummary,
   DailyBurnPoint,
+  DryRunResult,
   HeavyUser,
   HeavyUserDailyPoint,
   SyncStatus,
@@ -140,35 +148,26 @@ function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: numbe
   return points;
 }
 
-// Follows the Link `rel="next"` header rather than Octokit's paginate plugin:
-// these enterprise billing routes aren't in Octokit's typed endpoint catalog
-// (they're 2026-dated per the PRD), so paginate's route-based overloads don't
-// apply — a plain request loop keeps this correct without fighting generics.
-async function paginateAll<T>(
-  octokit: Octokit,
-  url: string,
-  params: Record<string, string | number | undefined>,
-  extract: (data: unknown) => T[],
-): Promise<T[]> {
-  const results: T[] = [];
-  let page = 1;
-  const perPage = 100;
-
-  for (;;) {
-    const response = await octokit.request(`GET ${url}`, { ...params, page, per_page: perPage });
-    results.push(...extract(response.data));
-
-    const link = response.headers.link;
-    if (!link || !link.includes('rel="next"')) break;
-    page += 1;
-  }
-
-  return results;
-}
-
 export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient {
   const octokit = new Octokit({ auth: config.auth, baseUrl: config.baseUrl });
   const enterprise = config.enterprise;
+
+  // CLAUDE.md §2's API-version pin (`X-GitHub-Api-Version: 2026-03-10`), set
+  // ONCE at client construction so every request -- reads (already shipped)
+  // and the Task 4.8 write engine's mutations alike -- carries it, with no
+  // per-call site required to remember. `options.headers` is NOT read by
+  // @octokit/core's constructor (confirmed by reading node_modules/@octokit/
+  // core's source: it only lifts `userAgent`/`timeZone` into request
+  // defaults), so a `new Octokit({ headers: {...} })` constructor option is
+  // silently ignored -- this `hook.before('request', ...)` is the actual,
+  // officially-supported mechanism (@octokit/request's with-defaults.js calls
+  // `endpointOptions.request.hook(request, endpointOptions)`, i.e. every
+  // request flows through the 'request' hook chain before being sent). This
+  // is an Octokit-native API, not a hand-wrapped call, so CLAUDE.md §6.9's
+  // API-surface validation gate doesn't apply here.
+  octokit.hook.before('request', (options) => {
+    options.headers['x-github-api-version'] = API_VERSION;
+  });
 
   async function fetchUsageItems(params: UsageSummaryParams = {}): Promise<UsageItem[]> {
     return paginateAll<UsageItem>(
@@ -453,5 +452,49 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return readSyncStatus(config.db);
   }
 
-  return { getUsageSummary, listCostCenters, listHeavyUsers, listAlerts, getSyncStatus, syncNow };
+  // Task 4.8's write engine. getControls IS the write engine's own re-read
+  // (write/live-state.ts's fetchLiveControls) -- not a second, independently
+  // written projection -- so "did live move since the plan was staged"
+  // (dryRunPlan/applyPlan's drift check) compares like with like.
+  async function getControls(): Promise<ControlState[]> {
+    const live = await fetchLiveControls(octokit, enterprise);
+    return live.controls;
+  }
+
+  async function dryRunPlan(desiredControls: readonly ControlState[], justification?: string | null): Promise<DryRunResult> {
+    return dryRunPlanEngine(desiredControls, {
+      enterprise,
+      octokit,
+      asOfDate: new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`),
+      justification,
+    });
+  }
+
+  async function applyPlan(
+    stagedPlan: Plan,
+    desiredControls: readonly ControlState[],
+    input: ApplyPlanInput,
+  ): Promise<ApplyPlanResult> {
+    return applyPlanEngine(stagedPlan, {
+      enterprise,
+      octokit,
+      db: config.db,
+      actor: input.actor,
+      desiredControls,
+      justification: input.justification,
+      trigger: 'manual',
+    });
+  }
+
+  return {
+    getUsageSummary,
+    listCostCenters,
+    listHeavyUsers,
+    listAlerts,
+    getSyncStatus,
+    syncNow,
+    getControls,
+    dryRunPlan,
+    applyPlan,
+  };
 }

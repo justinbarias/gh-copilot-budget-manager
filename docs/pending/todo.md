@@ -12,10 +12,10 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 4.5 `core`: write validations — enterprise-cap-below-sum blocker, `$0` ULB, multi-org user, hard-stop override (FR4/§6.3) [S/M]
 - [x] 4.6 `core`: simulate-before-apply v1 — blocks/unblocks, precedence, lowest-headroom-wins (§6.1) [M]
 - [x] 4.7 `data`: append-only hash-chained `audit_event` + chain verifier ⚠ migration — ask first [M]
-- [ ] 4.8 `data`: write engine (re-read → drift-abort → apply → audit) + ApiClient write surface ⚠ bridge extension — ask first [M/L]
+- [x] 4.8 `data`: write engine (re-read → drift-abort → apply → audit) + ApiClient write surface ⚠ bridge extension — ask first [M/L]
 
 ### Checkpoint 4a — write foundation
-- [ ] core/data tests green; drift-abort proven; §6.9 note complete; human review of migration + bridge shape
+- [x] core/data tests green; drift-abort proven; §6.9 note complete; human review of migration + bridge shape
 
 ### Control-family slices
 - [ ] 4.9 Controls screen shell + Spending-limits family + plan/simulate/apply right rail [L]

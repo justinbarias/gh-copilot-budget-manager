@@ -1,4 +1,13 @@
-import type { EffectiveUlb, ModelMix } from '@copilot-budget/core';
+import type { ControlState, EffectiveUlb, ModelMix, Plan } from '@copilot-budget/core';
+import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
+
+// Re-exported so a consumer that only depends on '@copilot-budget/data' (per
+// CLAUDE.md's portability boundary -- apps/desktop's package.json depends on
+// data, not core directly) can name these types without an extra dependency.
+// All type-only (isolatedModules erases these imports at compile time), so
+// this adds no runtime footprint to the pure barrel despite write/engine.ts
+// itself importing Octokit/drizzle/node:util.
+export type { ApplyPlanResult, ControlState, DryRunResult, Plan };
 
 export interface UsageSummaryParams {
   costCenterId?: string;
@@ -85,6 +94,40 @@ export interface SyncStatus {
   inProgress: boolean;
 }
 
+export interface ApplyPlanInput {
+  /**
+   * Attributed actor for the audit log (CLAUDE.md §6.5). No admin
+   * login/identity system exists yet (CLAUDE.md §9 is still open) -- the
+   * renderer supplies whatever it currently has (a Settings-configured name,
+   * or a placeholder) until that's answered.
+   */
+  actor: string;
+  /**
+   * Required, logged justification (CLAUDE.md §6.3) when the plan turns off
+   * a hard stop (validatePlan's alert_only_without_hard_stop warning) --
+   * applied as a single blanket justification across every entry in the
+   * plan, matching the Controls rail's one-textarea confirm dialog. Omit/null
+   * when no such warning applies; the write engine never requires it.
+   */
+  justification?: string | null;
+}
+
+// Phase 4 (implemented here): getControls/dryRunPlan/applyPlan --
+// getControls is also the write engine's own re-read (CLAUDE.md §6.2), so
+// the UI diffs its staged plan against the exact same live projection the
+// engine re-diffs against at apply time. dryRunPlan/applyPlan never accept a
+// caller-supplied live/current Plan for the *comparison* -- only the
+// caller's desired end-state; the "did live move" comparison is always
+// computed server-side, fresh, both in preview and at apply.
+//
+// Reserved (documented now, NOT implemented by this task -- naming ratified
+// at Checkpoint 4a; see that review packet for the full Phase 4-8 proposal):
+//   Phase 5: getForecast(...): Promise<ForecastResult> (read-only)
+//   Phase 7: applyGrants(envelope): Promise<GrantResult>; revertGrant(grantId): Promise<void>;
+//            listGrants(): Promise<Grant[]>; getRebalancerPolicy()/setRebalancerPolicy(policy)
+//   Phase 8: getAuditChain(): Promise<StoredAuditEvent[]>; verifyAuditChain(): Promise<AuditChainVerification>
+//            (audit-read surface for the Audit screen + export/verify; the data
+//            layer's readAuditChain/verifyStoredChain stay data-internal until then)
 export interface ApiClient {
   getUsageSummary(params?: UsageSummaryParams): Promise<UsageSummary>;
   listCostCenters(): Promise<CostCenterSummary[]>;
@@ -92,4 +135,17 @@ export interface ApiClient {
   listAlerts(): Promise<Alert[]>;
   getSyncStatus(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
+  /** The current live control state (ULBs + included-usage caps) -- the Controls screen's "live" side of the diff. */
+  getControls(): Promise<ControlState[]>;
+  /** Simulate-before-apply preview (CLAUDE.md §6.1): re-reads live, diffs against `desiredControls`, validates, and simulates who newly blocks/unblocks. Never mutates. */
+  dryRunPlan(desiredControls: readonly ControlState[], justification?: string | null): Promise<DryRunResult>;
+  /**
+   * Re-reads live, re-diffs against `desiredControls`, and aborts as drift if
+   * that doesn't match `stagedPlan` (CLAUDE.md §6.2) -- otherwise validates,
+   * mutates, and audits. `stagedPlan` is the Plan the caller already
+   * confirmed via dryRunPlan (or hand-built the same way); it is NEVER
+   * trusted as the source of truth for what to apply, only as the drift
+   * baseline to compare a fresh server-side diff against.
+   */
+  applyPlan(stagedPlan: Plan, desiredControls: readonly ControlState[], input: ApplyPlanInput): Promise<ApplyPlanResult>;
 }
