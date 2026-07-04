@@ -47,9 +47,25 @@ export const USAGE_ITEMS: UsageItem[] = [
     discount_amount: 3.1,
     net_amount: 0,
   },
-  // Edge fixture: cap-bound cost center has fully consumed its computed included-usage
-  // cap for the pool phase, so its draw is already routing to metered (net_amount > 0)
-  // while the enterprise budget elsewhere still has headroom.
+  // Edge fixture: cap-bound cost center. It drew its full 70,000 included-usage
+  // cap from the shared pool (this discount-covered row, itemised as a CC-aggregate
+  // pool draw with user_login null) and then overflowed the next 500 credits into
+  // metered (the row below, net_amount > 0). Both are itemised so the enterprise
+  // pool burn-down reflects this draw -- a cost center's pool draw IS enterprise
+  // pool consumption (CLAUDE.md §5) -- and the CC-level total (70,500) reconciles
+  // with its itemised rows. Enterprise pool burned by 2026-06-14 = 420 + 310 +
+  // 70,000 = 70,730 of 245,000 (~28.9%).
+  {
+    date: '2026-06-14',
+    product: 'copilot',
+    sku: 'ai_credits',
+    cost_center_id: COST_CENTER_IDS.capBound,
+    user_login: null,
+    quantity: 70_000,
+    gross_amount: 700.0,
+    discount_amount: 700.0,
+    net_amount: 0,
+  },
   {
     date: '2026-06-14',
     product: 'copilot',

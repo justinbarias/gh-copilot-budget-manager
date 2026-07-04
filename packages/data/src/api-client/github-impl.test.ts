@@ -35,7 +35,7 @@ describe('createGitHubApiClient', () => {
   it('aggregates usage across the whole fixture set', async () => {
     const summary = await client.getUsageSummary();
     expect(summary.asOfDate).toBe('2026-09-01');
-    expect(summary.totalQuantity).toBe(420 + 310 + 500 + 380 + 380);
+    expect(summary.totalQuantity).toBe(420 + 310 + 70_000 + 500 + 380 + 380);
     expect(summary.totalNetAmountUsd).toBeCloseTo(0 + 0 + 5.0 + 0 + 1.9, 5);
   });
 
@@ -47,8 +47,9 @@ describe('createGitHubApiClient', () => {
     expect(summary.dailyBurn).toHaveLength(14);
     expect(summary.dailyBurn[0]).toEqual({ date: '2026-06-01', cumulativePoolCredits: 0 });
     // Pool-covered credits only (discount_amount-derived): platform 420 + dataAnalytics 310
-    // + the cap-bound cost center's fully-metered 500 (discount 0) contributes nothing.
-    expect(summary.dailyBurn.at(-1)).toEqual({ date: '2026-06-14', cumulativePoolCredits: 420 + 310 });
+    // + the cap-bound cost center's full 70,000 pool draw (its 500 metered overflow,
+    // discount 0, contributes nothing) = 70,730.
+    expect(summary.dailyBurn.at(-1)).toEqual({ date: '2026-06-14', cumulativePoolCredits: 420 + 310 + 70_000 });
     // The Aug31/Sep1 cliff edge-fixture rows fall outside this cycle window entirely.
     expect(summary.dailyBurn.some((p) => p.date === '2026-08-31' || p.date === '2026-09-01')).toBe(false);
   });
@@ -69,6 +70,53 @@ describe('createGitHubApiClient', () => {
     const platform = centers.find((c) => c.id === COST_CENTER_IDS.platform);
     expect(platform?.memberCount).toBe(15);
     expect(centers).toHaveLength(3);
+  });
+
+  it('carries the DEWR mapping, MTD burn, and read-only included-usage cap per cost center', async () => {
+    const centers = await client.listCostCenters();
+
+    const platform = centers.find((c) => c.id === COST_CENTER_IDS.platform);
+    expect(platform?.dewrDivision).toBe('Digital Services');
+    expect(platform?.dewrBranch).toBe('Platform Engineering');
+    expect(platform?.dewrProject).toBe('PLAT-CORE');
+    // Reconciles with its June USAGE_ITEMS row; cap = 15 seats x 7,000 promo credits.
+    expect(platform?.mtdBurnCredits).toBe(420);
+    expect(platform?.includedUsageCap).toEqual({ enabled: true, computedLimitCredits: 105_000, overflow: 'block' });
+    expect(platform?.excludedFromEnterpriseBudget).toBe(false);
+
+    // Cap-bound edge fixture: GitHub-reported MTD (70,000 pool + 500 metered
+    // overflow) exceeds its 10 x 7,000 computed cap -> negative headroom downstream.
+    const capBound = centers.find((c) => c.id === COST_CENTER_IDS.capBound);
+    expect(capBound?.mtdBurnCredits).toBe(70_500);
+    expect(capBound?.includedUsageCap).toEqual({ enabled: true, computedLimitCredits: 70_000, overflow: 'metered' });
+  });
+
+  it('joins per-member cycle burn and enterprise-team provenance into the membership list', async () => {
+    const centers = await client.listCostCenters();
+
+    const capBound = centers.find((c) => c.id === COST_CENTER_IDS.capBound);
+    expect(capBound?.members).toHaveLength(10);
+    expect(capBound?.members.find((m) => m.login === 'user-26')).toEqual({
+      login: 'user-26',
+      mtdBurnCredits: 500,
+      entTeam: 'mkt-growth',
+    });
+    // No credits rows in the current cycle and no ent-team provenance.
+    expect(capBound?.members.find((m) => m.login === 'user-28')).toEqual({
+      login: 'user-28',
+      mtdBurnCredits: 0,
+      entTeam: null,
+    });
+
+    // user-05's credits rows (Aug 31 / Sep 1 cliff fixtures) fall outside the
+    // June cycle window, so their member burn is 0 -- cycle-filtered, not lifetime.
+    const platform = centers.find((c) => c.id === COST_CENTER_IDS.platform);
+    expect(platform?.members.find((m) => m.login === 'user-05')?.mtdBurnCredits).toBe(0);
+    expect(platform?.members.find((m) => m.login === 'user-01')).toEqual({
+      login: 'user-01',
+      mtdBurnCredits: 420,
+      entTeam: 'payments',
+    });
   });
 
   it('ranks heavy users by aggregated credits used, descending', async () => {

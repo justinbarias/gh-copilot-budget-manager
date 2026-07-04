@@ -115,7 +115,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 2.1, 1.5.
   - **Files:** `packages/ui/src/screens/Overview/AlertsList.tsx`, `packages/data/api-client.ts` (add `listAlerts`), fixture addition in `packages/data/msw/fixtures/`.
 
-- [ ] **Task 2.3: Cost Centers screen — read-only table + drill modal** — M
+- [x] **Task 2.3: Cost Centers screen — read-only table + drill modal** — M
   - **Description:** Per `design/README.md` §5: Cost center | DEWR mapping (now columns on the row, per Architecture Decisions) | Members | MTD burn | Headroom | Status. Row click → drill modal. No "+ New cost center."
   - **Acceptance:** Table renders fixture cost centers with correct headroom color-coding; drill modal shows correct membership for a clicked row.
   - **Verification:** Playwright spec: load, assert values, click a row, assert modal contents.

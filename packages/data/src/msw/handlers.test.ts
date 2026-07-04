@@ -47,9 +47,12 @@ describe('cost centers handler', () => {
       { headers },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { resources: Array<{ type: string; name: string }> };
+    const body = (await res.json()) as { resources: Array<{ type: string; name: string; via_ent_team?: string }> };
     expect(body.resources).toHaveLength(15);
-    expect(body.resources[0]).toEqual({ type: 'User', name: 'user-01' });
+    // user-01 carries enterprise-team provenance (Task 2.3 drill-modal badges);
+    // members without provenance omit the field entirely.
+    expect(body.resources[0]).toEqual({ type: 'User', name: 'user-01', via_ent_team: 'payments' });
+    expect(body.resources[3]).toEqual({ type: 'User', name: 'user-04' });
   });
 });
 

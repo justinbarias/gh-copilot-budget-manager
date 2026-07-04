@@ -18,11 +18,33 @@ export interface UsageSummary {
   dailyBurn: DailyBurnPoint[]; // actual-only cumulative pool burn within the current cycle
 }
 
+export interface CostCenterMemberSummary {
+  login: string;
+  mtdBurnCredits: number; // cycle-to-date, joined from the per-user credits-used report
+  entTeam: string | null; // enterprise-team provenance, when membership came via one
+}
+
+// The cap's limit is GitHub-computed from attributed licenses and never
+// settable (CLAUDE.md §5) -- consumers must render computedLimitCredits
+// read-only; enabled + overflow are the only knobs that exist upstream.
+export interface IncludedUsageCap {
+  enabled: boolean;
+  computedLimitCredits: number;
+  overflow: 'block' | 'metered';
+}
+
 export interface CostCenterSummary {
   id: string;
   name: string;
   state: 'active' | 'archived';
   memberCount: number;
+  dewrDivision: string; // DEWR mapping is columns on the cost-center row (PLAN.md Architecture Decisions)
+  dewrBranch: string;
+  dewrProject: string;
+  mtdBurnCredits: number; // per-CC cycle-to-date credit total (pool + metered)
+  includedUsageCap: IncludedUsageCap;
+  excludedFromEnterpriseBudget: boolean;
+  members: CostCenterMemberSummary[];
 }
 
 export interface HeavyUser {

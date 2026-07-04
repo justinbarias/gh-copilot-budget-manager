@@ -13,6 +13,7 @@ import type { Db } from '../db/client.js';
 import type {
   Alert,
   ApiClient,
+  CostCenterMemberSummary,
   CostCenterSummary,
   DailyBurnPoint,
   HeavyUser,
@@ -44,11 +45,19 @@ interface CostCenter {
   id: string;
   name: string;
   state: 'active' | 'archived';
+  dewr_division: string;
+  dewr_branch: string;
+  dewr_project: string;
+  mtd_burn_credits: number;
+  // Read-only upstream: the limit is license-derived by GitHub, never settable (CLAUDE.md §5).
+  included_usage_cap: { enabled: boolean; computed_limit_credits: number; overflow: 'block' | 'metered' };
+  excluded_from_enterprise_budget: boolean;
 }
 
 interface CostCenterResource {
   type: 'User' | 'Org' | 'Repo';
   name: string;
+  via_ent_team?: string;
 }
 
 interface CreditsUsedItem {
@@ -201,12 +210,47 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listCostCenters(): Promise<CostCenterSummary[]> {
-    const costCenters = await fetchCostCentersRaw();
+    const [costCenters, creditsUsedItems] = await Promise.all([fetchCostCentersRaw(), fetchCreditsUsedItems()]);
+
+    // Per-member cycle-to-date burn: same cycle window as getUsageSummary
+    // (anchored to the deterministic fixture date, never wall-clock), so a
+    // member whose only credits rows fall outside the current cycle burns 0.
+    const bounds = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    const burnByLogin = new Map<string, number>();
+    for (const item of creditsUsedItems) {
+      const dayIndex = Math.floor((Date.parse(`${item.date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
+      if (dayIndex < 0 || dayIndex > bounds.daysElapsed) continue;
+      burnByLogin.set(item.user_login, (burnByLogin.get(item.user_login) ?? 0) + item.ai_credits_used);
+    }
 
     return Promise.all(
       costCenters.map(async (cc) => {
         const resources = await fetchCostCenterResources(cc.id);
-        return { id: cc.id, name: cc.name, state: cc.state, memberCount: resources.length };
+        const members: CostCenterMemberSummary[] = resources
+          .filter((r) => r.type === 'User')
+          .map((r) => ({
+            login: r.name,
+            mtdBurnCredits: burnByLogin.get(r.name) ?? 0,
+            entTeam: r.via_ent_team ?? null,
+          }));
+
+        return {
+          id: cc.id,
+          name: cc.name,
+          state: cc.state,
+          memberCount: resources.length,
+          dewrDivision: cc.dewr_division,
+          dewrBranch: cc.dewr_branch,
+          dewrProject: cc.dewr_project,
+          mtdBurnCredits: cc.mtd_burn_credits,
+          includedUsageCap: {
+            enabled: cc.included_usage_cap.enabled,
+            computedLimitCredits: cc.included_usage_cap.computed_limit_credits,
+            overflow: cc.included_usage_cap.overflow,
+          },
+          excludedFromEnterpriseBudget: cc.excluded_from_enterprise_budget,
+          members,
+        };
       }),
     );
   }

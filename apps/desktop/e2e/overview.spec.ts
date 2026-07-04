@@ -10,11 +10,12 @@ import { test, expect, _electron as electron } from '@playwright/test';
 //   - cycleAsOfDate anchors to 2026-06-14 (SIM_CURRENT_DATE) -> cycle is June
 //     2026, cycleBounds gives daysElapsed=13, daysInCycle=30.
 //   - Pool-phase credits consumed by 2026-06-14 = discount_amount-derived:
-//     platform 420 + dataAnalytics 310 + cap-bound cost center's fully-metered
-//     0 (its discount_amount is 0 -- already tipped to metered) = 730.
+//     platform 420 + dataAnalytics 310 + the cap-bound cost center's full 70,000
+//     pool draw (it consumed its entire included-usage cap before overflowing 500
+//     to metered, which is discount 0 and adds nothing) = 70,730.
 //   - licenseCount = 35 seats (fixtures/licenses.ts) -> promo allowance (June
 //     2026 is within the 1 Jun-1 Sep promo window) = 35 * 7000 = 245,000.
-//   - poolConsumedPct(730, 245000) = 0.30% (rounded to 1 decimal).
+//   - poolConsumedPct(70,730, 245000) = 28.9% (rounded to 1 decimal).
 test('Overview renders the actual-only burn-down chart, runway tiles, and a disabled forecast lens', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-overview-'));
@@ -30,9 +31,9 @@ test('Overview renders the actual-only burn-down chart, runway tiles, and a disa
     // Overview is reachable (no nav shell yet -- Task 2.5 -- so it renders on load).
     await expect(window.getByText('Enterprise pool burn-down')).toBeVisible();
 
-    // Hero headline encodes the actual chart's final point: 730 of 245,000 burned.
+    // Hero headline encodes the actual chart's final point: 70,730 of 245,000 burned.
     const chartCard = window.locator('.overview__chart-card');
-    await expect(chartCard.locator('.overview__chart-headline-burned')).toHaveText('730');
+    await expect(chartCard.locator('.overview__chart-headline-burned')).toHaveText('70,730');
     await expect(chartCard.locator('.overview__chart-headline-of')).toHaveText('of 245,000 burned');
 
     // The chart itself rendered real SVG content, including the allowance
@@ -50,11 +51,11 @@ test('Overview renders the actual-only burn-down chart, runway tiles, and a disa
     await expect(daysTile.locator('.runway-tile__value')).toHaveText('13 of 30');
 
     const pctTile = tiles.filter({ hasText: 'Pool % consumed' });
-    await expect(pctTile.locator('.runway-tile__value')).toHaveText('0.3%');
-    await expect(pctTile.locator('.runway-tile__sub')).toHaveText('730 of 245,000 credits');
+    await expect(pctTile.locator('.runway-tile__value')).toHaveText('28.9%');
+    await expect(pctTile.locator('.runway-tile__sub')).toHaveText('70,730 of 245,000 credits');
 
     const creditsTile = tiles.filter({ hasText: 'Credits consumed' });
-    await expect(creditsTile.locator('.runway-tile__value')).toHaveText('730');
+    await expect(creditsTile.locator('.runway-tile__value')).toHaveText('70,730');
 
     const allowanceTile = tiles.filter({ hasText: 'Allowance' });
     await expect(allowanceTile.locator('.runway-tile__value')).toHaveText('245,000');
