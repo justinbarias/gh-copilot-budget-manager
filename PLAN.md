@@ -153,7 +153,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 2.5.
   - **Files:** `e2e/*.spec.ts` (additions only where gaps exist).
 
-- [ ] **Task 3.2: Chrome MCP full-flow pass + fixture-completeness check** — S
+- [x] **Task 3.2: Chrome MCP full-flow pass + fixture-completeness check** — S
   - **Description:** Drive every flow from 3.1 via Chrome MCP against the real running app, confirming what headless can't (banner unmistakability, token fidelity, disabled-state clarity). Separately confirm the 4 edge fixtures from Task 1.3 exist in `packages/data/msw/fixtures/` (Success Criterion #3 — they don't need to render yet, just exist).
   - **Acceptance:** Every flow confirmed correct interactively; all 4 edge fixtures present.
   - **Verification:** This task's execution is the verification — document pass/fail per flow.
@@ -161,9 +161,9 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Files:** None expected, unless bugs surface.
 
 **Checkpoint 3 (MVP done):**
-- [ ] All 10 Success Criteria in `SPEC.md` met.
-- [ ] Playwright + Chrome MCP both green for every flow.
-- [ ] Zero live GitHub network calls observed anywhere in verification.
+- [x] All 10 Success Criteria in `SPEC.md` met. (Annotated-scope where MVP intentionally narrows the literal wording, mirroring Checkpoint 2's nuance notes: SC2's "toggling simulation↔live" — MVP is always-simulation per SPEC Assumption 2 (no user-exposed live toggle yet); verified instead that mode stays 'simulation' and the banner stays unmistakable even with a PAT stored. SC5's dashboards read live via ApiClient→MSW per call, not from the syncNow-written SQLite snapshot table — same fixture data in sim mode (the Checkpoint-2 snapshot read-path note). SC10 is 10 nav items, not the literal "9" (SPEC Assumption 5's own list enumerates 10 — the "9" is the known prose miscount). All other criteria met literally.)
+- [x] Playwright + Chrome MCP both green for every flow. (Playwright 10/10 headless; interactive pass via CLAUDE.md §7 raw-CDP against the real Electron binary — window.api present, process/require undefined (contextIsolation+sandbox enforced), zero console errors/exceptions across all screens.)
+- [x] Zero live GitHub network calls observed anywhere in verification. (Static: vitest MSW posture onUnhandledRequest:'error' proves every GitHub endpoint the app calls is handled. Empirical: across 12 syncNow bursts in the live CDP run, the main process — where Octokit + msw/node run — made zero non-local TCP connections; the only non-local socket was Chromium's NetworkService utility process to Cloudflare infra (104.17.x), not GitHub's API (4.237.x) and not our data path. Runtime posture is 'bypass' — flagged for hardening, see maintainer review.)
 - Final review with human.
 
 ## Risks and Mitigations
