@@ -73,7 +73,7 @@ The `apps/desktop` main-process wiring must be a thin adapter over `packages/dat
 - **Shell:** Electron + `electron-builder` (packaging, code signing, auto-update). Enable `contextIsolation`, `sandbox`, disable `nodeIntegration` in the renderer. **No remote content.**
 - **UI:** Vite + React + TypeScript — unless the `design/` package specifies otherwise; match its component library and the `apex` tokens.
 - **Persistence:** **Drizzle ORM** over `better-sqlite3` (local, synchronous). Drizzle chosen specifically so the driver swaps to Postgres or **libSQL** (`@libsql/client`) later with a config change and generated migrations, same schema. DB lives under `app.getPath('userData')`. Note: `better-sqlite3` is a native module — recompile it against Electron's ABI with `@electron/rebuild` (wire it into a `postinstall`), and rebuild after every Electron upgrade.
-- **GitHub:** **Octokit** in the main process only. The PAT never reaches the renderer.
+- **GitHub:** **Octokit** in the main process only. The PAT never reaches the renderer. Any endpoint touched outside Octokit's typed methods (hand-rolled requests) must clear the §6.9 API-surface validation gate before it's considered verified.
 - **PAT storage:** Electron `safeStorage`. Never in config files, env, logs, or the renderer.
 - **Testing & verification:** **Vitest** (unit/component; high coverage on `packages/core` — it's pure and it's where money-affecting math lives). **MSW (Mock Service Worker)** is the single fake GitHub API, shared by simulation mode, e2e, and unit tests. **Playwright** for e2e against MSW. **Chrome MCP** for agent-driven verification of the running app. See §7, and the verification gate in §6.
 
@@ -109,6 +109,7 @@ Verify against the spec; these are the ones that are easy to get subtly wrong.
 6. **PAT isolation:** main process only, `safeStorage` only, never logged.
 7. **Verification gate — no change is "done" until BOTH pass.** **Playwright** e2e (headless, MSW-backed, deterministic) is the automated gate that blocks the change; **Chrome MCP** interactive verification of the actual running app confirms rendering + behaviour for that specific change (the check headless can't make). Green on both, or it isn't done — for *every* change. See §7.
 8. **Simulation-mode safety.** In simulation mode no request ever reaches real GitHub and no real budget/cap is mutated. The mode is **unmistakable in the UI** (persistent banner); apply/grant actions are visibly simulated. Never let a simulated action look live — this tool moves money-affecting controls.
+9. **API-surface validation for hand-wrapped GitHub clients.** Any code that calls the GitHub API outside an official/community SDK's typed surface — raw `fetch`/HTTP calls, hand-rolled request/response types, or `octokit.request()` against a guessed/undocumented path — must be validated against GitHub's actual API surface (the published OpenAPI/Swagger description, e.g. `github/rest-api-description`, or the official REST/GraphQL docs) before it's considered verified. **Exemption:** calls made through an official or established community SDK's typed methods (Octokit's REST/GraphQL clients, `@octokit/*` plugins) are exempt — their shapes are already validated upstream by the SDK maintainers. This is an *additional* gate, not a substitute for the §6.7/§7 Playwright + Chrome MCP gate.
 
 ---
 
@@ -127,7 +128,8 @@ Verify against the spec; these are the ones that are easy to get subtly wrong.
 **Verification workflow — run for every change:**
 1. Write/extend **Playwright** e2e that drives the change against MSW; must pass headless (this is the blocking gate).
 2. Use **Chrome MCP** to open the actual running app (simulation mode) and confirm the change renders and behaves correctly.
-3. Both green → done. Neither is skippable (§6.7).
+3. **If this change adds or modifies a hand-wrapped GitHub API call** (anything not going through Octokit's typed methods): validate its request/response shape against GitHub's OpenAPI/Swagger description or official REST/GraphQL docs (§6.9). Official/community SDK usage (Octokit) is exempt from this step.
+4. All applicable steps green → done. None of the applicable steps are skippable (§6.7, §6.9).
 
 ---
 
@@ -162,7 +164,7 @@ Ask the maintainer and record the answers at the top of the repo README; several
 ## 10. Conventions
 
 - Small, reviewable PRs mapped to the phases above.
-- **No PR is done until the §6.7 gate is green:** Playwright e2e (vs MSW) passes headless, and Chrome MCP verification of the running app confirms the change. State both outcomes in the PR.
+- **No PR is done until the §6.7 gate is green:** Playwright e2e (vs MSW) passes headless, and Chrome MCP verification of the running app confirms the change. State both outcomes in the PR. If the PR adds/modifies a hand-wrapped GitHub API call, also state the §6.9 API-surface validation outcome (or that it's exempt via Octokit).
 - Every money-affecting function in `core` gets unit tests before it's wired to I/O.
 - Prefer existing, popular libraries over bespoke implementations (project owner's standing preference).
 - Keep this file current: when a decision changes, update `CLAUDE.md` in the same PR.
