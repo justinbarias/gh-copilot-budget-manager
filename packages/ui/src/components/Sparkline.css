@@ -1,0 +1,8 @@
+.sparkline {
+  display: block;
+}
+
+.sparkline--empty {
+  font-size: 11px;
+  color: var(--text-neutral);
+}

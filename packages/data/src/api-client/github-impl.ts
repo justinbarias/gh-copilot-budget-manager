@@ -1,5 +1,12 @@
 import { Octokit } from 'octokit';
-import { cycleBounds, rankHeavyUsers } from '@copilot-budget/core';
+import {
+  computeModelMix,
+  cycleBounds,
+  rankHeavyUsers,
+  resolveEffectiveUlb,
+  type ModelUsageRow,
+  type UlbCandidate,
+} from '@copilot-budget/core';
 import { ALERTS } from '../msw/fixtures/alerts.js';
 import { SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
@@ -17,6 +24,7 @@ import type {
   CostCenterSummary,
   DailyBurnPoint,
   HeavyUser,
+  HeavyUserDailyPoint,
   SyncStatus,
   UsageSummary,
   UsageSummaryParams,
@@ -65,12 +73,25 @@ interface CreditsUsedItem {
   user_id: string;
   user_login: string;
   ai_credits_used: number;
+  model?: string; // simulation-only enrichment -- see msw/fixtures/usage.ts's CreditsUsedItem doc comment
 }
 
 interface Seat {
   assignee: { login: string; id: number; type: 'User' };
   created_at: string;
 }
+
+// Minimal projection of the budgets wire shape (PRD §2.3, §4.2): only the
+// fields ULB-precedence resolution needs. `budget_amount` is USD (PRD §2.3's
+// budget object doc) -- converted to credits the same way poolCreditsForItem
+// converts discount_amount, below.
+interface BudgetItem {
+  budget_scope: 'universal' | 'individual' | 'multi_user_cost_center' | 'enterprise' | 'organization' | 'cost_center' | 'repository';
+  budget_entity_name: string;
+  budget_amount: number;
+}
+
+const ULB_BUDGET_SCOPES = new Set<BudgetItem['budget_scope']>(['individual', 'multi_user_cost_center', 'universal']);
 
 const RESOURCE_TYPE_MAP: Record<CostCenterResource['type'], IngestResourceType> = {
   User: 'user',
@@ -87,6 +108,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // enterprise-wide pool-consumed figure it never actually drew from.
 function poolCreditsForItem(item: Pick<UsageItem, 'discount_amount'>): number {
   return Math.round(item.discount_amount * 100);
+}
+
+// budget_amount is USD (PRD §2.3); ULBs cap a person's *credit* consumption
+// (CLAUDE.md §5), so the effective-ULB value the Users screen displays needs
+// the same $0.01/credit conversion poolCreditsForItem applies above.
+function usdToCredits(amountUsd: number): number {
+  return Math.round(amountUsd * 100);
 }
 
 // One point per calendar day from the cycle start through the as-of anchor
@@ -176,6 +204,19 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     );
   }
 
+  // Hand-wrapped (not in Octokit's typed catalog -- same CLAUDE.md §6.9 note as
+  // fetchCostCentersRaw/fetchCreditsUsedItems above): the enterprise budgets
+  // endpoint is a 2026-dated route from the PRD's own API-inventory research
+  // (§2.3, §4.2), not yet a real, published GitHub route to validate against.
+  async function fetchBudgetsRaw(): Promise<BudgetItem[]> {
+    return paginateAll<BudgetItem>(
+      octokit,
+      '/enterprises/{enterprise}/settings/billing/budgets',
+      { enterprise },
+      (data) => (data as { budgets: BudgetItem[] }).budgets,
+    );
+  }
+
   async function fetchSeats(): Promise<Seat[]> {
     return paginateAll<Seat>(
       octokit,
@@ -256,23 +297,97 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listHeavyUsers(): Promise<HeavyUser[]> {
-    const items = await fetchCreditsUsedItems();
+    const [creditsUsedItems, seats, costCentersRaw, budgetsRaw] = await Promise.all([
+      fetchCreditsUsedItems(),
+      fetchSeats(),
+      fetchCostCentersRaw(),
+      fetchBudgetsRaw(),
+    ]);
 
-    const totals = new Map<string, HeavyUser>();
-    for (const item of items) {
-      const existing = totals.get(item.user_id);
-      if (existing) {
-        existing.creditsUsed += item.ai_credits_used;
-      } else {
-        totals.set(item.user_id, {
-          userId: item.user_id,
-          userLogin: item.user_login,
-          creditsUsed: item.ai_credits_used,
-        });
+    const resourcesByCostCenter = await Promise.all(
+      costCentersRaw.map(async (cc) => ({ cc, resources: await fetchCostCenterResources(cc.id) })),
+    );
+    const costCenterNameByLogin = new Map<string, string>();
+    for (const { cc, resources } of resourcesByCostCenter) {
+      for (const r of resources) {
+        if (r.type === 'User') costCenterNameByLogin.set(r.name, cc.name);
       }
     }
 
-    return rankHeavyUsers([...totals.values()]);
+    const ulbCandidates: UlbCandidate[] = budgetsRaw
+      .filter((b) => ULB_BUDGET_SCOPES.has(b.budget_scope))
+      .map((b) => ({
+        scope: b.budget_scope as UlbCandidate['scope'],
+        entityName: b.budget_entity_name,
+        amountCredits: usdToCredits(b.budget_amount),
+      }));
+
+    interface Accumulator {
+      userId: string;
+      userLogin: string;
+      creditsUsed: number;
+      dailyCredits: Map<string, number>;
+      modelUsage: ModelUsageRow[];
+    }
+
+    // Seeded from the full licensed roster (not just users with a usage row) --
+    // the Users screen's "No usage" status filter and its full-roster
+    // pagination (Task 2.4) depend on every seat appearing, even at 0 credits.
+    const accByLogin = new Map<string, Accumulator>();
+    for (const seat of seats) {
+      accByLogin.set(seat.assignee.login, {
+        userId: String(seat.assignee.id),
+        userLogin: seat.assignee.login,
+        creditsUsed: 0,
+        dailyCredits: new Map(),
+        modelUsage: [],
+      });
+    }
+
+    // Same cycle window as listCostCenters' member burn, above (cycleBounds
+    // anchored to the deterministic fixture date, never wall-clock) -- a user
+    // whose only credits rows fall outside the current cycle (e.g. user-05's
+    // Aug/Sep cliff-edge rows) legitimately shows 0 MTD this cycle, not a
+    // lifetime total.
+    const bounds = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    for (const item of creditsUsedItems) {
+      const dayIndex = Math.floor((Date.parse(`${item.date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
+      if (dayIndex < 0 || dayIndex > bounds.daysElapsed) continue;
+
+      const acc = accByLogin.get(item.user_login);
+      if (!acc) continue; // a credits row with no matching seat/license -- not expected in valid fixture data
+
+      acc.creditsUsed += item.ai_credits_used;
+      acc.dailyCredits.set(item.date, (acc.dailyCredits.get(item.date) ?? 0) + item.ai_credits_used);
+      acc.modelUsage.push({ model: item.model ?? null, creditsUsed: item.ai_credits_used });
+    }
+
+    const users: HeavyUser[] = [...accByLogin.values()].map((acc) => {
+      const costCenterName = costCenterNameByLogin.get(acc.userLogin) ?? null;
+
+      // Empty (not zero-filled) when there's no cycle usage at all -- the Users
+      // screen renders a "no usage yet this cycle" placeholder instead of a
+      // flat-line chart for these (design/README.md's Users screen sublabel).
+      const dailySeries: HeavyUserDailyPoint[] =
+        acc.creditsUsed === 0
+          ? []
+          : Array.from({ length: bounds.daysElapsed + 1 }, (_, i) => {
+              const date = new Date(bounds.cycleStart.getTime() + i * DAY_MS).toISOString().slice(0, 10);
+              return { date, creditsUsed: acc.dailyCredits.get(date) ?? 0 };
+            });
+
+      return {
+        userId: acc.userId,
+        userLogin: acc.userLogin,
+        creditsUsed: acc.creditsUsed,
+        costCenterName,
+        dailySeries,
+        modelMix: computeModelMix(acc.modelUsage),
+        effectiveUlb: resolveEffectiveUlb(acc.userLogin, costCenterName, ulbCandidates),
+      };
+    });
+
+    return rankHeavyUsers(users);
   }
 
   async function listAlerts(): Promise<Alert[]> {

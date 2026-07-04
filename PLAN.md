@@ -122,7 +122,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 1.5, 1.6.
   - **Files:** `packages/ui/src/screens/CostCenters/CostCentersTable.tsx`, `DrillModal.tsx`.
 
-- [ ] **Task 2.4: Users screen — read-only heavy-user table** — M
+- [x] **Task 2.4: Users screen — read-only heavy-user table** — M
   - **Description:** Per `design/README.md` §6, read-only: login, cost center (display only), credits MTD, sparkline, model-mix bar, ULB (display only). Search + cost-center filter + status filter + pagination (10/page).
   - **Acceptance:** Renders fixture users ranked via 1.1's ranking function; search/filter/pagination function correctly; no write affordance present.
   - **Verification:** Playwright spec exercises search, filter, pagination.

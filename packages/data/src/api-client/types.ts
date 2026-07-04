@@ -1,3 +1,5 @@
+import type { EffectiveUlb, ModelMix } from '@copilot-budget/core';
+
 export interface UsageSummaryParams {
   costCenterId?: string;
 }
@@ -47,10 +49,25 @@ export interface CostCenterSummary {
   members: CostCenterMemberSummary[];
 }
 
+export interface HeavyUserDailyPoint {
+  date: string; // YYYY-MM-DD, one entry per day of the current cycle up to cycleAsOfDate
+  creditsUsed: number; // that day's credits (not cumulative) -- feeds the Users screen sparkline
+}
+
 export interface HeavyUser {
   userId: string;
   userLogin: string;
-  creditsUsed: number;
+  creditsUsed: number; // cycle-to-date, cycle-filtered the same way listCostCenters' member burn is
+  // Display-only join to the user's cost-center membership (SPEC.md Assumption 4:
+  // the Users screen never offers reassignment) -- null if unassigned to any cost center.
+  costCenterName: string | null;
+  // Cycle-to-date daily series, one point per day -- empty when creditsUsed is 0
+  // (the Users screen renders a "no usage yet this cycle" placeholder instead of a chart).
+  dailySeries: HeavyUserDailyPoint[];
+  modelMix: ModelMix; // best-effort per-model attribution, always includes the explicit unattributable remainder
+  // Precedence-resolved per CLAUDE.md §5 (individual > cost-center CCULB > universal);
+  // null only if no ULB exists at any scope for this user.
+  effectiveUlb: EffectiveUlb | null;
 }
 
 export interface Alert {

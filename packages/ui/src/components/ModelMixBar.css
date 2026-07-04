@@ -1,0 +1,28 @@
+.model-mix-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 150px;
+}
+
+.model-mix-bar--empty {
+  font-size: 11px;
+  color: var(--text-neutral);
+}
+
+.model-mix-bar__track {
+  display: flex;
+  border-radius: 9999px;
+  overflow: hidden;
+  border: 1px solid var(--surface-2);
+  height: 8px;
+}
+
+.model-mix-bar__segment {
+  height: 8px;
+}
+
+.model-mix-bar__caption {
+  font-size: 10.5px;
+  color: var(--text-neutral);
+}

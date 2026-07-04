@@ -119,13 +119,65 @@ describe('createGitHubApiClient', () => {
     });
   });
 
-  it('ranks heavy users by aggregated credits used, descending', async () => {
+  it('ranks the full 35-user licensed roster by cycle-to-date credits used, descending', async () => {
     const users = await client.listHeavyUsers();
+    // Task 2.4: every licensed seat appears, not just users with a usage row --
+    // the Users screen's pagination and "No usage" filter need the full roster.
+    expect(users).toHaveLength(35);
     for (let i = 1; i < users.length; i++) {
       expect(users[i - 1]!.creditsUsed).toBeGreaterThanOrEqual(users[i]!.creditsUsed);
     }
+
+    // user-05's credits rows (Aug 31/Sep 1 cliff fixtures) fall outside the June
+    // cycle window -- cycle-filtered the same way listCostCenters' member burn
+    // is (handoff from Task 2.3's validation), so this is 0 MTD this cycle, not
+    // the 760 lifetime total across both cliff rows.
     const user05 = users.find((u) => u.userLogin === 'user-05');
-    expect(user05?.creditsUsed).toBe(380 + 380);
+    expect(user05?.creditsUsed).toBe(0);
+
+    const user01 = users.find((u) => u.userLogin === 'user-01');
+    expect(user01?.creditsUsed).toBe(420);
+    const user16 = users.find((u) => u.userLogin === 'user-16');
+    expect(user16?.creditsUsed).toBe(310);
+    const user26 = users.find((u) => u.userLogin === 'user-26');
+    expect(user26?.creditsUsed).toBe(500);
+  });
+
+  it('joins cost-center name, daily series, model mix, and the precedence-resolved effective ULB', async () => {
+    const users = await client.listHeavyUsers();
+
+    // user-01: Platform CC, no individual override -> falls back to the
+    // Platform CCULB (budget-cculb-platform-1, $45 -> 4,500 credits).
+    const user01 = users.find((u) => u.userLogin === 'user-01')!;
+    expect(user01.costCenterName).toBe('Platform');
+    expect(user01.effectiveUlb).toEqual({ amountCredits: 4500, scope: 'cost-center' });
+    expect(user01.dailySeries).toHaveLength(14);
+    expect(user01.dailySeries.reduce((sum, p) => sum + p.creditsUsed, 0)).toBe(420);
+    expect(user01.modelMix.segments.reduce((sum, s) => sum + s.pct, 0) + user01.modelMix.unattributablePct).toBe(100);
+
+    // user-05: no usage this cycle -> empty daily series, not zero-filled.
+    const user05 = users.find((u) => u.userLogin === 'user-05')!;
+    expect(user05.dailySeries).toEqual([]);
+    expect(user05.modelMix).toEqual({ segments: [], unattributablePct: 0 });
+
+    // user-20: the $0 individual ULB edge fixture (budget-ulb-zero-1) -- always
+    // blocks, wins over Data & Analytics' universal fallback (no CCULB exists
+    // for that CC).
+    const user20 = users.find((u) => u.userLogin === 'user-20')!;
+    expect(user20.costCenterName).toBe('Data & Analytics');
+    expect(user20.effectiveUlb).toEqual({ amountCredits: 0, scope: 'individual' });
+
+    // user-07: the ULB-display-bug edge fixture (budget-ulb-display-bug-1, $60
+    // individual) -- overrides the Platform CCULB for this one person only.
+    const user07 = users.find((u) => u.userLogin === 'user-07')!;
+    expect(user07.costCenterName).toBe('Platform');
+    expect(user07.effectiveUlb).toEqual({ amountCredits: 6000, scope: 'individual' });
+
+    // user-26: Marketing (cap-bound) CC has no CCULB fixture -> falls back to
+    // the universal ULB (budget-universal-1, $40 -> 4,000 credits).
+    const user26 = users.find((u) => u.userLogin === 'user-26')!;
+    expect(user26.costCenterName).toBe('Marketing (Cap-Bound)');
+    expect(user26.effectiveUlb).toEqual({ amountCredits: 4000, scope: 'universal' });
   });
 
   it('surfaces the pre-baked fixture alerts', async () => {
