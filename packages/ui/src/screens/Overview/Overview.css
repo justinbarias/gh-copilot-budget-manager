@@ -1,0 +1,140 @@
+.overview {
+  padding: var(--space-section-y) var(--space-section-x) 64px;
+  max-width: 1240px;
+}
+
+.overview__loading {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.overview__lens-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.overview__lens-label {
+  font-size: 12px;
+  color: var(--text-neutral);
+}
+
+.overview__lens-toggle {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 60px;
+  padding: 3px;
+  gap: 2px;
+  /* Visibly non-interactive, not silently missing (design/README.md's "never
+     color alone" rule) -- paired with the icon+text cue below. */
+  opacity: 0.55;
+}
+
+.overview__lens-btn {
+  padding: 6px 16px;
+  border-radius: 60px;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.overview__lens-btn--active {
+  background: var(--surface-2);
+  color: var(--text-default);
+}
+
+.overview__lens-cue {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.overview__chart-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 22px 24px 18px;
+  margin-bottom: 20px;
+}
+
+.overview__chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.overview__chart-eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-neutral);
+  margin-bottom: 4px;
+}
+
+.overview__chart-headline {
+  font-size: 22px;
+  font-weight: 480;
+  letter-spacing: -0.3px;
+}
+
+.overview__chart-headline-burned {
+  color: var(--blue);
+}
+
+.overview__chart-headline-of {
+  color: var(--text-muted);
+}
+
+.overview__chart-legend {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.overview__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.overview__legend-swatch {
+  width: 14px;
+  height: 2px;
+  display: inline-block;
+}
+
+.overview__legend-swatch--actual {
+  background: var(--text-default);
+}
+
+.overview__legend-swatch--allowance {
+  height: 0;
+  border-top: 1.5px dashed var(--text-neutral);
+}
+
+.overview__tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+@media (max-width: 900px) {
+  .overview__tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

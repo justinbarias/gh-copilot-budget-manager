@@ -1,6 +1,7 @@
 import { Octokit } from 'octokit';
-import { rankHeavyUsers } from '@copilot-budget/core';
+import { cycleBounds, rankHeavyUsers } from '@copilot-budget/core';
 import { ALERTS } from '../msw/fixtures/alerts.js';
+import { SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
   getSyncStatus as readSyncStatus,
   syncNow as ingestSnapshot,
@@ -13,6 +14,7 @@ import type {
   Alert,
   ApiClient,
   CostCenterSummary,
+  DailyBurnPoint,
   HeavyUser,
   SyncStatus,
   UsageSummary,
@@ -66,6 +68,40 @@ const RESOURCE_TYPE_MAP: Record<CostCenterResource['type'], IngestResourceType> 
   Org: 'org',
   Repo: 'repository',
 };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// discount_amount is the $ portion of a usage row covered by the shared pool
+// (vs. net_amount, the metered portion) -- dividing by $0.01/credit converts
+// it back to the pool-phase credit count the Overview burn-down needs, so a
+// cost center that's tipped into metered (discount 0) doesn't inflate the
+// enterprise-wide pool-consumed figure it never actually drew from.
+function poolCreditsForItem(item: Pick<UsageItem, 'discount_amount'>): number {
+  return Math.round(item.discount_amount * 100);
+}
+
+// One point per calendar day from the cycle start through the as-of anchor
+// (inclusive), cumulative -- days with no matching usage row legitimately
+// carry the prior total forward rather than being omitted, so the actual
+// line reflects "no observed usage" instead of a misleading gap.
+function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: number): DailyBurnPoint[] {
+  const creditsByDate = new Map<string, number>();
+  for (const item of items) {
+    const itemTime = Date.parse(`${item.date}T00:00:00.000Z`);
+    const dayIndex = Math.floor((itemTime - cycleStart.getTime()) / DAY_MS);
+    if (dayIndex < 0 || dayIndex > daysElapsed) continue;
+    creditsByDate.set(item.date, (creditsByDate.get(item.date) ?? 0) + poolCreditsForItem(item));
+  }
+
+  const points: DailyBurnPoint[] = [];
+  let cumulative = 0;
+  for (let i = 0; i <= daysElapsed; i++) {
+    const date = new Date(cycleStart.getTime() + i * DAY_MS).toISOString().slice(0, 10);
+    cumulative += creditsByDate.get(date) ?? 0;
+    points.push({ date, cumulativePoolCredits: cumulative });
+  }
+  return points;
+}
 
 // Follows the Link `rel="next"` header rather than Octokit's paginate plugin:
 // these enterprise billing routes aren't in Octokit's typed endpoint catalog
@@ -141,12 +177,16 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function getUsageSummary(params: UsageSummaryParams = {}): Promise<UsageSummary> {
-    const items = await fetchUsageItems(params);
+    const [items, seats] = await Promise.all([fetchUsageItems(params), fetchSeats()]);
 
     const asOfDate = items.reduce<string | null>(
       (latest, item) => (latest === null || item.date > latest ? item.date : latest),
       null,
     );
+
+    const cycleAsOfDate = SIM_CURRENT_DATE;
+    const bounds = cycleBounds(new Date(`${cycleAsOfDate}T00:00:00.000Z`));
+    const dailyBurn = buildDailyBurn(items, bounds.cycleStart, bounds.daysElapsed);
 
     return {
       asOfDate,
@@ -154,6 +194,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       totalGrossAmountUsd: items.reduce((sum, item) => sum + item.gross_amount, 0),
       totalDiscountAmountUsd: items.reduce((sum, item) => sum + item.discount_amount, 0),
       totalNetAmountUsd: items.reduce((sum, item) => sum + item.net_amount, 0),
+      licenseCount: seats.length,
+      cycleAsOfDate,
+      dailyBurn,
     };
   }
 

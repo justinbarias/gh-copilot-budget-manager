@@ -101,7 +101,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 
 ### Phase 2: Read-only observability (= CLAUDE.md Phase 2, MVP feature-complete)
 
-- [ ] **Task 2.1: Overview screen — burn-down chart (actual-only) + runway tiles** — M
+- [x] **Task 2.1: Overview screen — burn-down chart (actual-only) + runway tiles** — M
   - **Description:** Per `design/README.md` §1 and `SPEC.md` Assumption 3: actual cumulative burn line only (no forecast band/exhaustion marker); runway tiles show cycle-to-date facts using 1.1's `cycleBounds`/`poolConsumedPct`/`poolAllowanceCredits`, fed by ingested license count + the current date. Forecast-lens toggle renders present-but-disabled.
   - **Acceptance:** Chart renders real ingested-snapshot data via `getUsageSummary()`; tile math matches 1.1's unit-tested functions; disabled toggle is visibly non-interactive, not silently missing.
   - **Verification:** Playwright spec asserts chart points match fixture-derived expected values.

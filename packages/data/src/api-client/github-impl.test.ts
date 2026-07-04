@@ -39,6 +39,20 @@ describe('createGitHubApiClient', () => {
     expect(summary.totalNetAmountUsd).toBeCloseTo(0 + 0 + 5.0 + 0 + 1.9, 5);
   });
 
+  it('computes Overview burn-down inputs anchored to the fixture "current" date', async () => {
+    const summary = await client.getUsageSummary();
+    expect(summary.licenseCount).toBe(35);
+    expect(summary.cycleAsOfDate).toBe('2026-06-14');
+    // Cycle start (2026-06-01, day 0) through the anchor (2026-06-14, day 13) inclusive.
+    expect(summary.dailyBurn).toHaveLength(14);
+    expect(summary.dailyBurn[0]).toEqual({ date: '2026-06-01', cumulativePoolCredits: 0 });
+    // Pool-covered credits only (discount_amount-derived): platform 420 + dataAnalytics 310
+    // + the cap-bound cost center's fully-metered 500 (discount 0) contributes nothing.
+    expect(summary.dailyBurn.at(-1)).toEqual({ date: '2026-06-14', cumulativePoolCredits: 420 + 310 });
+    // The Aug31/Sep1 cliff edge-fixture rows fall outside this cycle window entirely.
+    expect(summary.dailyBurn.some((p) => p.date === '2026-08-31' || p.date === '2026-09-01')).toBe(false);
+  });
+
   it('filters usage by cost center', async () => {
     const summary = await client.getUsageSummary({ costCenterId: COST_CENTER_IDS.platform });
     expect(summary.totalQuantity).toBe(420 + 380 + 380);
