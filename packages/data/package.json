@@ -6,12 +6,20 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@copilot-budget/core": "workspace:*"
+    "@copilot-budget/core": "workspace:*",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.20.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }
