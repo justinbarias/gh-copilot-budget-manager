@@ -1,0 +1,18 @@
+{
+  "name": "copilot-budget-manager",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "pnpm --filter @copilot-budget/desktop run dev",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "e2e": "pnpm --filter @copilot-budget/desktop run e2e"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
