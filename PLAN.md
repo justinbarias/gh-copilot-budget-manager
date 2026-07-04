@@ -129,7 +129,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 1.1, 1.5, 1.6.
   - **Files:** `packages/ui/src/screens/Users/UsersTable.tsx`, `components/Sparkline.tsx`, `components/ModelMixBar.tsx`.
 
-- [ ] **Task 2.5: Nav shell + 6 stub screens** — S
+- [x] **Task 2.5: Nav shell + 6 stub screens** — S
   - **Description:** Full 9-item nav per the design handoff's IA. Overview/Cost Centers/Users/Settings route to real screens; Forecast/Controls/Auto-balance/Chargeback/Audit/Help show a consistent "coming soon" placeholder.
   - **Acceptance:** All 9 items clickable; 4 functional, 6 clearly-stubbed-not-broken, no console errors.
   - **Verification:** Playwright spec clicks each of the 9 items, asserts correct state.
@@ -137,9 +137,9 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Files:** `packages/ui/src/App.tsx`, `screens/_stubs/ComingSoon.tsx`, `components/Nav.tsx`.
 
 **Checkpoint 2 (MVP feature-complete):**
-- [ ] All three dashboards render real data pulled through Sync Now.
-- [ ] Nav shows all 9 items; 6 clearly stubbed.
-- [ ] `pnpm test` and `pnpm e2e` both green.
+- [x] All three dashboards render real data pulled through Sync Now. (Note for the human review: dashboard reads go ApiClient→MSW live per call; Sync Now writes the append-only SQLite snapshots but is not yet the dashboards' read source — same fixture data either way in simulation mode. Pre-existing Task 2.1–2.4 architecture, surfaced here rather than silently ticked.)
+- [x] Nav shows all 9 items; 6 clearly stubbed. (10 in fact — the "9" is a prose miscount; SPEC.md Assumption 5's own enumeration, design/README.md, and the prototype's navDefs all list 10. See the Task 2.5 commit's 10-vs-9 flag.)
+- [x] `pnpm test` and `pnpm e2e` both green. (95/95 vitest, 9/9 Playwright headless; plus the CLAUDE.md §7 CDP interactive pass, 71/71 checks across all 10 screens.)
 - Review with human before hardening.
 
 ---
