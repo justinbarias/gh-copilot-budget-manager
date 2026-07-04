@@ -1,14 +1,16 @@
+import { Meter, type RowUtilization } from './Meter';
 import './ControlsTable.css';
 
 // Spending-limits family table (Family B -- design/README.md §3). Purely
 // presentational: the parent (Controls.tsx) owns live state + the staged
 // `desired` overlay and hands down effective row values; every edit here only
 // STAGES a change via the callbacks (nothing writes until the rail's Apply).
+//
+// Task 4.10: Meter/RowUtilization/formatCredits moved to Meter.tsx (a pure
+// extraction, no behavior change) so UlbTable.tsx can reuse the exact same
+// meter math/markup instead of forking it.
 
-export interface RowUtilization {
-  usedCredits: number;
-  capCredits: number;
-}
+export type { RowUtilization };
 
 export interface SpendingLimitRowModel {
   /** core controlIdentity, e.g. `budget:cost_center:Platform` -- also the row's data-control-id hook. */
@@ -37,47 +39,6 @@ interface ControlsTableProps {
   onHardStopToggle: (id: string) => void;
   onWillAlertChange: (id: string, next: boolean) => void;
   onRecipientsChange: (id: string, raw: string) => void;
-}
-
-function formatCredits(value: number): string {
-  return Math.round(value).toLocaleString('en-US');
-}
-
-// Display convention only (flagged in the Task 4.9 report): GitHub's budget
-// model carries no per-budget alert *thresholds* (AlertingState is
-// willAlert + recipients), so the design's "amber ≥ alert threshold" band
-// uses a fixed 75% convention here rather than inventing a per-row dial the
-// API doesn't have.
-const METER_AMBER_FRACTION = 0.75;
-
-function Meter({ utilization }: { utilization: RowUtilization | null }) {
-  if (utilization === null) {
-    return (
-      <div className="controls-meter">
-        <div className="controls-meter__track controls-meter__track--empty" />
-        <div className="controls-meter__label mono">no per-org usage data</div>
-      </div>
-    );
-  }
-
-  const { usedCredits, capCredits } = utilization;
-  const fraction = capCredits > 0 ? usedCredits / capCredits : 1;
-  const over = capCredits <= 0 || fraction >= 1;
-  const tone = over ? 'red' : fraction >= METER_AMBER_FRACTION ? 'amber' : 'green';
-  const fillPct = Math.min(100, Math.max(usedCredits > 0 ? 2 : 0, Math.round(fraction * 100)));
-  const label =
-    capCredits > 0
-      ? `${Math.round(fraction * 100)}% used · ${formatCredits(usedCredits)} of ${formatCredits(capCredits)}`
-      : 'blocked ($0 cap)';
-
-  return (
-    <div className="controls-meter">
-      <div className="controls-meter__track">
-        <div className={`controls-meter__fill controls-meter__fill--${tone}`} style={{ width: `${fillPct}%` }} />
-      </div>
-      <div className={`controls-meter__label mono ${over ? 'controls-meter__label--over' : ''}`}>{label}</div>
-    </div>
-  );
 }
 
 export function ControlsTable({ rows, onAmountChange, onHardStopToggle, onWillAlertChange, onRecipientsChange }: ControlsTableProps) {
@@ -134,7 +95,7 @@ export function ControlsTable({ rows, onAmountChange, onHardStopToggle, onWillAl
             </div>
 
             <div className="controls-table__util">
-              <Meter utilization={row.utilization} />
+              <Meter utilization={row.utilization} emptyLabel="no per-org usage data" />
               <div className="controls-table__alerts">
                 <label className="controls-table__alerts-toggle">
                   <input

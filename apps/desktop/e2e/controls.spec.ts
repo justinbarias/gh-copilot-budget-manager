@@ -37,7 +37,10 @@ async function launchApp(dbLabel: string) {
 async function openControls(window: Page): Promise<void> {
   await window.locator('.nav').getByRole('button', { name: 'Controls', exact: true }).click();
   await expect(window.locator('.app-shell__title')).toHaveText('Controls');
-  // Default tab is the one real family this slice ships (Spending limits).
+  // Task 4.10 flips the screen's default tab to User-level budgets (the
+  // design's ULB-first tab order) -- this spec is about Spending limits, so
+  // navigate there explicitly rather than relying on the default.
+  await window.getByRole('tab', { name: 'Spending limits' }).click();
   await expect(window.getByText(/Cap metered charges only/)).toBeVisible();
 }
 

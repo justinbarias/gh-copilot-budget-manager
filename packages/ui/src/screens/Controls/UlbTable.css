@@ -1,0 +1,134 @@
+/* Task 4.10: additive-only classes for the ULB family table. ControlsTable.css
+   (imported alongside this file by UlbTable.tsx) supplies every shared base
+   class (.controls-table, __head/__grid/__row, __control/__title/__caps,
+   __cap-input, __util, __alerts*, __staged, .controls-meter*) unchanged --
+   nothing here overrides or duplicates those selectors. */
+
+/* Green "both phases" phase badge -- same pill shape as the amber "metered
+   only" badge, different semantic color (CLAUDE.md §5: ULBs cap consumption
+   across both phases). */
+.controls-ulb__phase-badge--green {
+  color: var(--green);
+  background: rgba(95, 237, 131, 0.12);
+  border-color: rgba(95, 237, 131, 0.35);
+}
+
+/* API-ONLY violet pill on CCULB rows (design/README.md §3). The design
+   prototype's literal markup renders this as styled text with a tooltip, no
+   icon -- matched here rather than inventing a glyph the design doesn't use. */
+.controls-ulb__apionly-pill {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--violet-light);
+  background: rgba(147, 80, 255, 0.14);
+  border: 1px solid rgba(147, 80, 255, 0.4);
+  border-radius: 5px;
+  padding: 2px 6px;
+  vertical-align: middle;
+  cursor: default;
+}
+
+/* Locked "Hard stop · always" green pill (design/README.md §3): ULBs never
+   expose the spending-limits toggle -- static, not interactive. Matches the
+   design prototype's literal markup (no icon on this pill). */
+.controls-ulb__locked-pill {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--green);
+  background: rgba(95, 237, 131, 0.1);
+  border: 1px solid rgba(95, 237, 131, 0.35);
+  border-radius: 6px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+/* Defensive-only (CLAUDE.md §6.3): renders if a live ULB is ever found with
+   hard-stop off, which no shipped fixture produces -- a loud red warning
+   instead of a silent pill, since a ULB must always hard-stop. */
+.controls-ulb__alert-warn {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--red);
+  background: rgba(255, 123, 114, 0.1);
+  border: 1px solid rgba(255, 123, 114, 0.4);
+  border-radius: 6px;
+  padding: 6px 9px;
+}
+
+/* $0/near-zero display cue (CLAUDE.md §6.4 "warn on $0/near-zero ULBs") --
+   independent of validatePlan's staged-plan warning: fires on the row's
+   EFFECTIVE amount (live or staged) the instant it's at/under the threshold,
+   before any dry-run is even run. */
+.controls-ulb__zero-warn {
+  margin-top: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--red);
+  white-space: nowrap;
+}
+
+.controls-ulb__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.controls-ulb__marker {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.controls-ulb__marker--new {
+  color: var(--blue);
+}
+
+.controls-ulb__marker--delete {
+  color: var(--red);
+}
+
+.controls-ulb__delete-btn,
+.controls-ulb__discard-btn {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+.controls-ulb__delete-btn:hover,
+.controls-ulb__discard-btn:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* Row-level tint for a staged delete -- distinct from the amber
+   controls-table__row--staged tint so "about to remove" reads differently
+   from "about to change". */
+.controls-ulb__row--delete {
+  background: rgba(255, 123, 114, 0.05);
+}
+
+/* Staged-new rows are read-only pre-apply (Controls.tsx builds them from
+   `stagedNewUlbs`, appended to desired but never in `live`) -- a light blue
+   tint distinguishes "not created yet" from an edited live row. */
+.controls-ulb__row--new {
+  background: rgba(141, 214, 255, 0.05);
+}
+
+.controls-ulb__row--new .controls-table__cap-input,
+.controls-ulb__row--new .controls-table__alerts-input,
+.controls-ulb__row--delete .controls-table__cap-input,
+.controls-ulb__row--delete .controls-table__alerts-input {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

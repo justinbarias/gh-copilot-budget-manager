@@ -1,26 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   diffControls,
+  isUlbScope,
+  DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
   type AlertingState,
   type BudgetControl,
   type ControlState,
   type SpendingLimitScope,
+  type UlbBudgetScope,
 } from '@copilot-budget/core';
-import type { ApplyPlanResult, DryRunResult } from '@copilot-budget/data';
+import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { ComingSoon } from '../_stubs/ComingSoon';
-import { ControlsTable, type SpendingLimitRowModel } from './ControlsTable';
+import { ControlsTable, type RowUtilization, type SpendingLimitRowModel } from './ControlsTable';
+import { NewUlbModal } from './NewUlbModal';
 import { PlanRail } from './PlanRail';
+import { UlbTable, type UlbRowModel } from './UlbTable';
 import './Controls.css';
 
-// Controls screen (Task 4.9): family tabs + explainer, the Spending-limits
-// family end to end, and the reusable plan/simulate/apply right rail. The
-// ULB family (Task 4.10) and Included-usage caps (Task 4.12) tabs are
-// consistent within-screen placeholders until their slices land.
+// Controls screen (Task 4.9 spending limits, Task 4.10 user-level budgets):
+// family tabs + explainer, both families end to end, and the reusable
+// plan/simulate/apply right rail. Included-usage caps (Task 4.12) stays a
+// consistent within-screen placeholder until that slice lands.
 //
 // Staging model (design/README.md "State management"): `desired` is an edit
 // overlay keyed by control identity; the full desired ControlState list is
-// derived by overlaying it onto `live`, the Plan is derived via core's
+// derived by overlaying it onto `live` (plus Task 4.10's stagedNewUlbs
+// additions and stagedDeletes omissions), the Plan is derived via core's
 // diffControls, and any change to the plan invalidates the last dry-run
 // (stale dry-run => Apply disabled until re-run). Nothing writes until the
 // rail's Apply (CLAUDE.md §6.1).
@@ -69,12 +75,12 @@ interface MeterData {
   usedCreditsByCostCenterName: Record<string, number>;
 }
 
-function parseCredits(raw: string): number {
+export function parseCredits(raw: string): number {
   const digits = raw.replace(/[^0-9]/g, '');
   return digits === '' ? 0 : Number.parseInt(digits, 10);
 }
 
-function parseRecipients(raw: string): string[] {
+export function parseRecipients(raw: string): string[] {
   return raw
     .split(',')
     .map((part) => part.trim())
@@ -124,6 +130,33 @@ function rowCapsCopy(control: BudgetControl): string {
   return "A team's metered charges";
 }
 
+// --- User-level budgets (Task 4.10) ---------------------------------------
+
+// Design's own seed-data order (design/*.dc.html: universal row, then CCULB
+// rows, then individual-override rows) -- matched here rather than inventing
+// a different sort (e.g. precedence order), since CLAUDE.md says implement
+// against the design, don't invent visual language.
+const ULB_SCOPE_ORDER: Record<UlbBudgetScope, number> = { universal: 0, multi_user_cost_center: 1, individual: 2 };
+
+function isUlbBudget(control: ControlState): control is BudgetControl & { scope: UlbBudgetScope } {
+  return control.kind === 'budget' && isUlbScope(control.scope);
+}
+
+// Row titles/caps copy verbatim from the design prototype's userlevel seed
+// rows ("Universal ULB" / "CCULB · <name>" / "Individual · <login>", and
+// their exact `caps` strings).
+function ulbRowTitle(control: BudgetControl): string {
+  if (control.scope === 'universal') return 'Universal ULB';
+  if (control.scope === 'multi_user_cost_center') return `CCULB · ${control.entityName}`;
+  return `Individual · ${control.entityName}`;
+}
+
+function ulbRowCapsCopy(control: BudgetControl): string {
+  if (control.scope === 'universal') return "Every licensed user's total · both phases";
+  if (control.scope === 'multi_user_cost_center') return 'Per-user cap · every CC member';
+  return "One named user's total";
+}
+
 export interface ControlsProps {
   onNavigateToAutoBalance: () => void;
 }
@@ -138,9 +171,28 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   const [live, setLive] = useState<ControlState[] | null>(null);
   const [meters, setMeters] = useState<MeterData | null>(null);
   const [mode, setMode] = useState<'simulation' | 'live' | null>(null);
+  // Task 4.10: the ULB family's entity pickers (NewUlbModal) and utilization
+  // meters need the same listHeavyUsers()/listCostCenters() data the Users/
+  // CostCenters screens already fetch -- stored here rather than re-derived,
+  // since Controls.tsx already fetches listCostCenters() for the spending
+  // table's per-CC meters (previously a local, unstored `const`).
+  const [heavyUsers, setHeavyUsers] = useState<HeavyUser[] | null>(null);
+  const [costCentersList, setCostCentersList] = useState<CostCenterSummary[] | null>(null);
 
-  const [family, setFamily] = useState<FamilyId>('spending');
+  // Design's ULB-first tab order (design/*.dc.html's FAMILY_TABS order) --
+  // 'spending' was a Task 4.9 stopgap default until this slice existed.
+  const [family, setFamily] = useState<FamilyId>('userlevel');
   const [desired, setDesired] = useState<Record<string, StagedBudgetEdit>>({});
+  // Task 4.10's CREATE/DELETE staging, additive to the `desired` edit overlay
+  // above: stagedNewUlbs are appended to desiredControls (diffControls then
+  // sees them as 'add' entries against a live state that doesn't have them);
+  // stagedDeletes names identities to OMIT from desiredControls (diffControls
+  // then sees them as 'delete' entries). Neither forks diffControls/PlanRail
+  // -- both are just different ways of shaping desiredControls before it's
+  // diffed, the same pattern `desired` already uses for edits.
+  const [stagedNewUlbs, setStagedNewUlbs] = useState<BudgetControl[]>([]);
+  const [stagedDeletes, setStagedDeletes] = useState<ReadonlySet<string>>(new Set());
+  const [creatingUlb, setCreatingUlb] = useState(false);
   const [dryRun, setDryRun] = useState<DryRunResult | null>(null);
   const [dryRunPlanKey, setDryRunPlanKey] = useState<string | null>(null);
   const [runningDryRun, setRunningDryRun] = useState(false);
@@ -154,11 +206,12 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const [controls, runtimeMode, summary, costCenters] = await Promise.all([
+      const [controls, runtimeMode, summary, costCenters, users] = await Promise.all([
         api.getControls(),
         api.getMode(),
         api.getUsageSummary(),
         api.listCostCenters(),
+        api.listHeavyUsers(),
       ]);
       // Per-scope metered utilization is derived from real usage data only
       // (never faked): the enterprise row from the all-up usage summary's net
@@ -179,6 +232,8 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         enterpriseUsedCredits: Math.round(summary.totalNetAmountUsd * 100),
         usedCreditsByCostCenterName,
       });
+      setCostCentersList(costCenters);
+      setHeavyUsers(users);
     };
     void load();
     return () => {
@@ -199,17 +254,23 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
   }, []);
 
-  // Desired end-state: live with the staged overlay applied. Includes every
-  // control (ULBs + caps pass through untouched), so diffControls never
-  // fabricates deletes for controls this slice doesn't edit.
+  // Desired end-state: live with the staged overlay applied, Task 4.10's
+  // stagedDeletes omitted, and stagedNewUlbs appended. Every untouched
+  // control (ULBs + caps this slice doesn't edit) passes straight through, so
+  // diffControls never fabricates deletes/changes for controls nothing here
+  // stages -- stagedDeletes is the ONLY thing that removes a control from the
+  // desired list, and it does so explicitly.
   const desiredControls = useMemo<ControlState[]>(() => {
     if (live === null) return [];
-    return live.map((control) => {
-      if (control.kind !== 'budget') return control;
-      const edit = desired[budgetIdentity(control)];
-      return edit ? applyEdit(control, edit) : control;
-    });
-  }, [live, desired]);
+    const edited = live
+      .filter((control) => !(control.kind === 'budget' && stagedDeletes.has(budgetIdentity(control))))
+      .map((control) => {
+        if (control.kind !== 'budget') return control;
+        const edit = desired[budgetIdentity(control)];
+        return edit ? applyEdit(control, edit) : control;
+      });
+    return [...edited, ...stagedNewUlbs];
+  }, [live, desired, stagedDeletes, stagedNewUlbs]);
 
   const plan = useMemo(() => diffControls(live ?? [], desiredControls), [live, desiredControls]);
   const planKey = useMemo(() => JSON.stringify(plan.entries), [plan]);
@@ -253,11 +314,34 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
 
   const onDiscard = useCallback(() => {
     setDesired({});
+    setStagedNewUlbs([]);
+    setStagedDeletes(new Set());
     setDryRun(null);
     setDryRunPlanKey(null);
     setJustification('');
     setOverrideAcknowledged(false);
     setApplyResult(null);
+  }, []);
+
+  // Task 4.10 CREATE/DELETE staging callbacks -- siblings of stageEdit/
+  // onAmountChange etc. above, same "local-only, nothing writes until Apply"
+  // contract.
+  const onDeleteToggle = useCallback((id: string) => {
+    setStagedDeletes((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const onDiscardNewUlb = useCallback((id: string) => {
+    setStagedNewUlbs((current) => current.filter((control) => budgetIdentity(control) !== id));
+  }, []);
+
+  const onCreateUlb = useCallback((control: BudgetControl) => {
+    setStagedNewUlbs((current) => [...current, control]);
+    setCreatingUlb(false);
   }, []);
 
   const onRunDryRun = useCallback(async () => {
@@ -289,6 +373,8 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
 
       if (result.status === 'applied') {
         setDesired({});
+        setStagedNewUlbs([]);
+        setStagedDeletes(new Set());
         setDryRun(null);
         setDryRunPlanKey(null);
         setJustification('');
@@ -318,7 +404,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     setApplyResult(null);
   }, [refreshLive]);
 
-  if (live === null || meters === null || mode === null) {
+  if (live === null || meters === null || mode === null || heavyUsers === null || costCentersList === null) {
     return (
       <section className="controls" aria-label="Controls">
         <p className="controls__loading">Loading…</p>
@@ -359,6 +445,106 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         utilization,
       };
     });
+
+  // Task 4.10: ULB family rows. Utilization is derived honestly from
+  // listHeavyUsers() (the same precomputed, precedence-resolved
+  // `effectiveUlb` the Users screen reads) -- never faked:
+  //   - individual rows: that one user's own cycle-to-date credits.
+  //   - universal/CCULB rows: the MAX-consuming member currently resolved to
+  //     this exact scope+entity by ULB precedence -- an honest "who's
+  //     closest to this shared ceiling" reading. A staged-new control isn't
+  //     in effect yet (no live member is actually bound by it), so it
+  //     renders an honest empty meter rather than guessing who'd move to it.
+  function deriveUlbUtilization(scope: UlbBudgetScope, entityName: string, capCredits: number): RowUtilization | null {
+    const heavyUsersList: HeavyUser[] = heavyUsers ?? [];
+    if (scope === 'individual') {
+      const user = heavyUsersList.find((u) => u.userLogin === entityName);
+      return user ? { usedCredits: user.creditsUsed, capCredits } : null;
+    }
+    const matches = heavyUsersList.filter((u) =>
+      scope === 'universal'
+        ? u.effectiveUlb?.scope === 'universal'
+        : u.effectiveUlb?.scope === 'cost-center' && u.costCenterName === entityName,
+    );
+    if (matches.length === 0) return null;
+    const maxUser = matches.reduce((a, b) => (b.creditsUsed > a.creditsUsed ? b : a));
+    return { usedCredits: maxUser.creditsUsed, capCredits };
+  }
+
+  const liveUlbControls = live.filter(isUlbBudget);
+
+  const ulbRows: UlbRowModel[] = [
+    ...liveUlbControls.map((control) => {
+      const id = budgetIdentity(control);
+      const markedForDelete = stagedDeletes.has(id);
+      const edit = desired[id] ?? {};
+      const effective = markedForDelete ? control : applyEdit(control, edit);
+      return {
+        id,
+        scope: control.scope,
+        entityName: control.entityName,
+        title: ulbRowTitle(control),
+        capsCopy: ulbRowCapsCopy(control),
+        apiOnly: control.scope === 'multi_user_cost_center',
+        amountRaw: markedForDelete ? String(control.amountCredits) : (edit.amountRaw ?? String(control.amountCredits)),
+        hardStop: effective.preventFurtherUsage,
+        willAlert: effective.alerting.willAlert,
+        recipientsRaw: markedForDelete ? control.alerting.alertRecipients.join(', ') : (edit.recipientsRaw ?? control.alerting.alertRecipients.join(', ')),
+        staged: stagedIds.has(id),
+        isNew: false,
+        markedForDelete,
+        zeroWarning: effective.amountCredits <= DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
+        utilization: deriveUlbUtilization(control.scope, control.entityName, effective.amountCredits),
+      };
+    }),
+    ...stagedNewUlbs.map((control) => ({
+      id: budgetIdentity(control),
+      // Safe: stagedNewUlbs only ever receives controls NewUlbModal built,
+      // and NewUlbModal's own `scope` state is typed UlbBudgetScope.
+      scope: control.scope as UlbBudgetScope,
+      entityName: control.entityName,
+      title: ulbRowTitle(control),
+      capsCopy: ulbRowCapsCopy(control),
+      apiOnly: control.scope === 'multi_user_cost_center',
+      amountRaw: String(control.amountCredits),
+      hardStop: control.preventFurtherUsage,
+      willAlert: control.alerting.willAlert,
+      recipientsRaw: control.alerting.alertRecipients.join(', '),
+      staged: true,
+      isNew: true,
+      markedForDelete: false,
+      zeroWarning: control.amountCredits <= DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
+      utilization: null,
+    })),
+  ].sort((a, b) => ULB_SCOPE_ORDER[a.scope] - ULB_SCOPE_ORDER[b.scope] || a.entityName.localeCompare(b.entityName));
+
+  // NewUlbModal's entity pickers, narrowed to genuinely-new targets (CLAUDE.md
+  // build brief: "filtered to exclude existing overrides") -- a scope/entity
+  // already covered (live and not staged for delete, or already staged-new)
+  // is edited via the table row instead of created again.
+  const existingIndividualLogins = new Set([
+    ...liveUlbControls.filter((c) => c.scope === 'individual' && !stagedDeletes.has(budgetIdentity(c))).map((c) => c.entityName),
+    ...stagedNewUlbs.filter((c) => c.scope === 'individual').map((c) => c.entityName),
+  ]);
+  const existingCculbCostCenterNames = new Set([
+    ...liveUlbControls.filter((c) => c.scope === 'multi_user_cost_center' && !stagedDeletes.has(budgetIdentity(c))).map((c) => c.entityName),
+    ...stagedNewUlbs.filter((c) => c.scope === 'multi_user_cost_center').map((c) => c.entityName),
+  ]);
+  const universalCovered =
+    liveUlbControls.some((c) => c.scope === 'universal' && !stagedDeletes.has(budgetIdentity(c))) ||
+    stagedNewUlbs.some((c) => c.scope === 'universal');
+  // A universal ULB's budget_entity_name is the enterprise slug -- the same
+  // top-level entity the enterprise-scope SPENDING LIMIT already carries as
+  // its own entityName (both key on the enterprise itself, PRD §2.1), so it's
+  // reused here rather than the UI inventing/hardcoding the slug. Null (and
+  // the create modal hides the "Universal" option entirely) only if neither a
+  // live enterprise spending limit nor an existing universal ULB can supply it.
+  const universalEntityName =
+    live.find((c): c is BudgetControl & { scope: 'enterprise' } => c.kind === 'budget' && c.scope === 'enterprise')?.entityName ??
+    liveUlbControls.find((c) => c.scope === 'universal')?.entityName ??
+    null;
+  const eligibleUsers = heavyUsers.filter((u) => !existingIndividualLogins.has(u.userLogin));
+  const eligibleCostCenters = costCentersList.filter((cc) => !existingCculbCostCenterNames.has(cc.name));
 
   return (
     <section className="controls" aria-label="Controls">
@@ -406,10 +592,21 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
             />
           )}
           {family === 'userlevel' && (
-            <ComingSoon
-              screenName="User-level budgets"
-              message="Coming soon — the ULB family (Universal · Individual · CCULB) arrives with Task 4.10."
-            />
+            <>
+              <div className="controls__create-row">
+                <button type="button" className="controls__create-btn" onClick={() => setCreatingUlb(true)}>
+                  + New user-level budget
+                </button>
+              </div>
+              <UlbTable
+                rows={ulbRows}
+                onAmountChange={onAmountChange}
+                onWillAlertChange={onWillAlertChange}
+                onRecipientsChange={onRecipientsChange}
+                onDeleteToggle={onDeleteToggle}
+                onDiscardNew={onDiscardNewUlb}
+              />
+            </>
           )}
           {family === 'included' && (
             <ComingSoon
@@ -443,6 +640,17 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         <div className="controls-toast" role="status">
           {toast}
         </div>
+      )}
+
+      {creatingUlb && (
+        <NewUlbModal
+          eligibleUsers={eligibleUsers}
+          eligibleCostCenters={eligibleCostCenters}
+          universalEntityName={universalEntityName}
+          universalAvailable={!universalCovered}
+          onCreate={onCreateUlb}
+          onClose={() => setCreatingUlb(false)}
+        />
       )}
     </section>
   );

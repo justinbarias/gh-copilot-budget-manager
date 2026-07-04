@@ -127,6 +127,30 @@
   min-height: 0;
 }
 
+/* Task 4.10's CREATE affordance (no design-brief markup exists for this --
+   see NewUlbModal.tsx's build note -- styled as a plain on-brand primary
+   button, echoing the design's own "+ New cost center" green-fill convention). */
+.controls__create-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.controls__create-btn {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #ffffff;
+  background: var(--green-dark);
+  border: 1px solid var(--green-dark);
+  border-radius: var(--radius-input);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.controls__create-btn:hover {
+  filter: brightness(1.1);
+}
+
 /* Success toast (~3.8s, design "Interactions & behavior"). Fixed so it
    stays visible regardless of scroll position; §6.8 wording comes from the
    caller. */

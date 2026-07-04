@@ -1,0 +1,157 @@
+/* Task 4.10's CREATE-flow modal. Modeled on CostCenters/DrillModal.css's
+   backdrop/dialog shell (no design-brief markup exists for this flow -- see
+   NewUlbModal.tsx's build-note comment). */
+
+.new-ulb-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.72);
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 60px 20px;
+  overflow-y: auto;
+}
+
+.new-ulb-modal {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.new-ulb-modal__header {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--surface-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.new-ulb-modal__title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.new-ulb-modal__close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.new-ulb-modal__close:hover {
+  color: var(--text-default);
+}
+
+.new-ulb-modal__body {
+  padding: 20px 22px 22px;
+  display: flex;
+  flex-direction: column;
+}
+
+.new-ulb-modal__label {
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-neutral);
+  margin: 14px 0 6px;
+}
+
+.new-ulb-modal__label:first-child {
+  margin-top: 0;
+}
+
+.new-ulb-modal__select,
+.new-ulb-modal__input {
+  width: 100%;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 9px 11px;
+  color: var(--text-default);
+  font-size: 13px;
+}
+
+.new-ulb-modal__select:focus,
+.new-ulb-modal__input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.new-ulb-modal__input {
+  font-variant-numeric: tabular-nums;
+}
+
+.new-ulb-modal__static-entity {
+  background: var(--canvas);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-input);
+  padding: 9px 11px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.new-ulb-modal__enforcement {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.new-ulb-modal__enforcement-note {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+  line-height: 1.4;
+}
+
+.new-ulb-modal__alerts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.new-ulb-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.new-ulb-modal__cancel {
+  font-size: 13px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.new-ulb-modal__cancel:hover {
+  color: var(--text-default);
+}
+
+.new-ulb-modal__create {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--canvas);
+  background: var(--green);
+  border: 1px solid var(--green);
+  border-radius: var(--radius-input);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.new-ulb-modal__create:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
