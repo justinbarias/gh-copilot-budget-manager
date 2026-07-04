@@ -38,7 +38,7 @@ async function bootstrap(): Promise<void> {
     server.listen({ onUnhandledRequest: 'bypass' });
   }
 
-  registerApiClientIpcHandlers();
+  registerApiClientIpcHandlers(mode === 'simulation' ? 'msw' : 'github');
   createWindow();
 }
 

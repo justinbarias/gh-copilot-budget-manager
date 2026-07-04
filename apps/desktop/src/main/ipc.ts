@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron';
 import { createGitHubApiClient } from '@copilot-budget/data/api-client';
 import type { ApiClient, UsageSummaryParams } from '@copilot-budget/data';
+import { getDb } from './db';
 
 // TODO: enterprise slug + baseUrl (the GHE.com host swap) should come from real
 // org configuration once CLAUDE.md §9's open questions are answered (Task 1.7
@@ -11,15 +12,15 @@ const ENTERPRISE_SLUG = 'acme-enterprise';
 
 let apiClient: ApiClient | undefined;
 
-function getApiClient(): ApiClient {
+function getApiClient(source: 'msw' | 'github'): ApiClient {
   if (!apiClient) {
-    apiClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG });
+    apiClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db: getDb(), source });
   }
   return apiClient;
 }
 
-export function registerApiClientIpcHandlers(): void {
-  const client = getApiClient();
+export function registerApiClientIpcHandlers(source: 'msw' | 'github'): void {
+  const client = getApiClient(source);
 
   ipcMain.handle('apiClient:getUsageSummary', (_event, params?: UsageSummaryParams) =>
     client.getUsageSummary(params),

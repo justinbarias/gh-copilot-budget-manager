@@ -1,7 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { server } from '../msw/server.js';
 import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG } from '../msw/fixtures/index.js';
-import { createGitHubApiClient } from './github-impl.js';
+import { createDb, runMigrations, type Db } from '../db/client.js';
+import { costCenter, costCenterMember, license } from '../db/schema.js';
+import { createGitHubApiClient, type GitHubApiClientConfig } from './github-impl.js';
 
 // One mock, three consumers (CLAUDE.md §7): this test drives the same MSW
 // server that simulation mode and Playwright e2e attach — never a fixture
@@ -11,7 +16,21 @@ afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
 describe('createGitHubApiClient', () => {
-  const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG });
+  let tmpDir: string;
+  let db: Db;
+  let client: ReturnType<typeof createGitHubApiClient>;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-github-impl-test-'));
+    db = createDb(path.join(tmpDir, 'test.sqlite'));
+    runMigrations(db);
+    const config: GitHubApiClientConfig = { enterprise: ENTERPRISE_SLUG, db, source: 'msw' };
+    client = createGitHubApiClient(config);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   it('aggregates usage across the whole fixture set', async () => {
     const summary = await client.getUsageSummary();
@@ -53,11 +72,24 @@ describe('createGitHubApiClient', () => {
     expect(alerts.some((a) => a.budgetId === BUDGET_IDS.zeroUlb)).toBe(true);
   });
 
-  it('tracks sync status across a syncNow call', async () => {
+  it('syncNow ingests real rows into SQLite and getSyncStatus is derived from them', async () => {
     expect((await client.getSyncStatus()).lastSyncedAt).toBeNull();
+
     const result = await client.syncNow();
     expect(result.inProgress).toBe(false);
     expect(result.lastSyncedAt).not.toBeNull();
     expect((await client.getSyncStatus()).lastSyncedAt).toBe(result.lastSyncedAt);
+
+    // Not just a status flag flipping -- confirm rows actually landed, matching
+    // the fixture set (35 seats, 3 cost centers, their resource memberships).
+    expect(db.select().from(costCenter).all()).toHaveLength(3);
+    expect(db.select().from(license).all()).toHaveLength(35);
+    expect(db.select().from(costCenterMember).all()).toHaveLength(15 + 10 + 10);
+
+    // A second sync must not duplicate dimension rows.
+    await client.syncNow();
+    expect(db.select().from(costCenter).all()).toHaveLength(3);
+    expect(db.select().from(license).all()).toHaveLength(35);
+    expect(db.select().from(costCenterMember).all()).toHaveLength(15 + 10 + 10);
   });
 });

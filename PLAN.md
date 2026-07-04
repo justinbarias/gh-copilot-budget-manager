@@ -18,14 +18,14 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 
 ### Phase 0: Foundation
 
-- [ ] **Task 0.1: pnpm workspace scaffold** — S/M
+- [x] **Task 0.1: pnpm workspace scaffold** — S/M
   - **Description:** Root `package.json` + `pnpm-workspace.yaml`; `packages/{core,data,ui}` and `apps/desktop` each with a minimal `package.json` + `tsconfig.json` extending a shared `tsconfig.base.json`.
   - **Acceptance:** `pnpm install` succeeds from repo root; workspace resolves internal package references (e.g. `@copilot-budget/core`).
   - **Verification:** `pnpm install && pnpm -r run build` (stub builds) exits 0.
   - **Dependencies:** None.
   - **Files:** `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, each package's `package.json`/`tsconfig.json`.
 
-- [ ] **Task 0.2: Electron shell + Vite/React renderer boots** — M
+- [x] **Task 0.2: Electron shell + Vite/React renderer boots** — M
   - **Description:** `apps/desktop` main process opens a `BrowserWindow` (`contextIsolation`+`sandbox` on, `nodeIntegration` off); preload stub exposes an empty bridge; `packages/ui` is a Vite+React app the renderer loads.
   - **Acceptance:** `pnpm dev` opens an Electron window rendering a placeholder page; zero Electron/Node imports exist in `packages/ui` source.
   - **Verification:** Chrome MCP confirms the window opens and renders; `pnpm build` produces a renderer bundle with no errors.
@@ -38,21 +38,21 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 
 ### Phase 1: Simulation harness (= CLAUDE.md Phase 1)
 
-- [ ] **Task 1.1: `packages/core` pure math — burndown, ranking, pool allowance, snapshot diff** — S/M
+- [x] **Task 1.1: `packages/core` pure math — burndown, ranking, pool allowance, snapshot diff** — S/M
   - **Description:** `poolConsumedPct`, `cycleBounds(asOfDate)`, `poolAllowanceCredits(licenseCount, asOfDate, allowanceBasis)` (promo→standard cliff at 1 Sep 2026), heavy-user ranking sort, and a snapshot-diff helper enforcing append-only. **Every function needing "now" takes `asOfDate` as an explicit parameter** — no internal `Date.now()`.
   - **Acceptance:** Vitest covers edge cases (poolSize=0, empty user list, ranking ties, dates on either side of the 1 Sep cliff); zero I/O imports anywhere in the package.
   - **Verification:** `pnpm --filter core test` green.
   - **Dependencies:** 0.1.
   - **Files:** `packages/core/src/burndown.ts`, `ranking.ts`, `poolAllowance.ts`, `snapshot.ts` + matching `*.test.ts`.
 
-- [ ] **Task 1.2: Drizzle schema + migrations for MVP entities** — M
+- [x] **Task 1.2: Drizzle schema + migrations for MVP entities** — M
   - **Description:** `snapshot`, `usage_fact`, `credits_used_fact`, `license`, `cost_center` (with `dewr_division`/`dewr_branch`/`dewr_project` columns folded in), `cost_center_member`, `budget` (read-only fields). DB path under `app.getPath('userData')` with a dev override.
   - **Acceptance:** `drizzle-kit generate` produces a migration creating all 7 tables; a smoke script inserts/reads a row per table.
   - **Verification:** `pnpm --filter data test` (schema test) + migration applies cleanly against a fresh sqlite file.
   - **Dependencies:** 0.1.
   - **Files:** `packages/data/db/schema.ts`, `packages/data/db/migrations/0000_init.sql`, `packages/data/db/client.ts`.
 
-- [ ] **Task 1.3: MSW handlers + fixtures — shared across 3 consumers, incl. edge fixtures** — M
+- [x] **Task 1.3: MSW handlers + fixtures — shared across 3 consumers, incl. edge fixtures** — M
   - **Description:** GET handlers for usage/cost reporting, cost centers + membership, licenses, budget list. Structure as **shared handler definitions** consumed by three bootstraps: (a) `msw/node` `setupServer` attached in the Electron **main process** for the simulation runtime, (b) the same `setupServer` for Vitest contract tests, (c) Playwright reuses (a) by launching the real app (see 1.5). Include the 4 edge fixtures required by `SPEC.md` Success Criterion #3: ULB display-bug entry, `$0`-ULB, cap-bound cost center, promo→standard cliff datapoints.
   - **Acceptance:** Handlers respond with realistic pagination; all 4 edge fixtures present even though nothing renders them yet.
   - **Verification:** `pnpm --filter data test` contract test hits each handler, asserts shape + pagination.
@@ -60,22 +60,23 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Files:** `packages/data/msw/handlers.ts`, `packages/data/msw/fixtures/*.ts`, `packages/data/msw/server.ts`.
 
 **Checkpoint 1a:** `pnpm test` green across core/data; schema migrates cleanly; MSW handlers verified in isolation. Quick review before wiring together.
+- [x] Reached — 1.1, 1.2, 1.3 all complete.
 
-- [ ] **Task 1.4: PAT capture + `safeStorage` wrapper + sim/live mode resolver** — M
+- [x] **Task 1.4: PAT capture + `safeStorage` wrapper + sim/live mode resolver** — M
   - **Description:** `packages/data/pat/storage.ts` behind a `get/set/clear` interface, backed by Electron `safeStorage` in `apps/desktop/main`. Main-process mode resolver: PAT present + simulation off → live-mode branch (wired, unused until a real PAT/tenant exists); otherwise simulation (msw/node attached).
   - **Acceptance:** Stored PAT is verified not present in plaintext anywhere on disk; clearing works; mode is queryable via IPC.
   - **Verification:** Vitest with mocked `safeStorage`; Chrome MCP confirms no plaintext PAT in any log output.
   - **Dependencies:** 0.2, 1.2.
   - **Files:** `packages/data/pat/storage.ts`, `apps/desktop/main/pat-bridge.ts`, `apps/desktop/main/mode.ts`, `apps/desktop/preload/index.ts`.
 
-- [ ] **Task 1.5: `ApiClient` interface + MSW-backed implementation + preload bridge** — M
+- [x] **Task 1.5: `ApiClient` interface + MSW-backed implementation + preload bridge** — M
   - **Description:** Define `ApiClient` (`getUsageSummary`, `listCostCenters`, `listHeavyUsers`, `listAlerts`, `getSyncStatus`, `syncNow`). Implement against the main-process `msw/node` listener from 1.3. Wire through the preload bridge so `packages/ui` calls it with zero Electron/Node imports.
   - **Acceptance:** A renderer call to any `ApiClient` method round-trips through preload → main → MSW → back with correct typing.
   - **Verification:** Playwright spec **launches the real Electron app via `_electron.launch()`** with simulation mode forced, calls one `ApiClient` method through the UI, asserts the MSW-shaped response arrives — not a standalone browser page.
   - **Dependencies:** 1.3, 1.4.
   - **Files:** `packages/data/api-client.ts`, `packages/data/api-client-msw-impl.ts`, `apps/desktop/preload/index.ts`, `apps/desktop/main/ipc.ts`.
 
-- [ ] **Task 1.6: "Sync now" ingests MSW data into SQLite snapshots** — M
+- [x] **Task 1.6: "Sync now" ingests MSW data into SQLite snapshots** — M
   - **Description:** `syncNow()` pulls usage/cost-center/license data via the `ApiClient` and inserts new append-only snapshot rows into the Task 1.2 schema (never overwrites existing rows). `getSyncStatus()` reports last-synced-at / in-progress.
   - **Acceptance:** Two `syncNow()` calls produce two distinct snapshot generations; a fresh DB + one call matches ingested fixture data exactly.
   - **Verification:** `pnpm --filter data test` integration test — this is the CLAUDE.md Phase-1 smoke test.

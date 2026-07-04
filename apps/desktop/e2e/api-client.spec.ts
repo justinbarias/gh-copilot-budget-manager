@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect, _electron as electron } from '@playwright/test';
 
@@ -8,7 +10,15 @@ import { test, expect, _electron as electron } from '@playwright/test';
 // not re-tested here.
 test('ApiClient round-trips through preload -> main -> MSW -> back', async () => {
   const appDir = path.join(__dirname, '..');
-  const app = await electron.launch({ args: [appDir], cwd: appDir });
+  const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-db-'));
+  const app = await electron.launch({
+    args: [appDir],
+    cwd: appDir,
+    // Isolated per-run DB path (CLAUDE.md §7: each launch boots from a known
+    // state) -- without this override, syncNow-touching specs would read/write
+    // the real per-OS userData dir and accumulate rows across e2e runs.
+    env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
+  });
 
   try {
     const window = await app.firstWindow();
@@ -24,5 +34,6 @@ test('ApiClient round-trips through preload -> main -> MSW -> back', async () =>
     expect(summary.totalQuantity).toBeGreaterThan(0);
   } finally {
     await app.close();
+    rmSync(dbDir, { recursive: true, force: true });
   }
 });
