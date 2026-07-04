@@ -108,7 +108,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 1.1, 1.6, 1.5, 1.7.
   - **Files:** `packages/ui/src/screens/Overview/Overview.tsx`, `components/BurndownChart.tsx`, `components/RunwayTile.tsx`.
 
-- [ ] **Task 2.2: Overview screen — alerts & anomalies list** — S
+- [x] **Task 2.2: Overview screen — alerts & anomalies list** — S
   - **Description:** Render the alerts list from **pre-baked MSW fixture data** via the new `ApiClient.listAlerts()` (see Architecture Decisions) — not derived from `syncNow`/ingested snapshots. No anomaly-detection logic in MVP.
   - **Acceptance:** List renders all fixture alert entries with correct severity styling; empty state handled.
   - **Verification:** Playwright spec checks item count/content against fixtures.

@@ -34,7 +34,10 @@ export interface HeavyUser {
 export interface Alert {
   id: string;
   severity: 'info' | 'warning' | 'critical';
-  message: string;
+  tag: string; // short mono category slug, e.g. "zero-ulb", "cap-bound" (design/README.md's "mono tag")
+  title: string;
+  meta: string;
+  timestamp: string; // ISO 8601, anchored to fixture time (SIM_CURRENT_DATE-era) -- never wall-clock
   budgetId?: string;
 }
 

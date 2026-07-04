@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { cycleBounds, poolAllowanceCredits, poolConsumedPct, type AllowanceBasis } from '@copilot-budget/core';
-import type { UsageSummary } from '@copilot-budget/data';
+import type { Alert, UsageSummary } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { BurndownChart, type BurndownPoint } from '../../components/BurndownChart';
 import { RunwayTile } from '../../components/RunwayTile';
+import { AlertsList } from './AlertsList';
 import './Overview.css';
 
 // SPEC.md Assumption 1 (superset case: GitHub Enterprise) + Open Questions
@@ -23,11 +24,26 @@ function formatPercent(fraction: number): string {
 export function Overview() {
   const api = useApiClient();
   const [summary, setSummary] = useState<UsageSummary | null>(null);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     api.getUsageSummary().then((result) => {
       if (!cancelled) setSummary(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  // Fetched independently of the chart/tiles' summary: alerts are pre-baked
+  // fixture data via ApiClient.listAlerts() (PLAN.md's Architecture
+  // Decisions), not derived from getUsageSummary(), so a slow/empty alerts
+  // load can never gate or regress the chart/tiles render (Task 2.1).
+  useEffect(() => {
+    let cancelled = false;
+    api.listAlerts().then((result) => {
+      if (!cancelled) setAlerts(result);
     });
     return () => {
       cancelled = true;
@@ -113,6 +129,8 @@ export function Overview() {
         <RunwayTile label="Credits consumed" value={formatNumber(consumed)} sub="cycle-to-date, pool phase" />
         <RunwayTile label="Allowance" value={formatNumber(allowance)} sub={`${summary.licenseCount} licenses`} />
       </div>
+
+      <AlertsList alerts={alerts} />
     </section>
   );
 }

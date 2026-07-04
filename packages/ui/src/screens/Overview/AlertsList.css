@@ -1,0 +1,119 @@
+.alerts-list {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.alerts-list__header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--surface-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.alerts-list__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0;
+}
+
+.alerts-list__audit-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: not-allowed;
+  /* Visibly non-interactive, not silently missing (design/README.md's "never
+     color alone" rule) -- paired with the lock icon + "View in audit" text. */
+  opacity: 0.6;
+}
+
+.alerts-list__empty {
+  padding: 20px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.alerts-list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.alerts-list__item {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-row);
+}
+
+.alerts-list__item:last-child {
+  border-bottom: none;
+}
+
+.alerts-list__severity {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.alerts-list__severity--critical {
+  color: var(--red);
+}
+
+.alerts-list__severity--warning {
+  color: var(--amber);
+}
+
+.alerts-list__severity--info {
+  color: var(--blue);
+}
+
+.alerts-list__tag {
+  font-size: 10.5px;
+  color: var(--text-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.alerts-list__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.alerts-list__item-title {
+  font-size: 13.5px;
+  color: var(--text-default);
+  line-height: 1.35;
+}
+
+.alerts-list__item-meta {
+  font-size: 12px;
+  color: var(--text-neutral);
+  margin-top: 2px;
+}
+
+.alerts-list__timestamp {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+  white-space: nowrap;
+  flex: none;
+}

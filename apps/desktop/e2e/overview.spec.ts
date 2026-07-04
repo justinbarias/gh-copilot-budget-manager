@@ -76,3 +76,66 @@ test('Overview renders the actual-only burn-down chart, runway tiles, and a disa
     rmSync(dbDir, { recursive: true, force: true });
   }
 });
+
+// Task 2.2: Overview alerts & anomalies list, rendered verbatim from
+// ApiClient.listAlerts() -- pre-baked MSW fixture data
+// (packages/data/src/msw/fixtures/alerts.ts's ALERTS array), not derived from
+// syncNow/ingested snapshots. Expected values below are that fixture's exact
+// field values, in fixture order (no client-side sorting/derivation).
+test('Overview renders the alerts & anomalies list from fixture data with correct severity styling', async () => {
+  const appDir = path.join(__dirname, '..');
+  const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-overview-alerts-'));
+  const app = await electron.launch({
+    args: [appDir],
+    cwd: appDir,
+    env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
+  });
+
+  try {
+    const window = await app.firstWindow();
+
+    await expect(window.getByText('Alerts & anomalies')).toBeVisible();
+
+    // Item count matches the ALERTS fixture length exactly (3 entries).
+    const items = window.locator('.alerts-list__item');
+    await expect(items).toHaveCount(3);
+
+    // First item: alert-zero-ulb-user-20 (critical).
+    const first = items.nth(0);
+    await expect(first.locator('.alerts-list__severity')).toHaveAttribute('title', 'Critical');
+    await expect(first.locator('.alerts-list__severity-label')).toHaveText('Critical');
+    await expect(first.locator('.alerts-list__tag')).toHaveText('zero-ulb');
+    await expect(first.locator('.alerts-list__item-title')).toHaveText(
+      'user-20 is fully blocked by a $0 individual budget',
+    );
+    await expect(first.locator('.alerts-list__item-meta')).toHaveText(
+      'Individual ULB overrides CCULB and universal -- always hard-stops both phases',
+    );
+    // Rendered absolute (UTC, locale-fixed) -- never a wall-clock-relative
+    // "Xm ago" string, so this assertion is deterministic across CI/local runs.
+    await expect(first.locator('.alerts-list__timestamp')).toHaveText('Jun 14, 2026, 09:12 UTC');
+
+    // Second item: cap-bound cost center (warning).
+    const second = items.nth(1);
+    await expect(second.locator('.alerts-list__severity')).toHaveAttribute('title', 'Warning');
+    await expect(second.locator('.alerts-list__tag')).toHaveText('cap-bound');
+    await expect(second.locator('.alerts-list__item-title')).toHaveText(
+      'Cost center cc-marketing-cap-bound has exhausted its included-usage cap',
+    );
+
+    // Third item: allowance cliff (info).
+    const third = items.nth(2);
+    await expect(third.locator('.alerts-list__severity')).toHaveAttribute('title', 'Info');
+    await expect(third.locator('.alerts-list__tag')).toHaveText('cliff');
+
+    // "View in audit" is present but visibly inert (Audit screen is a Task 2.5
+    // stub) -- disabled, not silently missing, paired with an icon+text cue
+    // (never color-only per design/README.md's accessibility intent).
+    const auditLink = window.getByRole('button', { name: /View in audit/ });
+    await expect(auditLink).toBeVisible();
+    await expect(auditLink).toBeDisabled();
+  } finally {
+    await app.close();
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+});
