@@ -1,0 +1,59 @@
+/* Design tokens from design/README.md -- reproduced exactly, do not invent values. */
+:root {
+  /* Surfaces & lines */
+  --canvas: #0d1117;
+  --pure: #000000;
+  --surface: #151a22;
+  --surface-2: #24292f;
+  --surface-3: #2e374a;
+  --border: #30363d;
+  --border-subtle: #21262d;
+  --border-row: #1c222b;
+  --hairline: #484f58;
+
+  /* Text */
+  --ink: #ffffff;
+  --text-default: #f0f6fc;
+  --text-muted: #9198a1;
+  --text-subtle: #a4aea6;
+  --text-neutral: #7c8980;
+
+  /* Semantic accents -- never color-only, always paired with icon + label */
+  --blue: #8dd6ff;
+  --blue-link: #4493f8;
+  --green: #5fed83;
+  --green-dark: #08872b;
+  --green-toggle-on: #238636;
+  --green-toggle-on-hover: #2ea043;
+  --amber: #e3b341;
+  --amber-toggle-on: #9e6a03;
+  --amber-toggle-on-hover: #bb8009;
+  --red: #ff7b72;
+  --violet: #9350ff;
+  --violet-light: #c9a3ff;
+  --indigo: #5049c2;
+
+  /* Radius */
+  --radius-card: 16px;
+  --radius-panel: 10px;
+  --radius-input: 8px;
+  --radius-pill: 6px;
+
+  /* Spacing */
+  --space-section-y: 24px;
+  --space-section-x: 28px;
+  --space-card: 20px;
+  --space-gap: 14px;
+
+  font-family:
+    'Mona Sans',
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

@@ -1,0 +1,26 @@
+/* Mona Sans via jsDelivr CDN per design/README.md. Falls back to the system
+   stack in tokens.css when offline -- simulation mode must still work with
+   no network. */
+@import url('https://cdn.jsdelivr.net/npm/@fontsource-variable/mona-sans/index.css');
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text-default);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+::selection {
+  background: rgba(141, 214, 255, 0.25);
+}

@@ -1,8 +1,12 @@
+import { ApiClientProvider } from './lib/api-client-context';
+import { SimBanner } from './components/SimBanner';
+import { TokenHealth } from './screens/Settings/TokenHealth';
+
 export function App() {
   return (
-    <main>
-      <h1>Copilot Budget Manager</h1>
-      <p>Placeholder screen — scaffold in progress.</p>
-    </main>
+    <ApiClientProvider>
+      <SimBanner />
+      <TokenHealth />
+    </ApiClientProvider>
   );
 }

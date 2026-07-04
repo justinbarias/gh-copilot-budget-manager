@@ -1,0 +1,89 @@
+.token-health {
+  display: grid;
+  gap: var(--space-gap);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  padding: var(--space-section-y) var(--space-section-x);
+  max-width: 1080px;
+}
+
+.token-health__card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.token-health__title {
+  font-size: 15px;
+  font-weight: 500;
+  margin: 0;
+  color: var(--ink);
+}
+
+.token-health__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-row);
+  padding-bottom: 8px;
+}
+
+.token-health__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+
+.token-health__pat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-health__pat-label {
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
+.token-health input[type='password'] {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  color: var(--text-default);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.token-health input[type='password']:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.token-health__pat-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.token-health button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-default);
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.token-health button:hover:not(:disabled) {
+  border-color: var(--blue);
+}
+
+.token-health button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

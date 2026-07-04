@@ -83,7 +83,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Dependencies:** 1.2, 1.5.
   - **Files:** `packages/data/sync/sync-now.ts` + test.
 
-- [ ] **Task 1.7: Sim-mode banner + Settings screen (token health, Sync Now button, PAT entry)** — S
+- [x] **Task 1.7: Sim-mode banner + Settings screen (token health, Sync Now button, PAT entry)** — S
   - **Description:** Persistent, unmistakable simulation banner (visible whenever not in a verified live+PAT state — i.e., always, for MVP). Settings screen: PAT entry wired to 1.4's bridge, and a real **Sync Now button** wired to 1.6 (not a dev-only hook — this is the human-operable trigger).
   - **Acceptance:** Banner visible on every screen; PAT entry reflects stored/cleared state; Sync Now button triggers ingestion and updates sync status; styling matches `design/README.md` tokens.
   - **Verification:** Playwright spec drives PAT entry + Sync Now, asserts banner text/visibility and updated status. Chrome MCP confirms the banner reads as genuinely unmistakable.
@@ -91,11 +91,11 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
   - **Files:** `packages/ui/src/components/SimBanner.tsx`, `packages/ui/src/screens/Settings/TokenHealth.tsx`, `packages/ui/src/lib/api-client-context.tsx`.
 
 **Checkpoint 1 (= CLAUDE.md Phase 1 done):**
-- [ ] `pnpm dev` boots to a screen with the sim banner and a working PAT + Sync Now flow.
-- [ ] Clicking Sync Now populates SQLite with snapshot rows from MSW.
-- [ ] `pnpm test` and `pnpm e2e` both green.
-- [ ] Chrome MCP confirms the above interactively.
-- Review with human before Phase 2.
+- [x] `pnpm dev` boots to a screen with the sim banner and a working PAT + Sync Now flow.
+- [x] Clicking Sync Now populates SQLite with snapshot rows from MSW.
+- [x] `pnpm test` and `pnpm e2e` both green.
+- [x] Chrome MCP confirms the above interactively. (Per CLAUDE.md §7, driven via raw CDP against the real Electron process, not the `mcp__chrome-devtools__*` browser-tab tool suite — see the live-CDP verification for Tasks 1.6/1.7.)
+- Reached — Phase 1 complete. Proceeding to Phase 2 per maintainer instruction.
 
 ---
 
