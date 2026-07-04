@@ -1,0 +1,160 @@
+.nav {
+  width: 236px;
+  flex: none;
+  min-height: 0;
+  background: var(--pure);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+.nav__brand {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav__brand-ring {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 9999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav__brand-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 9999px;
+  background: var(--green);
+}
+
+/* Reduced-motion-safe: the pulse only exists when the OS hasn't asked for
+   reduced motion (design/README.md's accessibility intent). */
+@media (prefers-reduced-motion: no-preference) {
+  .nav__brand-dot {
+    animation: nav-brand-pulse 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes nav-brand-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.nav__brand-name {
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.nav__brand-sub {
+  font-size: 11px;
+  color: var(--text-neutral);
+  letter-spacing: 0.3px;
+}
+
+.nav__items {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px 9px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 400;
+  transition: background 0.12s;
+}
+
+.nav__item:hover {
+  background: var(--surface);
+}
+
+.nav__item--active {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.nav__item-bar {
+  width: 3px;
+  height: 16px;
+  border-radius: 4px;
+  flex: none;
+  background: transparent;
+}
+
+.nav__item--active .nav__item-bar {
+  background: var(--green);
+}
+
+.nav__item-label {
+  flex: 1;
+}
+
+.nav__footer {
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.nav__footer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.nav__footer-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 9999px;
+}
+
+.nav__footer-dot--on {
+  background: var(--green);
+}
+
+.nav__footer-dot--off {
+  background: var(--text-neutral);
+}
+
+.nav__footer-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.nav__footer-detail {
+  font-size: 11px;
+  color: var(--text-neutral);
+  line-height: 1.5;
+}

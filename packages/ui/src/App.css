@@ -1,0 +1,59 @@
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  /* Must be a *bound* height, not min-height: with min-height the shell
+     grows past the viewport on tall screens, the page itself becomes the
+     scroller, and the sim banner scrolls out of view -- violating CLAUDE.md
+     §6.8's "unmistakable on every screen". Bounding it here makes
+     .app-shell__content the only scroll container, so the banner (and the
+     sidebar footer) can never leave the viewport. */
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.app-shell__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__topbar {
+  height: 60px;
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 0 28px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.app-shell__title {
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+  color: var(--ink);
+  margin: 0;
+}
+
+.app-shell__cycle {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  letter-spacing: 0.2px;
+}
+
+.app-shell__content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

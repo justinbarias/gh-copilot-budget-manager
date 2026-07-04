@@ -32,7 +32,8 @@ test('Users table renders the ranked fixture roster with working search, filters
   try {
     const window = await app.firstWindow();
 
-    // Screen is reachable (stacked below Cost Centers -- no nav shell until Task 2.5).
+    // Navigate to the Users screen via the Task 2.5 nav shell.
+    await window.locator('.nav').getByRole('button', { name: 'Users' }).click();
     const screen = window.locator('.users');
     await expect(screen).toBeVisible();
 

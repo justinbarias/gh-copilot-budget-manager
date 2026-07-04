@@ -21,6 +21,9 @@ test('Sim banner is always visible and Settings drives PAT + Sync Now', async ()
     // CLAUDE.md §6.8: unmistakable, persistent -- always on for MVP.
     await expect(window.getByText(/simulation mode/i)).toBeVisible();
 
+    // Navigate to the Settings screen via the Task 2.5 nav shell.
+    await window.locator('.nav').getByRole('button', { name: 'Settings' }).click();
+
     // No PAT stored yet.
     await expect(window.getByText(/no pat stored/i)).toBeVisible();
 

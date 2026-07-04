@@ -28,7 +28,9 @@ test('Overview renders the actual-only burn-down chart, runway tiles, and a disa
   try {
     const window = await app.firstWindow();
 
-    // Overview is reachable (no nav shell yet -- Task 2.5 -- so it renders on load).
+    // Overview is the shell's default screen, but navigate explicitly (Task
+    // 2.5's nav shell) rather than relying on that default.
+    await window.locator('.nav').getByRole('button', { name: 'Overview' }).click();
     await expect(window.getByText('Enterprise pool burn-down')).toBeVisible();
 
     // Hero headline encodes the actual chart's final point: 70,730 of 245,000 burned.
@@ -95,6 +97,7 @@ test('Overview renders the alerts & anomalies list from fixture data with correc
   try {
     const window = await app.firstWindow();
 
+    await window.locator('.nav').getByRole('button', { name: 'Overview' }).click();
     await expect(window.getByText('Alerts & anomalies')).toBeVisible();
 
     // Item count matches the ALERTS fixture length exactly (3 entries).

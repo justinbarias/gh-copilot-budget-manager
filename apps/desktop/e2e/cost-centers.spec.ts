@@ -31,7 +31,8 @@ test('Cost Centers table renders fixture rows with fixture-derived headroom and 
   try {
     const window = await app.firstWindow();
 
-    // Screen is reachable (stacked below Overview -- no nav shell until Task 2.5).
+    // Navigate to the Cost centers screen via the Task 2.5 nav shell.
+    await window.locator('.nav').getByRole('button', { name: 'Cost centers' }).click();
     const screen = window.locator('.cost-centers');
     await expect(screen).toBeVisible();
     await expect(screen.getByText('3 cost centers · mapped to the DEWR financial structure')).toBeVisible();
@@ -99,6 +100,7 @@ test('clicking the cap-bound row opens the drill modal with membership; Esc, ✕
   try {
     const window = await app.firstWindow();
 
+    await window.locator('.nav').getByRole('button', { name: 'Cost centers' }).click();
     const rows = window.locator('.cc-table__row');
     await expect(rows).toHaveCount(3);
     await rows.nth(2).click();
