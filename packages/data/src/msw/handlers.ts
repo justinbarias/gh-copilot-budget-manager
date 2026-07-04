@@ -350,11 +350,15 @@ interface EditCostCenterPayload {
   included_usage_cap?: { enabled?: boolean; overflow?: 'block' | 'metered' };
 }
 
-// No PATCH route for cost centers is listed in the PRD §2.2 API inventory
-// (only GET list/POST create/GET+DELETE by id/POST+DELETE resource) -- this
-// route is this handler's own inference of the "cost-center create/edit API"
-// the plan calls for (needed so the cap toggle has a post-creation edit
-// path). §6.9-pending: validate this route/shape against real docs.
+// §6.9-validated (Task 4.3 -- docs/api-surface-validation.md): PATCH
+// /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}
+// is a real, documented 2026-03-10 endpoint, so the earlier "own inference"
+// caveat is resolved. The wire *shape* still diverges from GitHub, though:
+// the real cap toggle is a flat `ai_credit_pool_enabled` (+ read-only
+// `ai_credit_pool_state`), not this nested `included_usage_cap.{enabled,
+// overflow}` internal model, and the block-vs-overflow wire field is
+// undocumented. That wire<->model mapping is reconciled in github-impl at
+// Task 9.2 (see the validation note); MSW keeps the plan-mandated model.
 function validateEditCostCenterPayload(
   body: unknown,
 ): { ok: true; value: EditCostCenterPayload } | { ok: false; errors: FieldError[] } {
@@ -465,10 +469,9 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 });
   }),
 
-  // "Create/edit" cost-center API (PLAN.md Task 4.2) -- see the §6.9-pending
-  // note above validateEditCostCenterPayload: no PATCH route for cost centers
-  // appears in PRD §2.2's inventory, so this route/shape is this handler's
-  // own inference, flagged for Task 4.3.
+  // Cost-center edit endpoint -- §6.9-confirmed real in Task 4.3
+  // (docs/api-surface-validation.md): PATCH .../cost-centers/{id} exists at
+  // API version 2026-03-10. Body/response wire shape pinned against live at 9.2.
   http.patch(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId`, async ({ request, params }) => {
     const canonical = COST_CENTERS.find((c) => c.id === params.costCenterId);
     if (!canonical) return githubError(404, 'Not Found');
@@ -502,11 +505,14 @@ export const handlers = [
   // Membership mutations: the recomputed included_usage_cap.computed_limit_credits
   // in the immediate response is derived purely from canonical fixture
   // membership + this request's resources (never persisted -- Architecture
-  // Decisions: "MSW stays stateless"). Real GitHub's add/remove-resource
-  // endpoints may well return 204 No Content; this task explicitly requires
-  // the recomputed limit in the response body, so 200/201 + body is a
-  // deliberate, task-driven shape -- not an accidental divergence for 4.3 to
-  // "correct" back to 204.
+  // Decisions: "MSW stays stateless"). §6.9 (Task 4.3 -- docs/api-surface-
+  // validation.md): real GitHub takes a four-array body ({users, organizations,
+  // repositories, enterprise_teams}) and returns 200 {message,
+  // reassigned_resources} -- NOT this {resources:[{type,name}]} request or the
+  // recomputed-limit response. That is a DELIBERATE simulation enrichment: 4.2
+  // requires the recomputed limit to be observable in the immediate response,
+  // and a stateless mock can't surface it on a re-GET. Kept as an enrichment
+  // and flagged for github-impl reconciliation at Task 9.2 -- not "corrected".
   http.post(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, async ({ request, params }) => {
     const ccId = params.costCenterId as string;
     const canonical = COST_CENTERS.find((c) => c.id === ccId);

@@ -7,7 +7,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ### Write foundation
 - [x] 4.1 MSW mutation handlers — budgets, all scopes incl. `multi_user_cost_center` [M]
 - [x] 4.2 MSW mutation handlers — cost centers + included-usage cap (`enabled`/`overflow` only, `computed_limit` re-derived) [M]
-- [ ] 4.3 §6.9 API-surface validation note (`docs/api-surface-validation.md`) covering every mutation endpoint [S]
+- [x] 4.3 §6.9 API-surface validation note (`docs/api-surface-validation.md`) covering every mutation endpoint [S]
 - [ ] 4.4 `core`: control domain model + desired-vs-live Terraform-style diff [M]
 - [ ] 4.5 `core`: write validations — enterprise-cap-below-sum blocker, `$0` ULB, multi-org user, hard-stop override (FR4/§6.3) [S/M]
 - [ ] 4.6 `core`: simulate-before-apply v1 — blocks/unblocks, precedence, lowest-headroom-wins (§6.1) [M]
