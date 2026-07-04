@@ -2,10 +2,18 @@
   "name": "@copilot-budget/desktop",
   "version": "0.0.0",
   "private": true,
+  "main": "dist-electron/main/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "postinstall": "node node_modules/electron/install.js",
+    "build": "tsc -p tsconfig.json",
+    "dev": "concurrently -k -n UI,ELECTRON -c blue,green \"pnpm --filter @copilot-budget/ui dev\" \"pnpm run build && wait-on tcp:5173 && electron .\"",
+    "e2e": "echo 'e2e not yet configured (Phase 1)' && exit 0"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@types/node": "^22.20.0",
+    "concurrently": "^10.0.3",
+    "electron": "^43.0.0",
+    "typescript": "^6.0.3",
+    "wait-on": "^9.0.10"
   }
 }

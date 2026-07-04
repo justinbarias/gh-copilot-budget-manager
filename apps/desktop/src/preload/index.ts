@@ -1,1 +1,3 @@
-export const DESKTOP_PRELOAD_PLACEHOLDER = true;
+import { contextBridge } from 'electron';
+
+contextBridge.exposeInMainWorld('api', {});
