@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { buildLinkHeader, paginate } from './pagination';
+import { buildLinkHeader, paginate } from './pagination.js';
 import {
   BUDGETS,
   COST_CENTER_RESOURCES,
@@ -8,7 +8,7 @@ import {
   GITHUB_API_BASE,
   SEATS,
   USAGE_ITEMS,
-} from './fixtures';
+} from './fixtures/index.js';
 
 const ENTERPRISE_BASE = `${GITHUB_API_BASE}/enterprises/:enterprise`;
 

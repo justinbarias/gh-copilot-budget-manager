@@ -1,4 +1,4 @@
-import { BUDGET_IDS, ENTERPRISE_SLUG } from './constants';
+import { BUDGET_IDS, ENTERPRISE_SLUG } from './constants.js';
 
 export type BudgetType = 'ProductPricing' | 'SkuPricing' | 'BundlePricing';
 export type BudgetScope =

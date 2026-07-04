@@ -1,5 +1,5 @@
 import { setupServer } from 'msw/node';
-import { handlers } from './handlers';
+import { handlers } from './handlers.js';
 
 // Shared across three consumers: the Electron main-process simulation runtime,
 // Vitest contract tests (this package), and Playwright e2e (launches the real

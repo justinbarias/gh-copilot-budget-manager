@@ -1,4 +1,4 @@
-import { COST_CENTER_IDS, ENTERPRISE_SLUG } from './constants';
+import { COST_CENTER_IDS, ENTERPRISE_SLUG } from './constants.js';
 
 // Mirrors GitHub's enterprise billing usage/summary item shape (PRD §2.3):
 // one row per date/product/SKU/entity, filterable by cost_center_id.

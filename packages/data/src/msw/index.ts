@@ -1,3 +1,3 @@
-export * from './handlers';
-export * from './server';
-export * from './fixtures';
+export * from './handlers.js';
+export * from './server.js';
+export * from './fixtures/index.js';

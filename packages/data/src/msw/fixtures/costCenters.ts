@@ -1,4 +1,4 @@
-import { COST_CENTER_IDS } from './constants';
+import { COST_CENTER_IDS } from './constants.js';
 
 export interface CostCenter {
   id: string;

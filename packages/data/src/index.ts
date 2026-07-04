@@ -8,4 +8,4 @@ export const DATA_DEPENDS_ON = CORE_PACKAGE_NAME;
 // the './db' and './msw' subpath exports below, so importing '@copilot-budget/data'
 // itself never pulls better-sqlite3 or msw/node into a non-Node consumer (e.g.
 // packages/ui via Vite) — see CLAUDE.md's portability rule.
-export * from './db/schema';
+export * from './db/schema.js';
