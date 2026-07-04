@@ -17,6 +17,10 @@
     "./msw": {
       "types": "./dist/msw/index.d.ts",
       "default": "./dist/msw/index.js"
+    },
+    "./pat": {
+      "types": "./dist/pat/index.d.ts",
+      "default": "./dist/pat/index.js"
     }
   },
   "scripts": {

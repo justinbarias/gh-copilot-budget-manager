@@ -9,6 +9,9 @@
     "dev": "concurrently -k -n UI,ELECTRON -c blue,green \"pnpm --filter @copilot-budget/ui dev\" \"pnpm run build && wait-on tcp:5173 && electron .\"",
     "e2e": "echo 'e2e not yet configured (Phase 1)' && exit 0"
   },
+  "dependencies": {
+    "@copilot-budget/data": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.20.0",
     "concurrently": "^10.0.3",

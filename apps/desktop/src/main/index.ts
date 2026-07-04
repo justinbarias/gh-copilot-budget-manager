@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
+import { registerPatIpcHandlers } from './pat-bridge';
+import { getMode, registerModeIpcHandler } from './mode';
 
 const RENDERER_DEV_SERVER_URL = 'http://localhost:5173';
 
@@ -22,7 +24,23 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(createWindow);
+async function bootstrap(): Promise<void> {
+  registerPatIpcHandlers();
+  registerModeIpcHandler();
+
+  const mode = await getMode();
+  if (mode === 'simulation') {
+    // One mock, three consumers (CLAUDE.md §7): this is the runtime
+    // simulation consumer. Attaching here, in main, is where Octokit-issued
+    // requests will actually run once 1.5 adds the ApiClient.
+    const { server } = await import('@copilot-budget/data/msw');
+    server.listen({ onUnhandledRequest: 'bypass' });
+  }
+
+  createWindow();
+}
+
+app.whenReady().then(bootstrap);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
