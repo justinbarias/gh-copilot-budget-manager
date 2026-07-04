@@ -131,6 +131,10 @@ Verify against the spec; these are the ones that are easy to get subtly wrong.
 3. **If this change adds or modifies a hand-wrapped GitHub API call** (anything not going through Octokit's typed methods): validate its request/response shape against GitHub's OpenAPI/Swagger description or official REST/GraphQL docs (§6.9). Official/community SDK usage (Octokit) is exempt from this step.
 4. All applicable steps green → done. None of the applicable steps are skippable (§6.7, §6.9).
 
+**"Chrome MCP" against the Electron app, specifically:** the `mcp__chrome-devtools__*` tool suite drives its *own* Chromium instance — pointing it at `http://localhost:5173` opens a bare browser tab, not the actual Electron window. That tab has no main process behind it, so `contextBridge`-exposed APIs (`window.api`) are absent and any IPC-backed data never arrives. This is invisible for a static placeholder (Task 0.2) but wrong from Phase 1 onward, once screens depend on preload-delivered data.
+
+The verified-working method for anything that must reflect the *real* Electron process (main + preload + contextBridge, not just the renderer's HTML/CSS): launch the packaged/dev Electron binary with `--remote-debugging-port=<port>`, then drive it via a direct CDP WebSocket connection (`Runtime.evaluate`, `Page.captureScreenshot`, `Log.enable`, etc.) rather than the `mcp__chrome-devtools__*` tools. This is strictly stronger than the MCP tool for this purpose — it's the only method that has actually confirmed `contextIsolation`/`sandbox` enforcement (`process === undefined` in the renderer) and bridge exposure (`window.api`) against the real app. Reserve the `mcp__chrome-devtools__*` tools for contexts with no Electron main process in the loop (e.g. the future standalone `apps/web`).
+
 ---
 
 ## 8. Build order
