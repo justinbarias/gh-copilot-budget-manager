@@ -80,4 +80,28 @@ export const BUDGETS: Budget[] = [
     prevent_further_usage: false,
     budget_alerting: { will_alert: true, alert_recipients: ['finops@acme.example'] },
   },
+  // Task 4.1: Family-B spending-limit fixtures (organization/cost_center scope --
+  // metered charges only, hard-stop off by default per spec §1.3) so the budget
+  // mutation handlers' GET/PATCH/DELETE-by-id contract tests have a canonical id
+  // to exercise for every budget_scope this tool writes, not just enterprise/ULB.
+  {
+    id: BUDGET_IDS.organizationMetered,
+    budget_type: 'ProductPricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'organization',
+    budget_entity_name: 'acme-eng-org',
+    budget_amount: 3200,
+    prevent_further_usage: false,
+    budget_alerting: { will_alert: true, alert_recipients: ['org-admins@acme.example'] },
+  },
+  {
+    id: BUDGET_IDS.costCenterMetered,
+    budget_type: 'ProductPricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'cost_center',
+    budget_entity_name: platformCostCenterName,
+    budget_amount: 600,
+    prevent_further_usage: false,
+    budget_alerting: { will_alert: true, alert_recipients: ['platform-leads@acme.example'] },
+  },
 ];

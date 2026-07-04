@@ -38,7 +38,12 @@ export interface CostCenter {
 }
 
 export interface CostCenterResource {
-  type: 'User' | 'Org' | 'Repo';
+  // 'EnterpriseTeam' (Task 4.2): the resource-mutation endpoint additionally
+  // accepts assigning a whole enterprise team as a resource (PRD §2.2 --
+  // "enterprise teams keep membership in sync via IdP/SCIM"). Existing read
+  // fixtures below only ever use 'User'/'Org'/'Repo'; this is a superset
+  // widening for the new mutation handlers, not a change to committed data.
+  type: 'User' | 'Org' | 'Repo' | 'EnterpriseTeam';
   name: string;
   // Simulation-model enrichment (not a documented GitHub field): membership
   // provenance when the user was attributed via an enterprise-team resource
@@ -46,6 +51,20 @@ export interface CostCenterResource {
   // "ent-team: ..." badges in the Cost Centers drill modal.
   via_ent_team?: string;
 }
+
+// Task 4.2: a stateless mock can't call out to an IdP/SCIM to expand an
+// EnterpriseTeam resource into its real member roster, so membership-mutation
+// responses that add/remove an EnterpriseTeam resource approximate its seat
+// count from this static lookup (falling back to DEFAULT_ENTERPRISE_TEAM_SEATS
+// for any team not listed). This is a pure simulation convenience -- flagged
+// in the §6.9-pending list for Task 4.3 since the real API's expansion
+// mechanics aren't something MSW can faithfully reproduce.
+export const ENTERPRISE_TEAM_SEAT_COUNTS: Record<string, number> = {
+  payments: 2,
+  'ai-eval': 1,
+  'mkt-growth': 2,
+};
+export const DEFAULT_ENTERPRISE_TEAM_SEATS = 1;
 
 export const COST_CENTERS: CostCenter[] = [
   {

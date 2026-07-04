@@ -23,4 +23,9 @@ export const BUDGET_IDS = {
   zeroUlb: 'budget-ulb-zero-1',
   cculbPlatform: 'budget-cculb-platform-1',
   enterpriseMetered: 'budget-enterprise-metered-1',
+  // Task 4.1: Family-B spending-limit fixtures added so PATCH/DELETE-by-id
+  // mutation contract tests have a canonical id to exercise for these two
+  // budget_scope values too (organization, cost_center), matching PRD §2.1.
+  organizationMetered: 'budget-organization-metered-1',
+  costCenterMetered: 'budget-cost-center-platform-metered-1',
 } as const;
