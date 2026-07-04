@@ -1,0 +1,255 @@
+.controls-table {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.controls-table__head,
+.controls-table__grid {
+  display: grid;
+  grid-template-columns: 1.9fr 0.8fr 0.95fr 1.1fr 1.2fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.controls-table__head {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--surface-2);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-neutral);
+}
+
+.controls-table__row {
+  border-bottom: 1px solid var(--border-row);
+}
+
+.controls-table__row:last-child {
+  border-bottom: none;
+}
+
+/* Staged rows carry the amber tint from the design prototype. */
+.controls-table__row--staged {
+  background: rgba(227, 179, 65, 0.04);
+}
+
+.controls-table__grid {
+  padding: 14px 18px;
+}
+
+.controls-table__title {
+  font-size: 13.5px;
+  color: var(--text-default);
+  font-weight: 500;
+}
+
+.controls-table__caps {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+.controls-table__phase-badge {
+  font-size: 10px;
+  color: var(--amber);
+  background: rgba(227, 179, 65, 0.12);
+  border: 1px solid rgba(227, 179, 65, 0.35);
+  border-radius: 5px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.controls-table__cap-input {
+  width: 104px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text-default);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls-table__cap-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.controls-table__enforcement {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* 34x20 pill track, 14px knob (design "Toggles"): green = hard stop on,
+   amber = alert-only -- state also carried by the text label next to it. */
+.controls-toggle {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 9999px;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.controls-toggle--on {
+  background: var(--green-toggle-on);
+  border: 1px solid var(--green-toggle-on-hover);
+}
+
+.controls-toggle--alert {
+  background: var(--amber-toggle-on);
+  border: 1px solid var(--amber-toggle-on-hover);
+}
+
+.controls-toggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #ffffff;
+  transition: transform 0.15s;
+}
+
+.controls-toggle--on .controls-toggle__knob {
+  transform: translateX(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .controls-toggle,
+  .controls-toggle__knob {
+    transition: none;
+  }
+}
+
+.controls-table__enforcement-label {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.controls-table__enforcement-label--hard {
+  color: var(--green);
+}
+
+.controls-table__enforcement-label--alert {
+  color: var(--amber);
+}
+
+.controls-table__util {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.controls-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 160px;
+}
+
+.controls-meter__track {
+  position: relative;
+  height: 8px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.controls-meter__track--empty {
+  border-style: dashed;
+}
+
+.controls-meter__fill {
+  height: 100%;
+  border-radius: 9999px;
+}
+
+.controls-meter__fill--green {
+  background: var(--green);
+}
+
+.controls-meter__fill--amber {
+  background: var(--amber);
+}
+
+.controls-meter__fill--red {
+  background: var(--red);
+}
+
+.controls-meter__label {
+  font-size: 10.5px;
+  color: var(--text-neutral);
+  white-space: nowrap;
+}
+
+.controls-meter__label--over {
+  color: var(--red);
+}
+
+.controls-table__alerts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.controls-table__alerts-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-neutral);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.controls-table__alerts-toggle input {
+  accent-color: var(--green-toggle-on);
+}
+
+.controls-table__alerts-input {
+  width: 150px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: var(--text-default);
+  font-size: 11px;
+}
+
+.controls-table__alerts-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.controls-table__staged {
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 500;
+}
+
+.controls-table__alert-only-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 18px 14px;
+  background: rgba(227, 179, 65, 0.12);
+  border: 1px solid rgba(227, 179, 65, 0.45);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 600;
+  line-height: 1.4;
+}

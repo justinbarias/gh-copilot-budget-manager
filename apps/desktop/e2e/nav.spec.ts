@@ -13,7 +13,7 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 const NAV_ITEMS: Array<{ label: string; kind: 'functional' | 'stub' }> = [
   { label: 'Overview', kind: 'functional' },
   { label: 'Forecast', kind: 'stub' },
-  { label: 'Controls', kind: 'stub' },
+  { label: 'Controls', kind: 'functional' }, // real since Task 4.9 (Spending-limits family + plan/simulate/apply rail)
   { label: 'Auto-balance', kind: 'stub' },
   { label: 'Cost centers', kind: 'functional' },
   { label: 'Users', kind: 'functional' },
@@ -31,6 +31,10 @@ async function assertFunctionalScreen(window: Page, label: string): Promise<void
   switch (label) {
     case 'Overview':
       await expect(window.getByText('Enterprise pool burn-down')).toBeVisible();
+      break;
+    case 'Controls':
+      // Family tabs are the screen's stable spine (controls.spec.ts covers the rest).
+      await expect(window.getByRole('tab', { name: 'Included-usage caps' })).toBeVisible();
       break;
     case 'Cost centers':
       await expect(window.getByText(/cost centers · mapped to the DEWR financial structure/)).toBeVisible();

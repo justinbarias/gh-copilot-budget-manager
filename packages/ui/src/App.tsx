@@ -3,6 +3,7 @@ import { cycleBounds } from '@copilot-budget/core';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
 import { SimBanner } from './components/SimBanner';
 import { Nav, type ScreenId } from './components/Nav';
+import { Controls } from './screens/Controls/Controls';
 import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
 import { Overview } from './screens/Overview/Overview';
 import { TokenHealth } from './screens/Settings/TokenHealth';
@@ -31,10 +32,15 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   help: 'Help',
 };
 
-function renderScreen(screen: ScreenId) {
+function renderScreen(screen: ScreenId, navigate: (screen: ScreenId) => void) {
   switch (screen) {
     case 'overview':
       return <Overview />;
+    case 'controls':
+      // Real since Task 4.9 (Spending-limits family + the plan/simulate/apply
+      // rail); its "⇄ Auto-balance headroom" cross-link targets the (still
+      // stubbed) Auto-balance screen per the design's navigation cross-links.
+      return <Controls onNavigateToAutoBalance={() => navigate('autobalance')} />;
     case 'costcenters':
       return <CostCentersTable />;
     case 'users':
@@ -90,7 +96,7 @@ function AppShell() {
             <h1 className="app-shell__title">{SCREEN_TITLES[screen]}</h1>
             {cycleLabel && <span className="app-shell__cycle">{cycleLabel}</span>}
           </header>
-          <div className="app-shell__content">{renderScreen(screen)}</div>
+          <div className="app-shell__content">{renderScreen(screen, setScreen)}</div>
         </main>
       </div>
     </div>

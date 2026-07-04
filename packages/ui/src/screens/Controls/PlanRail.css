@@ -1,0 +1,421 @@
+/* Sticky right rail (design/README.md: "right rails sticky at top:76px").
+   Sticks within .app-shell__content, the app's one scroll container. */
+.plan-rail {
+  flex: 1 1 330px;
+  min-width: 300px;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plan-rail__card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.plan-rail__card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--surface-2);
+}
+
+.plan-rail__card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.plan-rail__discard {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.plan-rail__discard:hover {
+  color: var(--text-default);
+}
+
+.plan-rail__card-body {
+  padding: 16px 18px;
+}
+
+/* Terraform-style diff: mono, add-green +, change-amber ~, delete-red - */
+.plan-rail__diff {
+  padding: 14px 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.plan-rail__diff-line--add {
+  color: var(--green);
+}
+
+.plan-rail__diff-line--change {
+  color: var(--amber);
+}
+
+.plan-rail__diff-line--delete {
+  color: var(--red);
+}
+
+.plan-rail__sim-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.plan-rail__sim-tile {
+  background: var(--canvas);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-panel);
+  padding: 12px;
+}
+
+.plan-rail__sim-label {
+  font-size: 11px;
+  color: var(--text-neutral);
+  margin-bottom: 6px;
+}
+
+.plan-rail__sim-count {
+  font-size: 22px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-rail__sim-tile--blocked .plan-rail__sim-count {
+  color: var(--red);
+}
+
+.plan-rail__sim-tile--unblocked .plan-rail__sim-count {
+  color: var(--green);
+}
+
+.plan-rail__sim-users {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.plan-rail__sim-delta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--canvas);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-panel);
+  margin-bottom: 14px;
+}
+
+.plan-rail__sim-delta-label {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.plan-rail__sim-delta-value {
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-default);
+  white-space: nowrap;
+}
+
+.plan-rail__sim-delta-value--up {
+  color: var(--amber);
+}
+
+.plan-rail__sim-delta-value--down {
+  color: var(--green);
+}
+
+.plan-rail__validation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.plan-rail__blocker {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  background: rgba(255, 123, 114, 0.08);
+  border: 1px solid rgba(255, 123, 114, 0.3);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12px;
+  color: var(--text-default);
+  line-height: 1.5;
+}
+
+.plan-rail__blocker > span[aria-hidden] {
+  color: var(--red);
+}
+
+.plan-rail__warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  background: rgba(227, 179, 65, 0.08);
+  border: 1px solid rgba(227, 179, 65, 0.3);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12px;
+  color: var(--text-default);
+  line-height: 1.5;
+}
+
+.plan-rail__warning > span[aria-hidden] {
+  color: var(--amber);
+}
+
+.plan-rail__stale {
+  font-size: 12px;
+  color: var(--amber);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.plan-rail__sim-intro {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  line-height: 1.6;
+  margin: 0 0 14px;
+}
+
+.plan-rail__dry-run-btn {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  border-radius: var(--radius-input);
+  padding: 11px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.plan-rail__dry-run-btn:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.plan-rail__dry-run-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.plan-rail__apply {
+  border-top: 1px solid var(--surface-2);
+  margin-top: 12px;
+  padding-top: 14px;
+}
+
+/* §6.3 explicit override acknowledgment */
+.plan-rail__override {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  background: rgba(227, 179, 65, 0.12);
+  border: 1px solid rgba(227, 179, 65, 0.45);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 500;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.plan-rail__override input {
+  margin-top: 2px;
+  accent-color: var(--amber-toggle-on);
+}
+
+.plan-rail__just-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.plan-rail__just {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 10px;
+  color: var(--text-default);
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+}
+
+.plan-rail__just:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.plan-rail__blocked-note {
+  font-size: 12px;
+  color: var(--red);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.plan-rail__apply-btn {
+  width: 100%;
+  margin-top: 12px;
+  background: var(--green-dark);
+  border: 1px solid var(--green-dark);
+  color: #ffffff;
+  border-radius: var(--radius-input);
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.plan-rail__apply-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* §6.8: the simulated-apply cue under the button -- pairs the sim banner's
+   ◆ glyph with explicit wording; never color-only. */
+.plan-rail__sim-note {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--violet-light);
+  line-height: 1.5;
+}
+
+.plan-rail__empty {
+  padding: 22px;
+  text-align: center;
+}
+
+.plan-rail__empty-title {
+  font-size: 14px;
+  color: var(--text-default);
+  margin-bottom: 6px;
+}
+
+.plan-rail__empty-body {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Apply-result arms */
+.plan-rail__result {
+  border-radius: var(--radius-card);
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+}
+
+.plan-rail__result--applied {
+  border-color: rgba(95, 237, 131, 0.4);
+}
+
+.plan-rail__result--drift {
+  border-color: rgba(141, 214, 255, 0.4);
+}
+
+.plan-rail__result--blocked {
+  border-color: rgba(255, 123, 114, 0.4);
+}
+
+.plan-rail__result--partial {
+  border-color: rgba(227, 179, 65, 0.45);
+}
+
+.plan-rail__result-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-default);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.plan-rail__result--applied .plan-rail__result-title {
+  color: var(--green);
+}
+
+.plan-rail__result--drift .plan-rail__result-title {
+  color: var(--blue);
+}
+
+.plan-rail__result--blocked .plan-rail__result-title {
+  color: var(--red);
+}
+
+.plan-rail__result--partial .plan-rail__result-title {
+  color: var(--amber);
+}
+
+.plan-rail__result-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin-bottom: 10px;
+}
+
+.plan-rail__result--blocked .plan-rail__blocker {
+  margin-top: 8px;
+}
+
+.plan-rail__mutations,
+.plan-rail__audits {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.plan-rail__mutation,
+.plan-rail__audit {
+  font-size: 11px;
+  color: var(--text-subtle);
+  background: var(--canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 7px 9px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.plan-rail__mutation-body {
+  color: var(--blue);
+}
+
+.plan-rail__secondary-btn {
+  margin-top: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--blue);
+  border-radius: 7px;
+  padding: 8px 13px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.plan-rail__secondary-btn:hover {
+  border-color: var(--blue);
+}

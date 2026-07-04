@@ -18,7 +18,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] core/data tests green; drift-abort proven; §6.9 note complete; human review of migration + bridge shape
 
 ### Control-family slices
-- [ ] 4.9 Controls screen shell + Spending-limits family + plan/simulate/apply right rail [L]
+- [x] 4.9 Controls screen shell + Spending-limits family + plan/simulate/apply right rail [L]
 - [ ] 4.10 ULB family — universal/individual/CCULB rows, API-ONLY badge, exact CCULB payload [M]
 - [ ] 4.11 Users screen — Set ULB modal + bulk-ULB modal through the rail [M]
 - [ ] 4.12 Included-usage caps family — per-CC cards, toggle + block/overflow, no amount input anywhere [M]

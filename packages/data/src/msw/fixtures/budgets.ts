@@ -104,4 +104,23 @@ export const BUDGETS: Budget[] = [
     prevent_further_usage: false,
     budget_alerting: { will_alert: true, alert_recipients: ['platform-leads@acme.example'] },
   },
+  // Task 4.9 (flagged addition -- a genuinely missing spending-limit fixture):
+  // the ONLY Family-B budget with hard-stop ON. Every fixture above ships
+  // prevent_further_usage: false (GitHub's spending-limit default, spec §1.3),
+  // which made CLAUDE.md §6.3's gated transition ("making an alert-only limit
+  // requires an explicit, logged override" -- i.e. old: true -> new: false)
+  // impossible to exercise end to end. This also gives the Controls screen a
+  // green-track (hard stop) enforcement toggle in live state, alongside the
+  // amber alert-only rows. Amount kept small so the enterprise-cap-below-sum
+  // baseline stays comfortably unblocked (60,000 + 25,000 credits << 800,000).
+  {
+    id: BUDGET_IDS.costCenterDataAnalyticsMetered,
+    budget_type: 'ProductPricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'cost_center',
+    budget_entity_name: 'Data & Analytics',
+    budget_amount: 250,
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: true, alert_recipients: ['data-leads@acme.example'] },
+  },
 ];

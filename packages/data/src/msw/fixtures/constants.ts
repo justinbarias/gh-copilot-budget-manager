@@ -28,4 +28,10 @@ export const BUDGET_IDS = {
   // budget_scope values too (organization, cost_center), matching PRD §2.1.
   organizationMetered: 'budget-organization-metered-1',
   costCenterMetered: 'budget-cost-center-platform-metered-1',
+  // Task 4.9 (flagged addition): the one Family-B fixture with hard-stop ON.
+  // CLAUDE.md §6.3's "making an alert-only limit requires an explicit, logged
+  // override" is only exercisable end to end from a live prevent_further_usage:
+  // true starting point, and every prior spending-limit fixture ships the
+  // GitHub default (false) -- see budgets.ts for the fixture itself.
+  costCenterDataAnalyticsMetered: 'budget-cost-center-data-analytics-metered-1',
 } as const;
