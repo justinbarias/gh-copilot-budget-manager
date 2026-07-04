@@ -55,7 +55,7 @@ pnpm install                # install all workspace deps; triggers postinstall @
 pnpm dev                    # electron + vite dev; simulation mode by default (no PAT present)
 pnpm dev:sim                # force simulation mode regardless of stored PAT
 pnpm test                   # vitest — unit/component, all packages
-pnpm test --filter core     # vitest scoped to packages/core
+pnpm --filter core test     # vitest scoped to packages/core
 pnpm e2e                    # playwright e2e against MSW — the blocking automated gate
 pnpm e2e:ui                 # playwright interactive runner
 pnpm build                  # build all packages (core, data, ui)

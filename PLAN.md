@@ -41,21 +41,21 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 - [ ] **Task 1.1: `packages/core` pure math — burndown, ranking, pool allowance, snapshot diff** — S/M
   - **Description:** `poolConsumedPct`, `cycleBounds(asOfDate)`, `poolAllowanceCredits(licenseCount, asOfDate, allowanceBasis)` (promo→standard cliff at 1 Sep 2026), heavy-user ranking sort, and a snapshot-diff helper enforcing append-only. **Every function needing "now" takes `asOfDate` as an explicit parameter** — no internal `Date.now()`.
   - **Acceptance:** Vitest covers edge cases (poolSize=0, empty user list, ranking ties, dates on either side of the 1 Sep cliff); zero I/O imports anywhere in the package.
-  - **Verification:** `pnpm test --filter core` green.
+  - **Verification:** `pnpm --filter core test` green.
   - **Dependencies:** 0.1.
   - **Files:** `packages/core/src/burndown.ts`, `ranking.ts`, `poolAllowance.ts`, `snapshot.ts` + matching `*.test.ts`.
 
 - [ ] **Task 1.2: Drizzle schema + migrations for MVP entities** — M
   - **Description:** `snapshot`, `usage_fact`, `credits_used_fact`, `license`, `cost_center` (with `dewr_division`/`dewr_branch`/`dewr_project` columns folded in), `cost_center_member`, `budget` (read-only fields). DB path under `app.getPath('userData')` with a dev override.
   - **Acceptance:** `drizzle-kit generate` produces a migration creating all 7 tables; a smoke script inserts/reads a row per table.
-  - **Verification:** `pnpm test --filter data` (schema test) + migration applies cleanly against a fresh sqlite file.
+  - **Verification:** `pnpm --filter data test` (schema test) + migration applies cleanly against a fresh sqlite file.
   - **Dependencies:** 0.1.
   - **Files:** `packages/data/db/schema.ts`, `packages/data/db/migrations/0000_init.sql`, `packages/data/db/client.ts`.
 
 - [ ] **Task 1.3: MSW handlers + fixtures — shared across 3 consumers, incl. edge fixtures** — M
   - **Description:** GET handlers for usage/cost reporting, cost centers + membership, licenses, budget list. Structure as **shared handler definitions** consumed by three bootstraps: (a) `msw/node` `setupServer` attached in the Electron **main process** for the simulation runtime, (b) the same `setupServer` for Vitest contract tests, (c) Playwright reuses (a) by launching the real app (see 1.5). Include the 4 edge fixtures required by `SPEC.md` Success Criterion #3: ULB display-bug entry, `$0`-ULB, cap-bound cost center, promo→standard cliff datapoints.
   - **Acceptance:** Handlers respond with realistic pagination; all 4 edge fixtures present even though nothing renders them yet.
-  - **Verification:** `pnpm test --filter data` contract test hits each handler, asserts shape + pagination.
+  - **Verification:** `pnpm --filter data test` contract test hits each handler, asserts shape + pagination.
   - **Dependencies:** 0.1.
   - **Files:** `packages/data/msw/handlers.ts`, `packages/data/msw/fixtures/*.ts`, `packages/data/msw/server.ts`.
 
@@ -78,7 +78,7 @@ Sixteen tasks across four phases, ordered bottom-up by dependency and sliced ver
 - [ ] **Task 1.6: "Sync now" ingests MSW data into SQLite snapshots** — M
   - **Description:** `syncNow()` pulls usage/cost-center/license data via the `ApiClient` and inserts new append-only snapshot rows into the Task 1.2 schema (never overwrites existing rows). `getSyncStatus()` reports last-synced-at / in-progress.
   - **Acceptance:** Two `syncNow()` calls produce two distinct snapshot generations; a fresh DB + one call matches ingested fixture data exactly.
-  - **Verification:** `pnpm test --filter data` integration test — this is the CLAUDE.md Phase-1 smoke test.
+  - **Verification:** `pnpm --filter data test` integration test — this is the CLAUDE.md Phase-1 smoke test.
   - **Dependencies:** 1.2, 1.5.
   - **Files:** `packages/data/sync/sync-now.ts` + test.
 
