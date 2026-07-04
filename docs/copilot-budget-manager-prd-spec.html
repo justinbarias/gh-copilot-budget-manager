@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copilot Budget Manager — PRD &amp; Spec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gabarito:wght@400;500;600;700;800&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0E0D14; --surface:#17151F; --surface-2:#1E1B29; --surface-3:#242030;
+    --border:#2A2735; --border-strong:#3A3648;
+    --text:#ECEAF3; --muted:#9A94AB; --faint:#6B6579;
+    --violet:#8B5CF6; --violet-bright:#A78BFA; --violet-dim:#6D4FC4; --violet-wash:rgba(139,92,246,.10);
+    --mint:#34D399; --amber:#F5A623; --red:#F0616D;
+    --display:'Gabarito',system-ui,sans-serif;
+    --body:'IBM Plex Sans',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --maxw:820px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--body); font-weight:400; font-size:16px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  a{color:var(--violet-bright); text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- Layout ---------- */
+  .shell{display:grid; grid-template-columns:280px minmax(0,1fr); min-height:100vh}
+  .toc{
+    position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    border-right:1px solid var(--border); padding:34px 26px 40px; background:linear-gradient(180deg,#100F17,#0E0D14);
+  }
+  .toc-brand{font-family:var(--display); font-weight:700; font-size:15px; letter-spacing:.02em; margin-bottom:2px}
+  .toc-brand .dot{color:var(--violet)}
+  .toc-sub{font-family:var(--mono); font-size:11px; color:var(--faint); letter-spacing:.06em; text-transform:uppercase; margin-bottom:28px}
+  .toc nav a{
+    display:block; color:var(--muted); font-size:13.5px; padding:7px 0 7px 16px; margin-left:2px;
+    border-left:2px solid transparent; line-height:1.4; transition:color .15s,border-color .15s;
+  }
+  .toc nav a .num{font-family:var(--mono); font-size:11px; color:var(--faint); margin-right:8px}
+  .toc nav a.section{margin-top:18px; font-family:var(--display); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); border:0; padding-bottom:2px; cursor:default}
+  .toc nav a.active{color:var(--text); border-left-color:var(--violet)}
+  .toc nav a.active .num{color:var(--violet-bright)}
+  .toc nav a:not(.section):hover{color:var(--text); text-decoration:none; border-left-color:var(--border-strong)}
+
+  main{padding:0 clamp(24px,5vw,72px) 120px; min-width:0}
+  .wrap{max-width:var(--maxw); margin:0 auto}
+
+  /* ---------- Hero ---------- */
+  header.hero{padding:72px 0 48px; border-bottom:1px solid var(--border); margin-bottom:8px}
+  .eyebrow{display:inline-flex; align-items:center; gap:9px; font-family:var(--mono); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--violet-bright); margin-bottom:22px}
+  .eyebrow::before{content:""; width:22px; height:1px; background:var(--violet)}
+  h1.title{font-family:var(--display); font-weight:800; font-size:clamp(34px,5.2vw,54px); line-height:1.03; letter-spacing:-.02em; margin:0 0 20px}
+  h1.title em{font-style:normal; color:var(--violet-bright)}
+  .lede{font-size:18px; color:var(--muted); max-width:64ch; margin:0 0 30px}
+  .meta{display:flex; flex-wrap:wrap; gap:8px 10px; font-family:var(--mono); font-size:12px}
+  .chip{border:1px solid var(--border-strong); background:var(--surface); color:var(--muted); padding:5px 11px; border-radius:100px}
+  .chip b{color:var(--text); font-weight:500}
+
+  /* ---------- Signature chart ---------- */
+  .figure{margin:44px 0 6px; border:1px solid var(--border); border-radius:14px; background:linear-gradient(180deg,var(--surface),#131119); padding:22px 22px 14px; overflow:hidden}
+  .figure-cap{display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:6px}
+  .figure-cap h4{font-family:var(--display); font-weight:600; font-size:14px; margin:0; letter-spacing:.01em}
+  .figure-cap span{font-family:var(--mono); font-size:10.5px; color:var(--faint); letter-spacing:.08em; text-transform:uppercase}
+  .figure svg{width:100%; height:auto; display:block}
+  @media (prefers-reduced-motion:no-preference){
+    .draw{stroke-dasharray:1400; stroke-dashoffset:1400; animation:draw 1.7s .25s ease forwards}
+    @keyframes draw{to{stroke-dashoffset:0}}
+    .fade{opacity:0; animation:fade .7s 1.4s ease forwards}
+    @keyframes fade{to{opacity:1}}
+  }
+
+  /* ---------- Sections ---------- */
+  section{padding:56px 0; border-bottom:1px solid var(--border)}
+  section:last-of-type{border-bottom:0}
+  .part-label{font-family:var(--mono); font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--violet); margin-bottom:12px}
+  h2{font-family:var(--display); font-weight:700; font-size:clamp(24px,3.4vw,32px); letter-spacing:-.015em; line-height:1.12; margin:0 0 8px}
+  h3{font-family:var(--display); font-weight:600; font-size:20px; letter-spacing:-.01em; margin:38px 0 10px}
+  h4{font-family:var(--display); font-weight:600; font-size:15.5px; margin:26px 0 6px; color:var(--text)}
+  p{margin:0 0 15px}
+  .intro{font-size:17px; color:var(--muted); margin-bottom:6px}
+  strong{color:var(--text); font-weight:600}
+  code{font-family:var(--mono); font-size:.86em; background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1.5px 6px; color:var(--violet-bright); white-space:nowrap}
+
+  ul,ol{margin:0 0 16px; padding-left:0; list-style:none}
+  li{position:relative; padding-left:22px; margin-bottom:9px; color:var(--text)}
+  ul li::before{content:""; position:absolute; left:4px; top:11px; width:5px; height:5px; border-radius:50%; background:var(--violet-dim)}
+  ol{counter-reset:li}
+  ol li{counter-increment:li}
+  ol li::before{content:counter(li); position:absolute; left:0; top:1px; font-family:var(--mono); font-size:11px; color:var(--violet-bright); background:var(--surface-2); border:1px solid var(--border); width:18px; height:18px; border-radius:5px; text-align:center; line-height:17px}
+  li .k{font-family:var(--display); font-weight:600; color:var(--text)}
+
+  /* ---------- Tables ---------- */
+  .tbl{margin:20px 0 8px; border:1px solid var(--border); border-radius:12px; overflow:hidden; overflow-x:auto}
+  table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:520px}
+  thead th{background:var(--surface-2); text-align:left; font-family:var(--display); font-weight:600; font-size:11.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); padding:11px 14px; border-bottom:1px solid var(--border-strong)}
+  tbody td{padding:11px 14px; border-bottom:1px solid var(--border); vertical-align:top; color:var(--muted)}
+  tbody tr:last-child td{border-bottom:0}
+  tbody td:first-child{color:var(--text); font-weight:500}
+  tbody code{white-space:normal}
+  .tag{display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:5px; letter-spacing:.02em}
+  .tag.yes{background:rgba(52,211,153,.12); color:var(--mint); border:1px solid rgba(52,211,153,.3)}
+  .tag.cond{background:rgba(245,166,35,.12); color:var(--amber); border:1px solid rgba(245,166,35,.3)}
+  .tag.get{color:var(--mint)} .tag.post{color:var(--violet-bright)} .tag.del{color:var(--red)} .tag.patch{color:var(--amber)}
+
+  /* ---------- Callouts ---------- */
+  .call{position:relative; margin:22px 0; padding:16px 18px 16px 46px; border-radius:11px; border:1px solid var(--border-strong); background:var(--surface); font-size:14.5px}
+  .call::before{position:absolute; left:16px; top:15px; font-family:var(--mono); font-weight:600; font-size:14px}
+  .call .h{font-family:var(--display); font-weight:600; color:var(--text); display:block; margin-bottom:3px; font-size:14px}
+  .call.trap{border-color:rgba(240,97,109,.35); background:linear-gradient(180deg,rgba(240,97,109,.06),transparent)}
+  .call.trap::before{content:"!"; color:var(--red)}
+  .call.watch{border-color:rgba(245,166,35,.35); background:linear-gradient(180deg,rgba(245,166,35,.06),transparent)}
+  .call.watch::before{content:"~"; color:var(--amber)}
+  .call.note{border-color:var(--border-strong)}
+  .call.note::before{content:"i"; color:var(--violet-bright); font-style:italic}
+  .call p{margin:0} .call p+p{margin-top:8px}
+
+  /* ---------- Schematic ---------- */
+  /* ---------- Architecture diagram ---------- */
+  .arch{margin:26px 0 10px}
+  .arch-source{border:1px solid var(--border-strong); border-radius:12px; background:linear-gradient(180deg,var(--surface-2),var(--surface)); padding:14px 18px}
+  .arch-source .kicker{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin-bottom:6px}
+  .arch-source .name{font-family:var(--display); font-weight:700; font-size:16px; margin-bottom:9px}
+  .arch-source .chips{display:flex; flex-wrap:wrap; gap:6px}
+  .arch-source .chips span{font-family:var(--mono); font-size:10.5px; color:var(--muted); border:1px solid var(--border); background:var(--bg); border-radius:6px; padding:3px 8px}
+  .arch-edges{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0 6px}
+  .edge{display:flex; align-items:center; justify-content:center; gap:8px; font-family:var(--mono); font-size:11px; letter-spacing:.02em; padding:6px 10px; border-radius:8px; border:1px solid var(--border)}
+  .edge.pull{color:var(--mint); background:rgba(52,211,153,.05)}
+  .edge.push{color:var(--violet-bright); background:var(--violet-wash)}
+  .edge .arrow{font-size:15px; line-height:1}
+  .plane{position:relative; border:1px dashed var(--border-strong); border-radius:14px; padding:22px 16px 18px; background:rgba(139,92,246,.03)}
+  .plane-tag{position:absolute; top:-9px; left:16px; background:var(--bg); font-family:var(--mono); font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--violet-bright); padding:0 8px}
+  .rails{display:grid; grid-template-columns:1fr 1fr; gap:0 22px; align-items:start}
+  .rail{display:flex; flex-direction:column}
+  .rail-head{font-family:var(--display); font-weight:600; font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:12px; display:flex; align-items:center; gap:8px}
+  .rail-head::before{content:""; width:7px; height:7px; border-radius:2px}
+  .rail.read .rail-head::before{background:var(--mint)}
+  .rail.write .rail-head::before{background:var(--violet)}
+  .node{border:1px solid var(--border); border-radius:10px; background:var(--surface); padding:12px 14px}
+  .node .kicker{font-family:var(--mono); font-size:10px; letter-spacing:.05em; color:var(--faint); text-transform:uppercase}
+  .node .nname{font-family:var(--display); font-weight:600; font-size:14.5px; margin:2px 0 3px}
+  .node .nmeta{font-size:12.5px; color:var(--muted); line-height:1.45}
+  .node.accent{border-color:var(--violet-dim); background:linear-gradient(180deg,var(--violet-wash),var(--surface))}
+  .node .push-note{display:inline-flex; align-items:center; gap:5px; margin-top:7px; font-family:var(--mono); font-size:10.5px; color:var(--violet-bright)}
+  .down{display:flex; justify-content:center; align-items:center; height:24px; color:var(--violet-dim)}
+  .down svg{display:block}
+  .cross{margin-top:16px; text-align:center; font-family:var(--mono); font-size:11px; color:var(--faint); border-top:1px dashed var(--border); padding-top:13px}
+  .arch-out{margin-top:14px; display:flex; align-items:center; gap:9px; font-family:var(--mono); font-size:11.5px; color:var(--muted)}
+  .arch-out .lab{color:var(--amber)}
+  @media (max-width:560px){ .arch-edges,.rails{grid-template-columns:1fr; gap:12px} }
+
+  /* ---------- Goal/persona cards ---------- */
+  .cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; margin:22px 0}
+  .card{border:1px solid var(--border); border-radius:11px; padding:16px 17px; background:var(--surface)}
+  .card .id{font-family:var(--mono); font-size:11px; color:var(--violet-bright); letter-spacing:.05em; margin-bottom:7px}
+  .card .t{font-family:var(--display); font-weight:600; font-size:14.5px; margin-bottom:4px}
+  .card .d{font-size:13px; color:var(--muted); line-height:1.5}
+
+  hr.soft{border:0; border-top:1px solid var(--border); margin:34px 0}
+
+  footer{max-width:var(--maxw); margin:0 auto; padding:40px 0 0; color:var(--faint); font-family:var(--mono); font-size:12px; line-height:1.7}
+
+  /* ---------- Mobile ---------- */
+  .navtoggle{display:none}
+  @media (max-width:900px){
+    .shell{grid-template-columns:1fr}
+    .toc{position:fixed; z-index:40; top:0; left:0; width:280px; transform:translateX(-100%); transition:transform .25s ease}
+    .toc.open{transform:translateX(0)}
+    .navtoggle{display:inline-flex; align-items:center; gap:8px; position:fixed; z-index:50; top:14px; right:14px; background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text); font-family:var(--mono); font-size:12px; padding:9px 13px; border-radius:9px; cursor:pointer}
+    main{padding-top:8px}
+    header.hero{padding-top:52px}
+  }
+
+  /* --- v0.2 additions --- */
+  .tag.api{background:var(--violet-wash); color:var(--violet-bright); border:1px solid rgba(139,92,246,.35)}
+  .apibadge{display:inline-block; font-family:var(--mono); font-size:10px; letter-spacing:.03em; color:var(--violet-bright); background:var(--violet-wash); border:1px solid rgba(139,92,246,.4); border-radius:5px; padding:1px 6px; vertical-align:middle; margin-left:6px}
+  .phase{display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 8px; border-radius:5px; white-space:nowrap; vertical-align:middle; margin-left:6px}
+  .phase.both{color:var(--mint); background:rgba(52,211,153,.12); border:1px solid rgba(52,211,153,.35)}
+  .phase.met{color:var(--amber); background:rgba(245,166,35,.12); border:1px solid rgba(245,166,35,.35)}
+  .phase.pool{color:var(--violet-bright); background:var(--violet-wash); border:1px solid rgba(139,92,246,.35)}
+  .env{margin:22px 0 10px; border:1px solid var(--border); border-radius:12px; background:linear-gradient(180deg,var(--surface),#131119); padding:18px 20px 16px}
+  .env h5{font-family:var(--display); font-weight:600; font-size:13.5px; margin:0 0 3px; letter-spacing:.01em}
+  .env .env-sub{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-bottom:14px}
+  .env-track{display:flex; height:52px; border-radius:8px; overflow:hidden; border:1px solid var(--border-strong)}
+  .env-seg{display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:var(--mono); font-size:10px; text-align:center; padding:0 5px; line-height:1.3; border-right:1px solid rgba(0,0,0,.4)}
+  .env-seg:last-child{border-right:0}
+  .env-seg b{font-size:11px; font-weight:600}
+  .env-reserve{flex:0 0 15%; background:repeating-linear-gradient(135deg,rgba(154,148,171,.18),rgba(154,148,171,.18) 6px,transparent 6px,transparent 12px); color:var(--muted)}
+  .env-hold{flex:1.3; background:rgba(154,148,171,.08); color:var(--muted)}
+  .env-grant{background:var(--violet-wash); color:var(--violet-bright)}
+  .env-grant.g1{flex:1.3} .env-grant.g2{flex:1.6} .env-grant.g3{flex:1}
+  .env-cap{display:flex; justify-content:space-between; font-family:var(--mono); font-size:9.5px; color:var(--faint); margin-top:7px}
+  .env-flow{display:flex; align-items:flex-start; gap:8px; margin-top:13px; font-size:12.5px; color:var(--muted); line-height:1.5}
+  .env-flow .arrow{color:var(--violet-bright); flex:none}
+  .env-brace{display:flex; margin-top:4px}
+  .env-brace .lbl{flex:0 0 15%}
+  .env-brace .env-lbl-hold{flex:1.3; text-align:center; font-family:var(--mono); font-size:9.5px; color:var(--faint)}
+  .env-brace .env-lbl-slack{flex:3.9; text-align:center; font-family:var(--mono); font-size:9.5px; color:var(--violet-bright); border-top:1px solid var(--violet-dim); margin-top:2px; padding-top:3px}
+</style>
+</head>
+<body>
+<button class="navtoggle" id="navtoggle" aria-label="Toggle contents">☰ Contents</button>
+<div class="shell">
+
+  <aside class="toc" id="toc">
+    <div class="toc-brand">Copilot Budget Manager<span class="dot">.</span></div>
+    <div class="toc-sub">PRD &amp; Spec · v0.2</div>
+    <nav id="tocnav">
+      <a href="#overview"><span class="num">00</span>Overview</a>
+      <a class="section">Part 1 · Billing model</a>
+      <a href="#unit"><span class="num">1.1</span>The unit: AI Credits</a>
+      <a href="#pools"><span class="num">1.2</span>Two phases &amp; pools</a>
+      <a href="#controls"><span class="num">1.3</span>Control surface</a>
+      <a href="#uiapi"><span class="num">1.4</span>UI vs API</a>
+      <a href="#gaps"><span class="num">1.5</span>The gaps</a>
+      <a class="section">Part 2 · API surface</a>
+      <a href="#api-budgets"><span class="num">2.1</span>Budget CRUD</a>
+      <a href="#api-cc"><span class="num">2.2</span>Cost centers &amp; caps</a>
+      <a href="#api-usage"><span class="num">2.3</span>Usage reporting</a>
+      <a class="section">Part 3 · PRD</a>
+      <a href="#prd"><span class="num">3.1</span>Problem &amp; goals</a>
+      <a href="#personas"><span class="num">3.2</span>Personas</a>
+      <a href="#reqs"><span class="num">3.3</span>Requirements</a>
+      <a class="section">Part 4 · Spec</a>
+      <a href="#arch"><span class="num">4.1</span>Architecture</a>
+      <a href="#model"><span class="num">4.2</span>Data model</a>
+      <a href="#forecast"><span class="num">4.3</span>Forecasting</a>
+      <a href="#balance"><span class="num">4.4</span>Auto-balancing</a>
+      <a href="#auth"><span class="num">4.5</span>Sync · auth · security</a>
+      <a href="#sim"><span class="num">4.6</span>Simulation &amp; tests</a>
+      <a href="#phases"><span class="num">4.7</span>Build phases</a>
+      <a class="section">Part 5 · Open questions</a>
+      <a href="#open"><span class="num">5.0</span>Before build</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="wrap">
+
+    <header class="hero" id="overview">
+      <span class="eyebrow">FinOps control plane · GitHub Copilot</span>
+      <h1 class="title">Governing <em>AI-credit</em> spend after the token-billing shift.</h1>
+      <p class="lede">GitHub Copilot moved to usage-based billing on 1 June 2026. The native controls are coarse: budgets are static, forecasting is absent, and the safest-sounding defaults invite bill shock. This document specifies a custom layer for forecasting, budget balancing, and multi-level budget orchestration mapped to GitHub's own constructs.</p>
+      <div class="meta">
+        <span class="chip"><b>Status</b> Draft v0.2</span>
+        <span class="chip"><b>Owner</b> Lead AI Engineer</span>
+        <span class="chip"><b>API version</b> 2026-03-10</span>
+        <span class="chip"><b>Current as of</b> 3 Jul 2026</span>
+      </div>
+
+      <div class="figure" role="img" aria-label="Illustrative pool burn-down: cumulative credit spend rising toward the pool allowance ceiling, a forecast crossing it at a projected exhaustion point, and the included allowance stepping down 37% on 1 September 2026.">
+        <div class="figure-cap">
+          <h4>Pool burn-down — the signature view</h4>
+          <span>Illustrative</span>
+        </div>
+        <svg viewBox="0 0 920 280" xmlns="http://www.w3.org/2000/svg" fill="none">
+          <!-- gridlines -->
+          <g stroke="#221F2C" stroke-width="1">
+            <line x1="60" y1="60" x2="880" y2="60"/>
+            <line x1="60" y1="120" x2="880" y2="120"/>
+            <line x1="60" y1="180" x2="880" y2="180"/>
+            <line x1="60" y1="240" x2="880" y2="240"/>
+          </g>
+          <!-- axes -->
+          <line x1="60" y1="20" x2="60" y2="240" stroke="#3A3648"/>
+          <line x1="60" y1="240" x2="880" y2="240" stroke="#3A3648"/>
+          <!-- allowance (promo) -->
+          <line class="fade" x1="60" y1="80" x2="680" y2="80" stroke="#34D399" stroke-width="1.5" stroke-dasharray="6 5"/>
+          <text class="fade" x="66" y="73" fill="#34D399" font-family="IBM Plex Mono" font-size="11">Pool allowance (promo)</text>
+          <!-- cliff divider -->
+          <line class="fade" x1="680" y1="34" x2="680" y2="248" stroke="#6B6579" stroke-width="1" stroke-dasharray="3 4"/>
+          <text class="fade" x="686" y="46" fill="#9A94AB" font-family="IBM Plex Mono" font-size="11">1 Sep 2026</text>
+          <!-- post-cliff allowance -->
+          <line class="fade" x1="680" y1="132" x2="880" y2="132" stroke="#34D399" stroke-width="1.5" stroke-dasharray="6 5" opacity=".8"/>
+          <text class="fade" x="686" y="125" fill="#34D399" font-family="IBM Plex Mono" font-size="11" opacity=".85">Standard (−37%)</text>
+          <!-- forecast band -->
+          <path class="fade" d="M400,150 L571,74 L620,52 L620,68 L571,90 L400,158 Z" fill="#8B5CF6" opacity=".13"/>
+          <!-- actual burn (cumulative) -->
+          <path class="draw" d="M60,238 C160,225 300,196 400,150" stroke="#A78BFA" stroke-width="2.6" stroke-linecap="round"/>
+          <!-- forecast dashed -->
+          <path class="fade" d="M400,150 L620,60" stroke="#8B5CF6" stroke-width="2.2" stroke-dasharray="5 5" stroke-linecap="round"/>
+          <!-- exhaustion marker -->
+          <circle class="fade" cx="571" cy="80" r="5" fill="#F0616D"/>
+          <circle class="fade" cx="571" cy="80" r="10" fill="none" stroke="#F0616D" stroke-width="1.2" opacity=".5"/>
+          <text class="fade" x="560" y="66" fill="#F0616D" font-family="IBM Plex Mono" font-size="11" text-anchor="end">Projected exhaustion ↑</text>
+          <!-- labels -->
+          <text x="60" y="258" fill="#6B6579" font-family="IBM Plex Mono" font-size="10">Day 1</text>
+          <text x="660" y="258" fill="#6B6579" font-family="IBM Plex Mono" font-size="10">Cycle end</text>
+          <text x="16" y="34" fill="#6B6579" font-family="IBM Plex Mono" font-size="10" transform="rotate(-90 16 34)" text-anchor="end">Credits consumed →</text>
+        </svg>
+      </div>
+      <div class="call note"><span class="h">Citation note</span><p>All GitHub behaviour in Parts 1–2 is drawn from GitHub Docs and changelogs current as of 3 July 2026. Figures are subject to GitHub's ongoing changes — treat the plans page and changelog as source of truth at build time.</p></div>
+    </header>
+
+    <!-- ============ PART 1 ============ -->
+    <section id="unit">
+      <div class="part-label">Part 1 — How billing actually works now</div>
+      <h2>The unit: AI Credits</h2>
+      <ul>
+        <li>Usage is metered in <strong>GitHub AI Credits</strong>; <strong>1 credit = $0.01 USD</strong>.</li>
+        <li>A credit is consumed from <strong>tokens</strong> (input + output + cached) at each model's published rate. Cost = <em>f(model, tokens)</em>.</li>
+        <li><strong>Code completions and Next Edit Suggestions are free</strong> (no credits).</li>
+        <li><strong>Copilot code review</strong> also consumes <strong>GitHub Actions minutes</strong> — a second meter.</li>
+      </ul>
+      <div class="call trap"><span class="h">No lower-cost fallback</span><p>When credits or budget are exhausted, credit-consuming features are <strong>blocked</strong>, not downgraded.</p></div>
+    </section>
+
+    <section id="pools">
+      <h2>The two phases and the pools</h2>
+      <p class="intro">Every cycle runs in two phases. The controls behave differently in each — the single most important thing to internalise.</p>
+      <h4>Pool phase <span class="phase both">shared included credits</span></h4>
+      <p>Consumption draws from a <strong>shared pool</strong> pooled at the billing-entity level (100 Business seats = one pool of ~190,000 credits, not 100 buckets). Standard ≈ 1,900 (Business) / 3,900 (Enterprise) per seat; <strong>promo ≈ 3,000 / 7,000</strong> for existing customers 1 Jun–1 Sep 2026. Resets monthly at <code>00:00:00 UTC</code>, no carryover. Adding seats grows the pool immediately; removing doesn't shrink it until next cycle.</p>
+      <div class="call watch"><span class="h">The cliff</span><p>The pool falls <strong>~37% on 1 Sep 2026</strong> when the promo ends — model it as a step-change, not a smooth trend.</p></div>
+      <h4>Metered phase <span class="phase met">pay-as-you-go</span></h4>
+      <p>After the pool is exhausted, usage bills at <strong>$0.01/credit</strong> — but only if the <strong>"AI credit paid usage" policy is enabled</strong>. If disabled, pool exhaustion simply <strong>blocks</strong> (a hard, free ceiling).</p>
+      <p style="color:var(--muted)">Individual Pro/Pro+/Max plans use a separate <code>base + flex</code> allowance model; irrelevant to org control except that assigning an org seat auto-cancels a personal plan with proration.</p>
+    </section>
+
+    <section id="controls">
+      <h2>The control surface — two families plus one lever</h2>
+      <p class="intro">Three kinds of control. Conflating them is the most common failure mode.</p>
+      <h3>Family A · User-level budgets <span class="phase both">both phases</span></h3>
+      <p>Cap each <strong>person's total</strong> consumption across both phases. <strong>Always a hard stop</strong>; <code>$0</code> blocks immediately. Because they count included usage, they can block a user <em>before</em> the pool is exhausted. The <strong>sum of ULBs is an implicit overage ceiling</strong>. Three scopes, most-specific wins:</p>
+      <div class="tbl"><table>
+        <thead><tr><th>ULB scope</th><th>Applies to</th><th>Precedence</th></tr></thead>
+        <tbody>
+          <tr><td>Individual ULB</td><td>one named user</td><td>highest</td></tr>
+          <tr><td>Cost center ULB (CCULB) <span class="apibadge">API-ONLY</span></td><td>every current/future member of a cost center (one per-user amount)</td><td>middle</td></tr>
+          <tr><td>Universal ULB</td><td>every licensed user by default</td><td>lowest</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Family B · Spending limits <span class="phase met">metered only</span></h3>
+      <p>Cap <strong>metered charges only</strong>, and only after the pool is exhausted. Pool-agnostic.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Spending limit</th><th>Caps</th><th>Scope</th></tr></thead>
+        <tbody>
+          <tr><td>Cost center budget</td><td>a team's metered charges</td><td>per cost center</td></tr>
+          <tr><td>Organization budget</td><td>an org's metered charges</td><td>per organization</td></tr>
+          <tr><td>Enterprise budget</td><td>total enterprise metered charges</td><td>enterprise-wide</td></tr>
+        </tbody>
+      </table></div>
+      <div class="call trap"><span class="h">Hard stop is OFF by default</span><p>For all three spending limits, "Stop usage when budget limit is reached" must be enabled or charges accrue uncapped. Cost centers can be <strong>excluded</strong> from the enterprise budget to spend only against their own cap.</p></div>
+      <h3>Lever C · Cost-center included-usage cap <span class="phase pool">pool phase</span> <span class="apibadge">API-ONLY</span></h3>
+      <p>A <em>separate</em> control that caps how much of the <strong>shared pool</strong> a cost center can draw <strong>before</strong> it tips into metered — what makes chargeback boundaries hold in the pool phase (one team can't drain credits another team's licenses funded). <strong>Not amount-settable:</strong> GitHub auto-computes the limit from the licenses attributed to the cost center and re-derives it as membership changes — you never enter a number. The only knobs are <strong>on/off</strong> and, at the cap, <strong>block-or-overflow</strong>. Enabling it doesn't retroactively redistribute the enterprise pool. Model it as <code>enabled: bool</code> + <code>overflow: block|metered</code> with a read-only computed limit — categorically different from budgets/ULBs, which take a dollar amount.</p>
+      <div class="call trap"><span class="h">Lowest remaining headroom wins</span><p>Evaluation runs ULB first (most-specific applicable) → pool/metered routing → the relevant spending limit. Whichever applicable control has the least capacity blocks first — so ULBs and spending limits must be sized <em>together</em>.</p></div>
+    </section>
+
+    <section id="uiapi">
+      <h2>What's settable in the UI vs API-only</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Control</th><th>UI today</th><th>API</th></tr></thead>
+        <tbody>
+          <tr><td>Enterprise / Org / Cost center budget (metered)</td><td><span class="tag yes">Yes</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>Repository budget</td><td><span class="tag yes">Yes</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>Universal ULB · Individual ULB</td><td><span class="tag cond">Yes ⚠ bug</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>"Stop usage" hard-stop</td><td><span class="tag yes">Yes</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>Cost center create + membership + enterprise-team</td><td><span class="tag yes">Yes</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>Cost center ULB (CCULB)</td><td><span class="tag api">API-only</span></td><td><span class="tag yes">Yes</span></td></tr>
+          <tr><td>Cost center included-usage cap</td><td><span class="tag api">API-only</span></td><td><span class="tag yes">Yes</span></td></tr>
+        </tbody>
+      </table></div>
+      <ol>
+        <li><span class="k">The two most useful balancing levers (CCULB, included-usage cap) are API-only.</span> A native admin can't carve the pool per team or set per-team per-user caps without the API.</li>
+        <li><span class="k">Known UI display bug:</span> user-level budgets created in the UI often don't appear in the "Budgets and alerts" list, blocking edit/delete; the workaround is the REST API. Orgs have blocked everyone with an accidental <code>$0</code> universal ULB fixable only via API.</li>
+      </ol>
+      <div class="call note"><span class="h">Design stance: API-first for all writes</span><p>GitHub's UI is treated as read-only/backup, not a parallel control surface — which also removes the out-of-band drift problem.</p></div>
+    </section>
+
+    <section id="gaps">
+      <h2>The gaps that justify a custom tool</h2>
+      <ol>
+        <li><span class="k">No per-user × per-model × per-surface attribution</span> in one API (entity-model <em>or</em> user-total, not both).</li>
+        <li><span class="k">No native forecasting</span> (run-rate, cycle burn-down, the 1 Sep cliff).</li>
+        <li><span class="k">No budget balancing</span> — native budgets are static; nothing redistributes headroom as the cycle progresses. <strong>The tool's centrepiece.</strong></li>
+        <li><span class="k">Fragmented, partly API-only, buggy administration</span> — no single reliable surface to run all controls.</li>
+        <li><span class="k">Reporting latency, no real-time push; coarse alerting.</span></li>
+      </ol>
+    </section>
+
+    <!-- ============ PART 2 ============ -->
+    <section id="api-budgets">
+      <div class="part-label">Part 2 — API surface inventory</div>
+      <h2>Budget management (CRUD)</h2>
+      <p class="intro">Header <code>X-GitHub-Api-Version: 2026-03-10</code>. GHE.com: swap <code>api.github.com</code> → <code>api.SUBDOMAIN.ghe.com</code>. Enterprise endpoints need a <strong>classic PAT with <code>manage_billing:enterprise</code></strong>.</p>
+      <p><code>GET/POST /{enterprises|organizations}/{id}/settings/billing/budgets</code>, plus <code>GET/PATCH/DELETE /budgets/{id}</code> and per-user state for a universal-ULB budget.</p>
+      <h4>Budget object</h4>
+      <ul>
+        <li><code>budget_type</code> — <code>ProductPricing</code> · <code>SkuPricing</code> · <code>BundlePricing</code>.</li>
+        <li><code>budget_product_sku</code> — e.g. <code>ai_credits</code>, <code>actions</code>.</li>
+        <li><code>budget_scope</code> — <code>enterprise</code>/<code>organization</code>/<code>cost_center</code>/<code>repository</code> (spending limits); <strong>user-level</strong> (universal/individual ULBs); <strong><code>multi_user_cost_center</code></strong> (the <strong>CCULB</strong>, API-only).</li>
+        <li><code>budget_amount</code> (USD) · <code>prevent_further_usage</code> (hard-stop) · <code>budget_alerting</code>.</li>
+      </ul>
+      <div class="call note"><span class="h">CCULB call shape</span><p><code>{ budget_amount, prevent_further_usage:true, budget_scope:"multi_user_cost_center", budget_entity_name:"&lt;cost center&gt;", budget_type:"BundlePricing", budget_product_sku:"ai_credits" }</code></p></div>
+    </section>
+
+    <section id="api-cc">
+      <h2>Cost centers &amp; included-usage caps</h2>
+      <p><code>/enterprises/{id}/settings/billing/cost-centers</code> — <code>GET</code> (list, <code>?state=active</code>), <code>POST</code>, <code>GET/DELETE /{ccid}</code>, <code>POST/DELETE /{ccid}/resource</code> (users, orgs, repos, <strong>enterprise teams</strong>). Enterprise-team assignment keeps membership in sync via IdP/SCIM.</p>
+      <p><span class="k">Included-usage cap (Lever C):</span> toggled on the cost center via the create/edit API (e.g. <code>ai_credit_pool_enabled</code>) with an overflow choice. <strong>No amount field</strong> — the limit is auto-computed from attributed licenses and moves with membership, so the shape is <code>enabled: bool</code> + <code>overflow: block|metered</code>, not a settable value. <span class="apibadge">API-ONLY</span></p>
+    </section>
+
+    <section id="api-usage">
+      <h2>Usage &amp; cost reporting</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Endpoint</th><th>Gives</th></tr></thead>
+        <tbody>
+          <tr><td><code>…/billing/ai_credit/usage</code></td><td>Pool + additional spend <strong>by model</strong>; 24-month history.</td></tr>
+          <tr><td><code>…/billing/usage/summary</code></td><td>Aggregated usage/cost; filter by date, <code>cost_center_id</code>, product, SKU.</td></tr>
+          <tr><td><code>POST …/billing/reports</code></td><td>Async CSV (summarized/detailed); poll for download.</td></tr>
+          <tr><td>Copilot metrics <code>users-*-day</code></td><td><code>ai_credits_used</code> per-user daily <strong>total</strong> only (not by model/surface).</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ============ PART 3 ============ -->
+    <section id="prd">
+      <div class="part-label">Part 3 — Product requirements</div>
+      <h2>Problem &amp; goals</h2>
+      <p class="intro">Token billing removed the flat-rate ceiling; native controls are static, fragmented, partly API-only, and default to no hard stop. We need one API-first plane that <strong>administers every control</strong>, <strong>forecasts</strong>, and — the centrepiece — <strong>auto-balances in both phases</strong>.</p>
+      <div class="cards">
+        <div class="card"><div class="id">G1</div><div class="t">Administer every control</div><div class="d">All ULBs, spending limits, included-usage caps, hard-stop flags, cost-center lifecycle. API-first writes.</div></div>
+        <div class="card"><div class="id">G2</div><div class="t">Forecast</div><div class="d">Cycle burn-down and metered spend at every scope, incl. the 1 Sep cliff.</div></div>
+        <div class="card"><div class="id">G3</div><div class="t">Auto-balance · pool</div><div class="d">Redistribute unconsumed shared-pool access to blocked / ≥95% entities before month-end, without tipping into metered.</div></div>
+        <div class="card"><div class="id">G4</div><div class="t">Auto-balance · metered</div><div class="d">Redistribute unused enterprise/org spending headroom to near-capped cost centers or individuals.</div></div>
+        <div class="card"><div class="id">G5</div><div class="t">Attribution</div><div class="d">Chargeback by DEWR division/branch/project via cost centers.</div></div>
+        <div class="card"><div class="id">G6</div><div class="t">Alerting · audit · RBAC</div><div class="d">Custom routing, immutable audit, least-privilege tokens.</div></div>
+      </div>
+      <h4>Non-goals</h4>
+      <ul>
+        <li>Not a traffic proxy (GitHub meters server-side); not the billing system of record; not per-request model routing.</li>
+        <li>Does not expand the pool (only license changes do) — it redistributes <em>access</em>.</li>
+      </ul>
+    </section>
+
+    <section id="personas">
+      <h2>Personas</h2>
+      <div class="cards">
+        <div class="card"><div class="t">FinOps / budget owner</div><div class="d">Sets caps by cost center; wants forecast-vs-budget, chargeback, bill-delta sign-off.</div></div>
+        <div class="card"><div class="t">Engineering lead</div><div class="d">Owns a cost center; wants per-member burn, headroom, alerts.</div></div>
+        <div class="card"><div class="t">Enterprise admin</div><div class="d">Runs all controls, approves auto-balancing, owns audit posture.</div></div>
+        <div class="card"><div class="t">Developer</div><div class="d">Read-only headroom + projected block date.</div></div>
+      </div>
+    </section>
+
+    <section id="reqs">
+      <h2>Functional requirements</h2>
+      <h4>Administration (G1)</h4>
+      <ul>
+        <li><span class="k">FR1.</span> API-first CRUD of every control: universal/CCULB/individual ULBs; enterprise/org/cost-center budgets; included-usage caps (block/overflow); hard-stop flags; cost-center lifecycle + membership + enterprise-team resources.</li>
+        <li><span class="k">FR2.</span> Surface the two API-only controls as first-class UI, badged "API-only".</li>
+        <li><span class="k">FR3.</span> Reconcile the ULB display bug: work from the API's authoritative list; detect orphaned/hidden budgets; offer repair the UI can't.</li>
+        <li><span class="k">FR4.</span> Validate on write: enterprise-cap-too-low; multi-org-licensed users; <code>$0</code> ULBs; enforce <code>prevent_further_usage=true</code> for hard caps.</li>
+      </ul>
+      <h4>Forecasting (G2)</h4>
+      <ul>
+        <li><span class="k">FR5.</span> Per-entity run-rate → exhaustion date + metered $; weekday seasonality; P50/P90; runway; backtest (MAPE); the 1 Sep step-change.</li>
+      </ul>
+      <h4>Auto-balancing · pool phase (G3)</h4>
+      <ul>
+        <li><span class="k">FR6–10.</span> Detect trigger (near cycle end + pool underutilised + entities blocked or ≥95%) → size a <strong>funding envelope</strong> → resolve each entity's <strong>binding constraint</strong> and branch on type: <strong>ULB-bound</strong> → grant the most-specific ULB (individual override, else CCULB); <strong>cap-bound</strong> → no grantable delta, relax only (disable cap / overflow / re-attribute licenses) → <strong>simulate</strong> (unblocks, projected utilisation, metered-tip probability) before apply. Genuine pool-phase redistribution is ULBs only.</li>
+      </ul>
+      <h4>Auto-balancing · metered phase (G4)</h4>
+      <ul>
+        <li><span class="k">FR11–14.</span> Detect trigger (metered phase + entity ≥95% + higher-scope headroom) → envelope from remaining enterprise/org budget → resolve the <strong>binding budget</strong> (lowest-headroom-wins) and raise <em>that</em> one → simulate with the <strong>bill delta</strong>.</li>
+      </ul>
+      <h4>Grant lifecycle (both)</h4>
+      <ul>
+        <li><span class="k">FR15.</span> Budgets persist across cycles (only the pool resets). Every auto-grant is <strong>time-boxed</strong> with a revert/re-baseline-at-rollover policy — preventing ceiling creep.</li>
+        <li><span class="k">FR16.</span> Guardrails: max grant % / absolute, floors, mandatory reserve buffer, approval gates, full reversibility.</li>
+      </ul>
+      <h4>Alerting · audit · RBAC (G6)</h4>
+      <ul>
+        <li><span class="k">FR17–19.</span> Custom thresholds + anomaly detection + per-cost-center routing; immutable audit (actor, trigger, envelope, binding constraint, before/after, forecast basis); least-privilege tokens.</li>
+      </ul>
+      <h4>Simulation &amp; verification <span class="phase pool">no live credentials yet</span></h4>
+      <ul>
+        <li><span class="k">FR20–22.</span> A full <strong>simulation mode</strong> requiring no PAT, backed by an <strong>MSW</strong> mock of the GitHub API — models pooled draw, two-phase routing, ULB precedence, lowest-headroom-wins, the non-settable included-usage cap, the API-only CCULB, and the mutations so simulate-before-apply and both rebalancers run end to end. Shipped as a toggleable <strong>offline/demo mode</strong>. Same MSW handlers back simulation, e2e, and unit tests (can't drift); <strong>stateless</strong> — reset to fixtures each run. Simulated actions <strong>never</strong> reach real GitHub; the mode is unmistakable in the UI.</li>
+        <li><span class="k">FR23. Verification gate (every change):</span> <strong>Playwright</strong> e2e (headless, MSW-backed) is the automated gate; <strong>Chrome MCP</strong> verification of the running app is the interactive confirmation. A change is done only when both pass.</li>
+      </ul>
+    </section>
+
+    <!-- ============ PART 4 ============ -->
+    <section id="arch">
+      <div class="part-label">Part 4 — Technical specification</div>
+      <h2>Architecture — an API-first control / forecast plane</h2>
+      <p class="intro">Ingest GitHub data on a schedule; forecast; run the two rebalancers under guardrails; push all controls back through the API; audit everything. <strong>.NET</strong> workers on <strong>Azure Container Apps</strong>; forecasting and the rebalancers isolated so their logic evolves independently.</p>
+      
+      <div class="arch">
+        <div class="arch-source">
+          <div class="kicker">Source &amp; sink of record</div>
+          <div class="name">GitHub Cloud / GHE.com</div>
+          <div class="chips"><span>Budgets</span><span>AI-credit usage</span><span>Metrics</span><span>Cost centers</span><span>Included-usage caps</span><span>Licensing</span></div>
+        </div>
+        <div class="arch-edges">
+          <div class="edge pull"><span class="arrow">↓</span> read · pull (scheduled)</div>
+          <div class="edge push"><span class="arrow">↑</span> write · push controls (guardrailed, API-first)</div>
+        </div>
+        <div class="plane">
+          <span class="plane-tag">Control / forecast plane · .NET on Azure Container Apps</span>
+          <div class="rails">
+            <div class="rail read">
+              <div class="rail-head">Observe &amp; forecast</div>
+              <div class="node"><div class="kicker">Workers</div><div class="nname">Ingestion</div><div class="nmeta">Usage, metrics, licensing, cost centers, budgets, caps, CSV reports.</div></div>
+              <div class="down"><svg width="14" height="16" viewBox="0 0 14 16" fill="none"><path d="M7 1v11M2.5 7.5 7 12l4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="node"><div class="kicker">Append-only</div><div class="nname">Snapshot store</div><div class="nmeta">Immutable, timestamped — never overwrite lagged upstream data.</div></div>
+              <div class="down"><svg width="14" height="16" viewBox="0 0 14 16" fill="none"><path d="M7 1v11M2.5 7.5 7 12l4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="node"><div class="kicker">Isolated service</div><div class="nname">Forecasting</div><div class="nmeta">Run-rate · cliff · P50/P90 · backtest.</div></div>
+              <div class="down"><svg width="14" height="16" viewBox="0 0 14 16" fill="none"><path d="M7 1v11M2.5 7.5 7 12l4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="node"><div class="kicker">Presentation</div><div class="nname">API (BFF) → UI</div><div class="nmeta">Dashboards, control admin, auto-balance simulate-before-apply.</div></div>
+            </div>
+            <div class="rail write">
+              <div class="rail-head">Decide &amp; act</div>
+              <div class="node accent"><div class="kicker">Recommender</div><div class="nname">Guardrail engine + rebalancers</div><div class="nmeta">Pool &amp; metered rebalancers · grants within reserve, floors &amp; approval gates.</div></div>
+              <div class="down"><svg width="14" height="16" viewBox="0 0 14 16" fill="none"><path d="M7 1v11M2.5 7.5 7 12l4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="node accent"><div class="kicker">Desired → live</div><div class="nname">Sync engine</div><div class="nmeta">Diff &amp; apply all controls; idempotent; dry-run &amp; rollback.</div><span class="push-note"><span class="arrow">↑</span> writes controls back to GitHub (API-first)</span></div>
+              <div class="down"><svg width="14" height="16" viewBox="0 0 14 16" fill="none"><path d="M7 1v11M2.5 7.5 7 12l4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="node"><div class="kicker">Tamper-evident</div><div class="nname">Audit log (immutable)</div><div class="nmeta">Actor · trigger · envelope · binding constraint · before/after.</div></div>
+            </div>
+          </div>
+          <div class="cross">Snapshots + forecast basis feed the rebalancers · every grant &amp; edit is written to the audit log</div>
+        </div>
+        <div class="arch-out"><span class="lab">Alerting →</span> Slack · Teams · email, routed per cost center</div>
+      </div>
+    </section>
+
+    <section id="model">
+      <h2>Data model</h2>
+      <p class="intro">Additions for v0.2 in <strong>bold</strong>.</p>
+      <ul>
+        <li><code>snapshot</code> (append-only) · <code>usage_fact</code> · <code>credits_used_fact</code> · <code>license</code> · <code>cost_center</code>, <code>cost_center_member</code>.</li>
+        <li><strong><code>included_usage_cap</code></strong> — <code>(cost_center_id, enabled, computed_limit [read-only, GitHub-derived], overflow_behavior)</code>. No settable amount.</li>
+        <li><code>budget</code> — scope incl. <code>multi_user_cost_center</code>; <code>amount</code>, <code>prevent_further_usage</code>, live/desired hash.</li>
+        <li><strong><code>grant</code></strong> — <code>(entity_ref, phase, lever ∈ {individual_ulb, cculb, cap_disable, cap_overflow, license_reattribute}, delta [null for cap-relax], granted_at, expires_at/rollover_policy, trigger_id, envelope_snapshot, status)</code>.</li>
+        <li><code>dewr_mapping</code> · <code>forecast</code> · <code>audit_event</code>.</li>
+      </ul>
+    </section>
+
+    <section id="forecast">
+      <h2>Forecasting</h2>
+      <ul>
+        <li>Blended trailing burn (trailing-7 weighted + cycle-to-date) with weekday seasonality → exhaustion date + metered $.</li>
+        <li>Allowance is a function of cycle month + existing-customer status, so any forecast crossing 1 Sep uses standard allowances — surfaced as a step-change.</li>
+        <li>P50/P90 from daily-burn variance; nightly backtest (MAPE); latest day provisional (settling window).</li>
+      </ul>
+    </section>
+
+    <section id="balance">
+      <h2>Auto-balancing engine</h2>
+      <p class="intro">Both rebalancers share one pattern: <strong>detect trigger → size a funding envelope → resolve each at-risk entity's binding constraint → allocate greedily by priority → simulate → apply the most-specific lever → track as a grant → revert at rollover.</strong> Greedy allocation against a hard envelope is sufficient and explainable; the envelope guarantees we never over-commit.</p>
+      
+      <div class="env">
+        <h5>Funding envelope → grants</h5>
+        <div class="env-sub">Pool rebalancer · day 26/30 · the remaining pool, parcelled to at-risk users</div>
+        <div class="env-track">
+          <div class="env-seg env-reserve"><b>Reserve</b>buffer</div>
+          <div class="env-seg env-hold"><b>Held</b>projected use · on-track users</div>
+          <div class="env-seg env-grant g1"><b>→ grant</b>blocked ×6</div>
+          <div class="env-seg env-grant g2"><b>→ grant</b>≥95% ×11</div>
+          <div class="env-seg env-grant g3"><b>→ grant</b>power users</div>
+        </div>
+        <div class="env-brace"><span class="lbl"></span><span class="env-lbl-hold">not touchable</span><span class="env-lbl-slack">envelope = redistributable slack</span></div>
+        <div class="env-cap"><span>remaining shared pool (unconsumed)</span><span>0 → tip into metered</span></div>
+        <div class="env-flow"><span class="arrow">▸</span><span>Each grant raises the <strong>most-specific binding lever</strong> (individual ULB → CCULB → included-usage cap), never exceeding the envelope. Metered mode is identical, funded by remaining enterprise/org budget.</span></div>
+      </div>
+      <h3>A · Pool-phase rebalancer — "use it or lose it"</h3>
+      <ul>
+        <li><span class="k">Why:</span> unused pool credits are forfeited at reset while some users/cost centers are blocked or ≥95%. Raising a ULB doesn't grow the pool — it raises a ceiling so that user can draw the <em>unconsumed shared slack</em>.</li>
+        <li><span class="k">Envelope:</span> <code>remaining_pool − reserve − Σ projected(non-at-risk to cycle end)</code>.</li>
+        <li><span class="k">Redistribution levers (the only ones that hand out slack):</span> <strong>individual ULB override</strong> (surgical — precedence over CCULB, unblocks one user without raising the team) → <strong>CCULB</strong> (blunt — lifts every member's ceiling uniformly). Cost-center budgets are metered-only and the included-usage cap doesn't grant, so <strong>ULBs are the entire redistribution toolkit here</strong>.</li>
+        <li><span class="k">Cap-bound = a different branch (relax, don't redistribute):</span> a team blocked by its <strong>included-usage cap</strong> while the pool has slack can't be helped by any ULB raise (lowest-headroom-wins; the cap binds). Only moves: <strong>disable the cap</strong>, <strong>overflow → metered</strong>, or <strong>attribute more licenses</strong>. The resolver must distinguish <em>cap-bound (relax-only)</em> from <em>ULB-bound (redistributable)</em>.</li>
+        <li><span class="k">Safety:</span> never let raised ceilings exceed remaining pool + allowed metered; simulate metered-tip probability; approve.</li>
+      </ul>
+      <div class="call note"><span class="h">Scenario</span><p>Day 26/30, pool 68% consumed (projected 82% → ~18% forfeit), 6 blocked and 11 at ≥95%. Envelope = the ~18% slack minus reserve. Raise individual ULBs for the 17 at-risk users, simulate 96% utilisation with &lt;3% metered-tip risk, apply on approval, tag each as a grant to revert at reset.</p></div>
+      <h3>B · Metered-phase rebalancer — spending-headroom redistributor</h3>
+      <ul>
+        <li><span class="k">Why:</span> after the pool is gone, some cost centers/individuals hit their metered cap while the enterprise/org budget still has large unused headroom.</li>
+        <li><span class="k">Envelope:</span> <code>remaining_enterprise(or org)_budget − reserve − Σ projected_metered(non-at-risk)</code>.</li>
+        <li><span class="k">Levers:</span> raise the <strong>binding</strong> budget only (ULB vs cost-center vs org vs enterprise, lowest-headroom). Excluded cost centers are self-funded.</li>
+        <li><span class="k">Simulate:</span> who stays unblocked, projected total metered $, remaining headroom, and the <strong>bill delta</strong> — before apply.</li>
+      </ul>
+      <div class="call note"><span class="h">Scenario</span><p>Enterprise metered budget $8,000, $6,300 unused, 4 days left; cost center <em>Platform</em> at 98% of its $600 cap and 3 individuals near their ULB. Redistribute from the $6,300 envelope: +$250 to <em>Platform</em> and individual-ULB bumps for the 3 users (whichever is binding), simulate the bill delta, apply on approval.</p></div>
+      <div class="call trap"><span class="h">Grant lifecycle — mandatory</span><p>Budgets persist across cycles; only the pool resets. Without a lifecycle, end-of-cycle grants become permanent higher ceilings, inflating next month's implicit overage exposure. Every grant is time-boxed with a <strong>revert / re-baseline at rollover</strong> policy, plus a "grant creep" guard.</p></div>
+    </section>
+
+    <section id="auth">
+      <h2>Sync engine, auth &amp; security</h2>
+      <ul>
+        <li><span class="k">Declarative desired-state</span> (Terraform-style): rebalancers emit desired budgets/caps; engine diffs vs live and applies idempotent <code>POST/PATCH/DELETE</code>; reconciles out-of-band UI edits.</li>
+        <li><span class="k">API-first for all writes</span> — mandated by the API-only levers + the ULB display bug.</li>
+        <li>Classic PAT with <code>manage_billing:enterprise</code> in Azure Key Vault; separate read/write tokens; write token reachable only by the sync engine's service identity.</li>
+        <li><span class="k">Government posture:</span> append-only, hash-chained audit; every grant explainable from its recorded trigger + envelope + forecast basis.</li>
+      </ul>
+      <h4>Edge cases</h4>
+      <ul>
+        <li>Lazy universal-ULB records → reconcile against full licensing. Mid-cycle seat add/remove → forecast on <em>effective</em> pool. Policy state changes exhaustion semantics → ingest it. Reporting lag → settling window. Cost centers are <strong>GHE Cloud only</strong> → both API-only levers unavailable on Business-without-enterprise.</li>
+      </ul>
+    </section>
+
+    <section id="sim">
+      <h2>Simulation mode &amp; test architecture (MSW)</h2>
+      <p class="intro">No live credentials exist yet, so <strong>simulation mode is the primary development and verification surface</strong> — and it ships as an offline/demo mode admins can toggle. A single <strong>MSW (Mock Service Worker)</strong> layer fakes the GitHub billing/budget API and is the shared source of truth for three consumers, so behaviour and tests can't drift.</p>
+      <ul>
+        <li><span class="k">One mock, three consumers:</span> simulation mode · Playwright e2e · unit/component tests.</li>
+        <li><span class="k">Models:</span> pooled draw, two-phase routing, ULB precedence, lowest-headroom-wins, the non-settable included-usage cap, the API-only CCULB, pagination, and the <strong>mutations</strong> (<code>POST/PATCH/DELETE</code>) so simulate-before-apply and both rebalancers run end to end. Edge fixtures: ULB display-bug, <code>$0</code> block, cap-bound team, promo→standard cliff.</li>
+        <li><span class="k">Stateless / deterministic:</span> reset to fixtures each run; e2e asserts on the request issued + immediate response, not cross-request persistence; apply→result within a session uses optimistic UI.</li>
+        <li><span class="k">Safety:</span> simulated actions never reach real GitHub or mutate a real control; the mode is unmistakable in the UI (persistent banner).</li>
+      </ul>
+      <div class="call trap"><span class="h">Verification gate — every change</span><p><strong>Playwright</strong> e2e (headless, MSW-backed, deterministic) is the automated gate; <strong>Chrome MCP</strong> verification of the actual running app is the interactive confirmation. A change is done only when both are green.</p></div>
+      <div class="call note"><span class="h">Stack note</span><p>Assumes the local-first Electron/TypeScript desktop delivery; MSW/Playwright/Chrome MCP are TS-stack tooling. The architecture &amp; sync sections above predate that pivot — reconcile separately.</p></div>
+    </section>
+
+    <section id="phases">
+      <h2>Build phases</h2>
+      <ol>
+        <li><span class="k">Simulation harness + scaffold (first)</span> — monorepo, packages, Electron shell, <code>ApiClient</code>, Drizzle schema, <strong>MSW + fixtures, simulation toggle, and the Playwright + Chrome-MCP gate</strong>. Smoke test: "Sync now" pulls a report <em>from MSW</em> into SQLite, verified through the gate.</li>
+        <li><span class="k">Read-only observability</span> — ingest, snapshots, dashboards.</li>
+        <li><span class="k">Full control administration</span> — API-first CRUD of all controls incl. the two API-only levers; ULB-bug repair.</li>
+        <li><span class="k">Forecasting</span> — run-rate, cliff, runway, P50/P90, backtest.</li>
+        <li><span class="k">Auto-balancing, dry-run</span> — both rebalancers, simulate only.</li>
+        <li><span class="k">Guardrailed auto-apply</span> + grant lifecycle + custom alerting.</li>
+        <li><span class="k">Chargeback + audit export.</span></li>
+      </ol>
+      <p style="color:var(--muted)">Every phase passes the verification gate (Playwright + Chrome MCP against MSW) before it's done.</p>
+    </section>
+
+    <!-- ============ PART 5 ============ -->
+    <section id="open">
+      <div class="part-label">Part 5 — Open questions before build</div>
+      <h2>Five things to settle first</h2>
+      <ol>
+        <li><strong>Enterprise or Business</strong>, and <strong>github.com or GHE.com</strong>? Gates cost centers, CCULBs, included-usage caps, allowances, API host.</li>
+        <li><strong>"AI credit paid usage" enabled?</strong> Determines whether the metered rebalancer is in scope.</li>
+        <li><strong>Cost centers</strong> in use, driven by <strong>enterprise teams</strong> aligned to DEWR division/branch?</li>
+        <li><strong>Pool posture:</strong> hard-stop at pool or controlled metered budget? Sets default <code>prevent_further_usage</code>.</li>
+        <li><strong>Auto-apply appetite:</strong> recommend-only or guardrailed auto-balancing — and the <strong>reserve buffer %</strong> and <strong>grant rollover policy</strong> (revert vs re-baseline)?</li>
+      </ol>
+    </section>
+
+    <footer>
+      Copilot Budget Manager · PRD &amp; Spec v0.2 · API-first control/forecast plane with two-phase auto-balancing.<br>
+      GitHub behaviour current as of 4 Jul 2026 — verify against the plans page and changelog at build time.
+    </footer>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  // Mobile nav
+  var toggle = document.getElementById('navtoggle');
+  var toc = document.getElementById('toc');
+  toggle.addEventListener('click', function(){ toc.classList.toggle('open'); });
+  toc.addEventListener('click', function(e){ if(e.target.tagName === 'A' && window.innerWidth <= 900) toc.classList.remove('open'); });
+
+  // Scrollspy
+  var links = Array.prototype.slice.call(document.querySelectorAll('#tocnav a[href^="#"]'));
+  var map = {};
+  links.forEach(function(l){ var id = l.getAttribute('href').slice(1); var el = document.getElementById(id); if(el) map[id] = l; });
+  var obs = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if(en.isIntersecting){
+        links.forEach(function(l){ l.classList.remove('active'); });
+        var l = map[en.target.id]; if(l) l.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-15% 0px -75% 0px', threshold: 0 });
+  Object.keys(map).forEach(function(id){ var el = document.getElementById(id); if(el) obs.observe(el); });
+</script>
+</body>
+</html>

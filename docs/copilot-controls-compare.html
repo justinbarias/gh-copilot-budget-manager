@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How the controls compare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gabarito:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0E0D14; --surface:#17151F; --surface-2:#1E1B29;
+    --border:#2A2735; --border-strong:#3A3648;
+    --text:#ECEAF3; --muted:#9A94AB; --faint:#6B6579;
+    --violet:#8B5CF6; --violet-bright:#A78BFA; --violet-wash:rgba(139,92,246,.10);
+    --mint:#34D399; --mint-wash:rgba(52,211,153,.13);
+    --amber:#F5A623; --amber-wash:rgba(245,166,35,.13);
+    --label:236px;
+    --display:'Gabarito',system-ui,sans-serif;
+    --body:'IBM Plex Sans',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:var(--body); -webkit-font-smoothing:antialiased; padding:26px 20px 34px}
+  .wrap{max-width:900px; margin:0 auto}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--violet-bright); display:flex; align-items:center; gap:9px; margin-bottom:12px}
+  .eyebrow::before{content:""; width:22px; height:1px; background:var(--violet)}
+  h1{font-family:var(--display); font-weight:800; font-size:clamp(22px,4vw,30px); letter-spacing:-.02em; margin:0 0 6px}
+  .sub{color:var(--muted); font-size:14.5px; margin:0 0 22px; max-width:60ch}
+
+  .diagram{position:relative; border:1px solid var(--border); border-radius:14px; background:linear-gradient(180deg,var(--surface),#131119); padding:16px 18px 20px}
+
+  /* phase header */
+  .phasebar{display:grid; grid-template-columns:var(--label) 1fr 1fr; gap:0; margin-bottom:6px}
+  .phasebar .spacer{font-family:var(--mono); font-size:10px; color:var(--faint); text-transform:uppercase; letter-spacing:.08em; align-self:end; padding-bottom:8px}
+  .zone{padding:8px 10px; text-align:center; border-radius:8px 8px 0 0}
+  .zone .z-t{font-family:var(--display); font-weight:600; font-size:12.5px; letter-spacing:.02em}
+  .zone .z-s{font-family:var(--mono); font-size:10px; color:var(--faint); margin-top:2px}
+  .zone.pool{background:var(--mint-wash); color:var(--mint)}
+  .zone.metered{background:var(--amber-wash); color:var(--amber); margin-left:1px}
+
+  /* vertical phase divider spanning the rows */
+  .matrix{position:relative}
+  .divider{position:absolute; top:50px; bottom:0; left:calc(50% + (var(--label) / 2)); width:0; border-left:1px dashed var(--border-strong); pointer-events:none}
+  .divider::before{content:"pool exhausted"; position:absolute; top:-2px; left:50%; transform:translateX(-50%); white-space:nowrap; font-family:var(--mono); font-size:9.5px; color:var(--faint); background:var(--bg); padding:2px 6px; border:1px solid var(--border); border-radius:100px}
+
+  .apionly{display:inline-block; font-family:var(--mono); font-size:9px; letter-spacing:.04em; color:var(--violet-bright); background:var(--violet-wash); border:1px solid rgba(139,92,246,.4); border-radius:5px; padding:1.5px 6px; margin-top:6px; margin-left:6px}
+
+  /* group label */
+  .group{font-family:var(--display); font-weight:600; font-size:11.5px; letter-spacing:.05em; text-transform:uppercase; margin:16px 0 2px; display:flex; align-items:center; gap:8px}
+  .group.ulb{color:var(--mint)}
+  .group.sl{color:var(--amber)}
+  .group::before{content:""; width:8px; height:8px; border-radius:2px}
+  .group.ulb::before{background:var(--mint)}
+  .group.sl::before{background:var(--amber)}
+  .group .g-meta{font-family:var(--body); font-weight:400; font-size:11px; letter-spacing:0; text-transform:none; color:var(--muted)}
+
+  /* rows */
+  .row{display:grid; grid-template-columns:var(--label) 1fr 1fr; gap:0; align-items:center; padding:11px 0; border-bottom:1px solid var(--border)}
+  .row:last-of-type{border-bottom:0}
+  .rlabel{padding-right:16px}
+  .rlabel .r-name{font-family:var(--display); font-weight:600; font-size:14px; line-height:1.2}
+  .rlabel .r-caps{font-size:11.5px; color:var(--muted); line-height:1.35; margin-top:3px}
+  .rlabel .r-scope{display:inline-block; font-family:var(--mono); font-size:9.5px; letter-spacing:.03em; color:var(--faint); border:1px solid var(--border); border-radius:5px; padding:1.5px 6px; margin-top:6px}
+
+  .bar{height:38px; border-radius:8px; display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:0 12px; margin:0 6px; font-family:var(--mono); font-size:10.5px; position:relative; overflow:hidden}
+  .bar .cap{position:absolute; left:12px; font-size:10px; letter-spacing:.03em; opacity:.9}
+  .span-both{grid-column:2 / 4}
+  .span-met{grid-column:3 / 4}
+  .bar.mint{background:var(--mint-wash); border:1px solid rgba(52,211,153,.4); color:var(--mint)}
+  .bar.mint::after{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--mint)}
+  .bar.amber{background:repeating-linear-gradient(135deg,var(--amber-wash),var(--amber-wash) 7px,transparent 7px,transparent 14px); border:1px dashed rgba(245,166,35,.55); color:var(--amber)}
+  .hardstop{display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:10px; white-space:nowrap}
+  .dot{width:8px; height:8px; border-radius:50%}
+  .dot.solid{background:currentColor}
+  .dot.hollow{border:1.5px solid currentColor}
+
+  /* legend + notes */
+  .legend{display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:18px; padding-top:15px; border-top:1px solid var(--border); font-size:12px; color:var(--muted)}
+  .legend .item{display:flex; align-items:center; gap:8px}
+  .swatch{width:22px; height:12px; border-radius:3px; flex:none}
+  .swatch.mint{background:var(--mint-wash); border:1px solid rgba(52,211,153,.5)}
+  .swatch.amber{background:repeating-linear-gradient(135deg,var(--amber-wash),var(--amber-wash) 5px,transparent 5px,transparent 10px); border:1px dashed rgba(245,166,35,.6)}
+  .swatch.api{background:var(--violet-wash); border:1px solid rgba(139,92,246,.5)}
+  .notes{margin-top:14px; display:flex; flex-direction:column; gap:7px}
+  .note{display:flex; gap:9px; font-size:12.5px; color:var(--muted); line-height:1.45}
+  .note .mk{font-family:var(--mono); color:var(--violet-bright); flex:none}
+  .note b{color:var(--text); font-weight:600}
+  .src{margin-top:16px; font-family:var(--mono); font-size:10.5px; color:var(--faint)}
+
+  @media (max-width:600px){
+    :root{--label:112px}
+    .rlabel{padding-right:8px}
+    .rlabel .r-caps{display:none}
+    .bar{padding:0 8px; margin:0 3px}
+    .bar .cap{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">GitHub Copilot · budget controls</div>
+  <h1>How the controls compare</h1>
+  <p class="sub">Two families. User-level budgets govern each person across the whole cycle; spending limits only cap metered charges once the shared pool is gone. The bar shows <em>when each control is active</em>; the marker shows <em>whether it hard-stops</em>.</p>
+
+  <div class="diagram">
+    <div class="matrix">
+    <div class="divider"></div>
+
+    <div class="phasebar">
+      <div class="spacer">Active window →</div>
+      <div class="zone pool"><div class="z-t">Pool phase</div><div class="z-s">included credits · no extra cost</div></div>
+      <div class="zone metered"><div class="z-t">Metered phase</div><div class="z-s">$0.01 / credit · after pool</div></div>
+    </div>
+
+    <div class="group ulb">User-level budgets <span class="g-meta">— cap each person's total credits · both phases · always hard-stop</span></div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Universal user-level budget</div>
+        <div class="r-caps">Each user's total AI-credit consumption</div>
+        <div class="r-scope">PER USER</div>
+      </div>
+      <div class="bar mint span-both">
+        <span class="cap">active: pool + metered</span>
+        <span class="hardstop"><span class="dot solid"></span>Always</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Cost center user-level budget</div>
+        <div class="r-caps">Each member's total — one per-user amount for the whole cost center; overrides universal</div>
+        <div class="r-scope">PER USER · PER COST CENTER</div><span class="apionly">API-ONLY</span>
+      </div>
+      <div class="bar mint span-both">
+        <span class="cap">active: pool + metered</span>
+        <span class="hardstop"><span class="dot solid"></span>Always</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Individual user-level budget</div>
+        <div class="r-caps">A specific user's total — overrides universal</div>
+        <div class="r-scope">PER USER</div>
+      </div>
+      <div class="bar mint span-both">
+        <span class="cap">active: pool + metered</span>
+        <span class="hardstop"><span class="dot solid"></span>Always</span>
+      </div>
+    </div>
+
+    <div class="group sl">Spending limits <span class="g-meta">— cap metered charges only · after the pool · hard-stop OFF by default</span></div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Cost center budget</div>
+        <div class="r-caps">A team's metered charges after pool exhaustion</div>
+        <div class="r-scope">PER COST CENTER</div>
+      </div>
+      <div class="bar amber span-met">
+        <span class="hardstop"><span class="dot hollow"></span>If enabled</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Organization budget</div>
+        <div class="r-caps">An org's metered charges after pool exhaustion</div>
+        <div class="r-scope">PER ORGANIZATION</div>
+      </div>
+      <div class="bar amber span-met">
+        <span class="hardstop"><span class="dot hollow"></span>If enabled</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="rlabel">
+        <div class="r-name">Enterprise budget</div>
+        <div class="r-caps">Total enterprise metered charges after pool exhaustion</div>
+        <div class="r-scope">ENTERPRISE-WIDE</div>
+      </div>
+      <div class="bar amber span-met">
+        <span class="hardstop"><span class="dot hollow"></span>If enabled</span>
+      </div>
+    </div>
+    </div>
+
+    <div class="legend">
+      <div class="item"><span class="swatch mint"></span> Always a hard stop</div>
+      <div class="item"><span class="swatch amber"></span> Hard stop only if “Stop usage when budget limit is reached” is enabled</div>
+      <div class="item"><span class="swatch api"></span> API-only — no billing-UI support yet (coming soon)</div>
+    </div>
+
+    <div class="notes">
+      <div class="note"><span class="mk">$0</span><span>Any budget set to <b>$0</b> stops usage immediately for the users it applies to.</span></div>
+      <div class="note"><span class="mk">⊟</span><span><b>Lowest remaining headroom wins:</b> whichever applicable budget has the least capacity left blocks the user first — so ULBs and spending limits must be sized together.</span></div>
+      <div class="note"><span class="mk">≻</span><span><b>Precedence among user-level budgets</b> (most specific wins): individual &gt; cost-center &gt; universal.</span></div>
+    </div>
+
+    <div class="src">Source: GitHub Docs — Budgets for usage-based billing (+ 30 Jun 2026 changelog for the cost-center user-level budget) · current as of 4 Jul 2026</div>
+  </div>
+</div>
+</body>
+</html>
