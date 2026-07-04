@@ -1,0 +1,32 @@
+import { ipcMain } from 'electron';
+import { createGitHubApiClient } from '@copilot-budget/data/api-client';
+import type { ApiClient, UsageSummaryParams } from '@copilot-budget/data';
+
+// TODO: enterprise slug + baseUrl (the GHE.com host swap) should come from real
+// org configuration once CLAUDE.md §9's open questions are answered (Task 1.7
+// Settings screen). Hardcoded to match the MSW fixture enterprise until then —
+// simulation is forced by default (see main/mode.ts), so today this client only
+// ever talks to MSW, never real GitHub.
+const ENTERPRISE_SLUG = 'acme-enterprise';
+
+let apiClient: ApiClient | undefined;
+
+function getApiClient(): ApiClient {
+  if (!apiClient) {
+    apiClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG });
+  }
+  return apiClient;
+}
+
+export function registerApiClientIpcHandlers(): void {
+  const client = getApiClient();
+
+  ipcMain.handle('apiClient:getUsageSummary', (_event, params?: UsageSummaryParams) =>
+    client.getUsageSummary(params),
+  );
+  ipcMain.handle('apiClient:listCostCenters', () => client.listCostCenters());
+  ipcMain.handle('apiClient:listHeavyUsers', () => client.listHeavyUsers());
+  ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());
+  ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());
+  ipcMain.handle('apiClient:syncNow', () => client.syncNow());
+}

@@ -9,3 +9,8 @@ export const DATA_DEPENDS_ON = CORE_PACKAGE_NAME;
 // itself never pulls better-sqlite3 or msw/node into a non-Node consumer (e.g.
 // packages/ui via Vite) — see CLAUDE.md's portability rule.
 export * from './db/schema.js';
+
+// Type-only surface (interfaces compile away — zero runtime footprint), so it
+// belongs on this pure barrel even though the Octokit-backed implementation
+// is Node-only and lives behind the './api-client' subpath below.
+export * from './api-client/types.js';

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import { registerPatIpcHandlers } from './pat-bridge';
 import { getMode, registerModeIpcHandler } from './mode';
+import { registerApiClientIpcHandlers } from './ipc';
 
 const RENDERER_DEV_SERVER_URL = 'http://localhost:5173';
 
@@ -31,12 +32,13 @@ async function bootstrap(): Promise<void> {
   const mode = await getMode();
   if (mode === 'simulation') {
     // One mock, three consumers (CLAUDE.md §7): this is the runtime
-    // simulation consumer. Attaching here, in main, is where Octokit-issued
-    // requests will actually run once 1.5 adds the ApiClient.
+    // simulation consumer. The ApiClient's Octokit-issued requests are
+    // intercepted here once this listener is attached.
     const { server } = await import('@copilot-budget/data/msw');
     server.listen({ onUnhandledRequest: 'bypass' });
   }
 
+  registerApiClientIpcHandlers();
   createWindow();
 }
 
