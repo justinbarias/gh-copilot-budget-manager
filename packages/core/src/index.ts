@@ -1,9 +1,11 @@
 export const CORE_PACKAGE_NAME = '@copilot-budget/core';
 
 export * from './auditChain.js';
+export * from './backtest.js';
 export * from './burndown.js';
 export * from './controls.js';
 export * from './costCenter.js';
+export * from './forecast.js';
 export * from './modelMix.js';
 export * from './poolAllowance.js';
 export * from './ranking.js';

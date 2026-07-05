@@ -33,8 +33,8 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ## Phase 5 — Forecasting (G2; FR5) *(parallel with Phase 4)*
 
 - [x] 5.1 Multi-cycle historical fixtures with weekday seasonality + cliff crossing [M]
-- [ ] 5.2 `core`: blended run-rate + seasonality + P50/P90 + exhaustion date + 1 Sep step-change + settling window [L — split at review if needed]
-- [ ] 5.3 `core`: backtest (MAPE), no look-ahead [S/M]
+- [x] 5.2 `core`: blended run-rate + seasonality + P50/P90 + exhaustion date + 1 Sep step-change + settling window [L — split at review if needed]
+- [x] 5.3 `core`: backtest (MAPE), no look-ahead [S/M]
 - [ ] 5.4 `data`: `forecast` table + compute-on-sync + `getForecast` ⚠ migration + bridge — ask first [M]
 - [ ] 5.5 Forecast screen — enterprise + heavy-user scopes (burn-down w/ bands, exhaustion marker, metered bar, backtest grid) [L]
 - [ ] 5.6 Forecast screen — cost-center scope: cap-on burn-down vs cap / cap-off explainer + Controls CTA [M]
