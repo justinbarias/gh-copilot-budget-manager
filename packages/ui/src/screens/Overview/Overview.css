@@ -20,6 +20,8 @@
   color: var(--text-neutral);
 }
 
+/* Task 5.7: live (clickable) toggle, same segmented-pill recipe as
+   Forecast.css's .forecast__tab -- no longer the Task 2.1 disabled/locked stub. */
 .overview__lens-toggle {
   display: flex;
   background: var(--surface);
@@ -27,9 +29,6 @@
   border-radius: 60px;
   padding: 3px;
   gap: 2px;
-  /* Visibly non-interactive, not silently missing (design/README.md's "never
-     color alone" rule) -- paired with the icon+text cue below. */
-  opacity: 0.55;
 }
 
 .overview__lens-btn {
@@ -40,20 +39,16 @@
   font-weight: 500;
   background: transparent;
   color: var(--text-muted);
-  cursor: not-allowed;
+  cursor: pointer;
+}
+
+.overview__lens-btn:hover {
+  color: var(--text-default);
 }
 
 .overview__lens-btn--active {
   background: var(--surface-2);
-  color: var(--text-default);
-}
-
-.overview__lens-cue {
-  font-size: 11.5px;
-  color: var(--text-neutral);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  color: #ffffff;
 }
 
 .overview__chart-card {
@@ -126,6 +121,39 @@
   border-top: 1.5px dashed var(--text-neutral);
 }
 
+/* Task 5.7: forecast-overlay legend swatches (pool lens only, when a
+   forecast exists) -- same colors as BurndownChart.tsx's P50 line / band fill. */
+.overview__legend-swatch--p50 {
+  height: 0;
+  border-top: 2px dashed var(--blue);
+}
+
+.overview__legend-swatch--band {
+  height: 10px;
+  width: 12px;
+  background: rgba(141, 214, 255, 0.16);
+  border: 1px solid rgba(141, 214, 255, 0.4);
+  border-radius: 2px;
+}
+
+.overview__provisional-caption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-neutral);
+}
+
+.overview__provisional-swatch {
+  width: 12px;
+  height: 10px;
+  display: inline-block;
+  background: repeating-linear-gradient(45deg, var(--border), var(--border) 2px, transparent 2px, transparent 5px);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
 .overview__tiles {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -137,4 +165,102 @@
   .overview__tiles {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* Task 5.7: metered lens. */
+.overview__metered-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 22px 24px 18px;
+  margin-bottom: 20px;
+}
+
+.overview__metered-headline {
+  font-size: 22px;
+  font-weight: 480;
+  letter-spacing: -0.3px;
+  margin-bottom: 6px;
+}
+
+.overview__metered-headline--amber {
+  color: var(--amber);
+}
+
+.overview__metered-headline--red {
+  color: var(--red);
+}
+
+.overview__metered-caption {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  line-height: 1.5;
+  margin-bottom: 8px;
+  max-width: 82ch;
+}
+
+.overview__gap-note {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+  line-height: 1.5;
+  margin-top: 10px;
+}
+
+.overview__metered-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+@media (max-width: 900px) {
+  .overview__metered-tiles {
+    grid-template-columns: repeat(1, 1fr);
+  }
+}
+
+.overview__metered-inactive-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 40px 28px;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.overview__metered-inactive-title {
+  font-size: 16px;
+  color: var(--green);
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.overview__metered-inactive-body {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.overview__empty-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+
+.overview__empty-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-default);
+  margin-bottom: 6px;
+}
+
+.overview__empty-body {
+  font-size: 13px;
+  color: var(--text-subtle);
+  line-height: 1.6;
+  max-width: 84ch;
 }

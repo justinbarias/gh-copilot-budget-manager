@@ -158,6 +158,7 @@ export function BurndownChart({ data, daysInCycle, allowance, forecast }: Burndo
                 fillOpacity={0.16}
                 isAnimationActive={false}
                 legendType="none"
+                data-testid="burndown-band"
               />
               <Line
                 data={forecast.p50}
@@ -197,6 +198,7 @@ export function BurndownChart({ data, daysInCycle, allowance, forecast }: Burndo
                 fill="#ff7b72"
                 stroke="#0d1117"
                 strokeWidth={2}
+                data-testid="burndown-exhaustion-marker"
                 label={
                   forecast.exhaustionLabel
                     ? {

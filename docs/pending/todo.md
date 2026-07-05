@@ -38,7 +38,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 5.4 `data`: `forecast` table + compute-on-sync + `getForecast` ⚠ migration + bridge — ask first [M]
 - [x] 5.5 Forecast screen — enterprise + heavy-user scopes (burn-down w/ bands, exhaustion marker, metered bar, backtest grid) [L]
 - [x] 5.6 Forecast screen — cost-center scope: cap-on burn-down vs cap / cap-off explainer + Controls CTA [M]
-- [ ] 5.7 Overview — forecast lens live, P50/P90 overlay, projected runway tiles, cliff banner [M]
+- [x] 5.7 Overview — forecast lens live, P50/P90 overlay, projected runway tiles, cliff banner [M]
 - [x] 5.8 Users — projected block date sublabels [S]
 
 ### Checkpoint 5 — forecasting complete
