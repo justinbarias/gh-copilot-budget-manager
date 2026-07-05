@@ -33,7 +33,7 @@ function validBudgetPayload(overrides: Record<string, unknown> = {}) {
     budget_entity_name: 'user-99',
     budget_amount: 100,
     prevent_further_usage: true,
-    budget_alerting: { will_alert: true, alert_recipients: ['finops@acme.example'] },
+    budget_alerting: { will_alert: true, alert_recipients: ['finops@dewr.gov.au'] },
     ...overrides,
   };
 }
@@ -41,11 +41,11 @@ function validBudgetPayload(overrides: Record<string, unknown> = {}) {
 describe('Task 4.1 -- budget mutations: create (POST)', () => {
   const scopeCases: Array<{ scope: string; entity: string }> = [
     { scope: 'enterprise', entity: ENTERPRISE_SLUG },
-    { scope: 'organization', entity: 'acme-eng-org' },
-    { scope: 'cost_center', entity: 'Platform' },
+    { scope: 'organization', entity: 'dewr-digital' },
+    { scope: 'cost_center', entity: 'Workforce Australia Platform' },
     { scope: 'universal', entity: ENTERPRISE_SLUG },
     { scope: 'individual', entity: 'user-99' },
-    { scope: 'multi_user_cost_center', entity: 'Platform' },
+    { scope: 'multi_user_cost_center', entity: 'Workforce Australia Platform' },
   ];
 
   it.each(scopeCases)('creates a $scope budget: 201 + full echoed response + deterministic id', async ({ scope, entity }) => {
@@ -74,13 +74,13 @@ describe('Task 4.1 -- budget mutations: create (POST)', () => {
 
   it('matches the PRD §2.1 CCULB (multi_user_cost_center) example payload shape verbatim', async () => {
     const payload = {
-      budget_amount: 45,
+      budget_amount: 52,
       prevent_further_usage: true,
       budget_scope: 'multi_user_cost_center',
-      budget_entity_name: 'Platform',
+      budget_entity_name: 'Workforce Australia Platform',
       budget_type: 'BundlePricing',
       budget_product_sku: 'ai_credits',
-      budget_alerting: { will_alert: true, alert_recipients: ['platform-leads@acme.example'] },
+      budget_alerting: { will_alert: true, alert_recipients: ['wfa-leads@dewr.gov.au'] },
     };
     const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
     expect(res.status).toBe(201);
@@ -246,7 +246,7 @@ describe('Task 4.2 -- cost center mutations: create (POST)', () => {
     const res = await fetch(COST_CENTERS_URL, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ name: 'New Squad', dewr_division: 'Digital Services' }),
+      body: JSON.stringify({ name: 'New Squad', dewr_division: 'Digital & Technology Group' }),
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { name: string; state: string; included_usage_cap: unknown; id: string };
@@ -305,7 +305,7 @@ describe('Task 4.2 -- cost center mutations: create (POST)', () => {
 
 describe('Task 4.2 -- cost center mutations: delete', () => {
   it('deletes a known cost center with 204', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataAnalytics}`, { method: 'DELETE', headers });
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}`, { method: 'DELETE', headers });
     expect(res.status).toBe(204);
   });
 
@@ -317,7 +317,7 @@ describe('Task 4.2 -- cost center mutations: delete', () => {
 
 describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap toggle', () => {
   it('toggles enabled/overflow, recomputing the limit from canonical membership (unspecified sub-field keeps its value)', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ included_usage_cap: { enabled: false } }),
@@ -326,11 +326,11 @@ describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap t
     const body = (await res.json()) as { included_usage_cap: { enabled: boolean; overflow: string; computed_limit_credits: number } };
     expect(body.included_usage_cap.enabled).toBe(false);
     expect(body.included_usage_cap.overflow).toBe('block'); // unspecified -> retains canonical fixture value
-    expect(body.included_usage_cap.computed_limit_credits).toBe(15 * PROMO_CREDITS_PER_SEAT);
+    expect(body.included_usage_cap.computed_limit_credits).toBe(24 * PROMO_CREDITS_PER_SEAT);
   });
 
   it('rejects any attempt to set a cap amount on edit, under any guessed field name', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ included_usage_cap: { overflow: 'metered', amount: 50_000 } }),
@@ -339,7 +339,7 @@ describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap t
   });
 
   it('rejects an unknown top-level field on edit', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ mtd_burn_credits: 0 }),
@@ -354,25 +354,25 @@ describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap t
 });
 
 describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', () => {
-  it('adds 2 users to the 10-seat Data & Analytics CC and returns the recomputed limit for 12 seats', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataAnalytics}/resource`, {
+  it('adds 2 users to the 9-seat Data & Evaluation Platform CC and returns the recomputed limit for 11 seats', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         resources: [
-          { type: 'User', name: 'user-92' },
-          { type: 'User', name: 'user-93' },
+          { type: 'User', name: 'tess-whitford' },
+          { type: 'User', name: 'jordan-mackay' },
         ],
       }),
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { included_usage_cap: { computed_limit_credits: number }; member_count: number };
-    expect(body.included_usage_cap.computed_limit_credits).toBe(12 * PROMO_CREDITS_PER_SEAT);
-    expect(body.member_count).toBe(12);
+    expect(body.included_usage_cap.computed_limit_credits).toBe(11 * PROMO_CREDITS_PER_SEAT);
+    expect(body.member_count).toBe(11);
   });
 
   it('supports adding an enterprise-team resource', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}/resource`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ resources: [{ type: 'EnterpriseTeam', name: 'design-guild' }] }),
@@ -383,15 +383,15 @@ describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', 
   });
 
   it('removes a user and recomputes the limit downward', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataAnalytics}/resource`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'DELETE',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'User', name: 'user-16' }] }),
+      body: JSON.stringify({ resources: [{ type: 'User', name: 'raymond-li' }] }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { included_usage_cap: { computed_limit_credits: number }; member_count: number };
-    expect(body.included_usage_cap.computed_limit_credits).toBe(9 * PROMO_CREDITS_PER_SEAT);
-    expect(body.member_count).toBe(9);
+    expect(body.included_usage_cap.computed_limit_credits).toBe(8 * PROMO_CREDITS_PER_SEAT);
+    expect(body.member_count).toBe(8);
   });
 
   it('404s adding a resource to an unknown cost center', async () => {
@@ -404,7 +404,7 @@ describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', 
   });
 
   it('rejects a malformed resource payload (unknown resource type)', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}/resource`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ resources: [{ type: 'Bogus', name: 'x' }] }),
@@ -413,7 +413,7 @@ describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', 
   });
 
   it('rejects an empty resources array', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.platform}/resource`, {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ resources: [] }),
@@ -424,34 +424,39 @@ describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', 
 
 describe('Task 4.2 -- cost center mutations: statelessness', () => {
   it('adding members does not change what the canonical GET handlers report afterward', async () => {
-    await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataAnalytics}/resource`, {
+    await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'User', name: 'user-92' }] }),
+      body: JSON.stringify({ resources: [{ type: 'User', name: 'tess-whitford' }] }),
     });
 
     const resourcesRes = await fetch(
-      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/cost-centers/${COST_CENTER_IDS.dataAnalytics}/resource`,
+      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/cost-centers/${COST_CENTER_IDS.dataEval}/resource`,
       { headers },
     );
     const resourcesBody = (await resourcesRes.json()) as { resources: unknown[] };
-    expect(resourcesBody.resources).toHaveLength(10); // canonical fixture count, unchanged
+    expect(resourcesBody.resources).toHaveLength(9); // canonical fixture count, unchanged
 
     const centersBody = (await (await fetch(COST_CENTERS_URL, { headers })).json()) as {
       costCenters: Array<{ id: string; included_usage_cap: { computed_limit_credits: number } }>;
     };
-    const dataAnalytics = centersBody.costCenters.find((c) => c.id === COST_CENTER_IDS.dataAnalytics);
-    expect(dataAnalytics?.included_usage_cap.computed_limit_credits).toBe(70_000); // untouched canonical value
+    const dataEval = centersBody.costCenters.find((c) => c.id === COST_CENTER_IDS.dataEval);
+    expect(dataEval?.included_usage_cap.computed_limit_credits).toBe(63_000); // untouched canonical value
   });
 
   it('consistency pin: licensedSeatCount x 7,000 reproduces every committed computed_limit_credits at zero delta', async () => {
     const centersBody = (await (await fetch(COST_CENTERS_URL, { headers })).json()) as {
       costCenters: Array<{ id: string; included_usage_cap: { overflow: 'block' | 'metered'; computed_limit_credits: number } }>;
     };
+    // All six DEWR cost centers: member counts 24/16/8/9/11/13, every seat in
+    // exactly one CC, so these six caps sum to the 567,000 pool allowance.
     const expectations: Array<[string, number]> = [
-      [COST_CENTER_IDS.platform, 15 * PROMO_CREDITS_PER_SEAT],
-      [COST_CENTER_IDS.dataAnalytics, 10 * PROMO_CREDITS_PER_SEAT],
-      [COST_CENTER_IDS.capBound, 10 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.workforce, 24 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.employer, 16 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.capBound, 8 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.dataEval, 9 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.cyber, 11 * PROMO_CREDITS_PER_SEAT],
+      [COST_CENTER_IDS.corporate, 13 * PROMO_CREDITS_PER_SEAT],
     ];
 
     for (const [id, expected] of expectations) {

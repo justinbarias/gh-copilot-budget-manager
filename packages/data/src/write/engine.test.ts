@@ -33,14 +33,17 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// Raises the Platform cost-center spending limit ($600 -> $650, i.e.
-// 60,000 -> 65,000 credits) -- a single, unambiguous 'change' plan entry with
-// no validation warnings (cost_center scope, not a ULB) against the seeded
-// fixture (msw/fixtures/budgets.ts's BUDGET_IDS.costCenterMetered).
-async function stagePlatformAmountChangePlan() {
+// Raises the Workforce Australia Platform cost-center spending limit
+// ($600 -> $650, i.e. 60,000 -> 65,000 credits) -- a single, unambiguous
+// 'change' plan entry with no validation warnings (cost_center scope, not a
+// ULB) against the seeded fixture (msw/fixtures/budgets.ts's
+// BUDGET_IDS.costCenterMetered).
+const WORKFORCE_CC = 'Workforce Australia Platform';
+
+async function stageWorkforceAmountChangePlan() {
   const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
   const desiredControls: ControlState[] = live.controls.map((c) =>
-    c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 65_000 } : c,
+    c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 65_000 } : c,
   );
   const stagedPlan = diffControls(live.controls, desiredControls);
   return { stagedPlan, desiredControls };
@@ -55,30 +58,30 @@ describe('fetchLiveControls', () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
 
     const platformBudget = live.controls.find(
-      (c): c is Extract<ControlState, { kind: 'budget' }> => c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform',
+      (c): c is Extract<ControlState, { kind: 'budget' }> => c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC,
     );
     expect(platformBudget?.amountCredits).toBe(60_000);
     expect(platformBudget?.preventFurtherUsage).toBe(false);
 
-    expect(live.budgetWireByIdentity.get('budget:cost_center:Platform')).toEqual({
+    expect(live.budgetWireByIdentity.get(`budget:cost_center:${WORKFORCE_CC}`)).toEqual({
       id: BUDGET_IDS.costCenterMetered,
       budgetType: 'ProductPricing',
       budgetProductSku: 'ai_credits',
     });
-    expect(live.costCenterIdByName.get('Platform')).toBeDefined();
+    expect(live.costCenterIdByName.get(WORKFORCE_CC)).toBeDefined();
 
     expect(live.controls.some((c) => c.kind === 'budget' && (c.scope as string) === 'repository')).toBe(false);
 
-    const cap = live.controls.find((c): c is Extract<ControlState, { kind: 'included_cap' }> => c.kind === 'included_cap' && c.costCenterName === 'Platform');
-    expect(cap).toEqual({ kind: 'included_cap', costCenterName: 'Platform', enabled: true, overflow: 'block', computedLimitCredits: 105_000 });
+    const cap = live.controls.find((c): c is Extract<ControlState, { kind: 'included_cap' }> => c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC);
+    expect(cap).toEqual({ kind: 'included_cap', costCenterName: WORKFORCE_CC, enabled: true, overflow: 'block', computedLimitCredits: 168_000 });
   });
 });
 
 describe('applyPlan', () => {
   it('applies a no-drift plan: PATCHes the correct budget, records one audit event, and the chain verifies', async () => {
-    const { stagedPlan, desiredControls } = await stagePlatformAmountChangePlan();
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
     expect(stagedPlan.entries).toHaveLength(1);
-    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'change', scope: 'cost_center', entityName: 'Platform' });
+    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'change', scope: 'cost_center', entityName: WORKFORCE_CC });
 
     const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
 
@@ -97,7 +100,7 @@ describe('applyPlan', () => {
     expect(result.auditEvents).toHaveLength(1);
     const auditEvent = result.auditEvents[0]!;
     expect(auditEvent.action).toBe('budget.update');
-    expect(auditEvent.entityRef).toBe('budget:cost_center:Platform');
+    expect(auditEvent.entityRef).toBe(`budget:cost_center:${WORKFORCE_CC}`);
     expect(auditEvent.actor).toBe('admin@example.com');
     expect(auditEvent.trigger).toBe('manual');
     expect(auditEvent.envelopeSnapshot).toBeNull();
@@ -129,10 +132,10 @@ describe('applyPlan', () => {
   // between-stage-and-apply GitHub-side edit.
   it('aborts as drift when the staged plan no longer matches a fresh live re-read, mutating and auditing nothing', async () => {
     const trueLive = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
-    const { desiredControls } = await stagePlatformAmountChangePlan();
+    const { desiredControls } = await stageWorkforceAmountChangePlan();
 
     const staleLiveBaseline: ControlState[] = trueLive.controls.map((c) =>
-      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 999_999 } : c,
+      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 999_999 } : c,
     );
     const stagedPlanAgainstStaleBaseline = diffControls(staleLiveBaseline, desiredControls);
 
@@ -149,11 +152,11 @@ describe('applyPlan', () => {
 
   it('aborts as blocked when the post-plan state trips a validation blocker, mutating and auditing nothing', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
-    // $9,000 cost-center spending limit > the enterprise's $8,000 cap ->
-    // enterprise_cap_below_cost_center_sum (the only cost_center-scope
-    // budget fixture, so no other cost center contributes to the sum).
+    // A 900,000-credit ($9,000) Workforce cost-center spending limit + the
+    // Data & Evaluation limit (25,000) sums to 925,000 > the enterprise's
+    // 800,000 cap -> enterprise_cap_below_cost_center_sum.
     const desiredControls: ControlState[] = live.controls.map((c) =>
-      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 900_000 } : c,
+      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 900_000 } : c,
     );
     const stagedPlan = diffControls(live.controls, desiredControls);
 
@@ -170,7 +173,7 @@ describe('applyPlan', () => {
   it('reports partial_failure and stops after a mutation request fails, auditing only the entries that truly succeeded', async () => {
     // Overrides ONLY the enterprise budget's PATCH for this one test (msw's
     // per-test server.use(), reset in afterEach) -- every other budget PATCH
-    // (including Platform's) falls through untouched to the real handler,
+    // (including Workforce's) falls through untouched to the real handler,
     // since returning undefined from a resolver lets MSW try the next match.
     // Status 422 (not 500): the `octokit` package bundles @octokit/plugin-retry,
     // which auto-retries most non-2xx responses with exponential backoff --
@@ -187,14 +190,14 @@ describe('applyPlan', () => {
 
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
     const desiredControls: ControlState[] = live.controls.map((c) => {
-      if (c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform') return { ...c, amountCredits: 65_000 };
+      if (c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC) return { ...c, amountCredits: 65_000 };
       if (c.kind === 'budget' && c.scope === 'enterprise') return { ...c, amountCredits: 850_000 };
       return c;
     });
     const stagedPlan = diffControls(live.controls, desiredControls);
-    // Sorted by id: 'budget:cost_center:Platform' < 'budget:enterprise:acme-enterprise'.
+    // Sorted by id: 'budget:cost_center:Workforce Australia Platform' < 'budget:enterprise:dewr'.
     expect(stagedPlan.entries).toHaveLength(2);
-    expect(stagedPlan.entries[0]!.id).toBe('budget:cost_center:Platform');
+    expect(stagedPlan.entries[0]!.id).toBe(`budget:cost_center:${WORKFORCE_CC}`);
     expect(stagedPlan.entries[1]!.id).toBe(`budget:enterprise:${ENTERPRISE_SLUG}`);
 
     const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
@@ -204,7 +207,7 @@ describe('applyPlan', () => {
     expect(result.appliedCount).toBe(1);
     expect(result.mutationLog).toHaveLength(1);
     expect(result.auditEvents).toHaveLength(1);
-    expect(result.auditEvents[0]!.entityRef).toBe('budget:cost_center:Platform');
+    expect(result.auditEvents[0]!.entityRef).toBe(`budget:cost_center:${WORKFORCE_CC}`);
     expect(result.failedPlanEntryId).toBe(`budget:enterprise:${ENTERPRISE_SLUG}`);
 
     // The one entry that truly succeeded against GitHub is truly audited --
@@ -264,11 +267,11 @@ describe('applyPlan', () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
     // Full end-state minus the organization spending limit -> exactly one delete.
     const desiredControls: ControlState[] = live.controls.filter(
-      (c) => !(c.kind === 'budget' && c.scope === 'organization' && c.entityName === 'acme-eng-org'),
+      (c) => !(c.kind === 'budget' && c.scope === 'organization' && c.entityName === 'dewr-digital'),
     );
     const stagedPlan = diffControls(live.controls, desiredControls);
     expect(stagedPlan.entries).toHaveLength(1);
-    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'delete', scope: 'organization', entityName: 'acme-eng-org' });
+    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'delete', scope: 'organization', entityName: 'dewr-digital' });
 
     const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
     expect(result.status).toBe('applied');
@@ -281,7 +284,7 @@ describe('applyPlan', () => {
     expect(mutation.responseStatus).toBe(204);
 
     expect(result.auditEvents[0]!.action).toBe('budget.delete');
-    expect(result.auditEvents[0]!.entityRef).toBe('budget:organization:acme-eng-org');
+    expect(result.auditEvents[0]!.entityRef).toBe('budget:organization:dewr-digital');
     expect(result.auditEvents[0]!.before).toMatchObject({ amountCredits: 320_000 }); // $3,200 -> 320,000 credits
     expect(result.auditEvents[0]!.after).toBeNull();
     expect(verifyStoredChain(db)).toEqual({ ok: true });
@@ -290,13 +293,13 @@ describe('applyPlan', () => {
   it('toggles an included-usage cap: PATCHes cost-centers/{id} with the nested included_usage_cap body (M7) and audits included_cap.update', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
     const desiredControls: ControlState[] = live.controls.map((c) =>
-      c.kind === 'included_cap' && c.costCenterName === 'Platform' ? { ...c, overflow: 'metered' as const } : c,
+      c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC ? { ...c, overflow: 'metered' as const } : c,
     );
     const stagedPlan = diffControls(live.controls, desiredControls);
     expect(stagedPlan.entries).toHaveLength(1);
-    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'included_cap', action: 'change', costCenterName: 'Platform' });
+    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'included_cap', action: 'change', costCenterName: WORKFORCE_CC });
 
-    const platformId = live.costCenterIdByName.get('Platform')!;
+    const platformId = live.costCenterIdByName.get(WORKFORCE_CC)!;
     expect(platformId).toBeDefined();
 
     const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
@@ -312,7 +315,7 @@ describe('applyPlan', () => {
     expect(mutation.responseStatus).toBe(200);
 
     expect(result.auditEvents[0]!.action).toBe('included_cap.update');
-    expect(result.auditEvents[0]!.entityRef).toBe('included_cap:Platform');
+    expect(result.auditEvents[0]!.entityRef).toBe(`included_cap:${WORKFORCE_CC}`);
     expect(result.auditEvents[0]!.before).toMatchObject({ overflow: 'block' });
     expect(result.auditEvents[0]!.after).toMatchObject({ overflow: 'metered' });
     expect(verifyStoredChain(db)).toEqual({ ok: true });
@@ -332,7 +335,7 @@ describe('dryRunPlan', () => {
   it('recomputes the plan fresh against live, validates, and simulates -- never mutates or audits', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
     const desiredControls: ControlState[] = live.controls.map((c) =>
-      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 65_000 } : c,
+      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 65_000 } : c,
     );
 
     const result = await dryRunPlan(desiredControls, {

@@ -5,21 +5,31 @@ import { test, expect, _electron as electron } from '@playwright/test';
 
 // Task 2.4: Users screen -- read-only heavy-user table. Every asserted value
 // is fixture-derived (packages/data/src/msw/fixtures/{usage,licenses,
-// costCenters,budgets}.ts), never wall-clock:
-//   - 35 licensed seats (licenses.ts's SEATS) -> the full roster, not just
-//     users with a usage row -> 4 pages at 10/page.
-//   - Only user-01 (420), user-16 (310), user-26 (500) have June-cycle credits
-//     (usage.ts's decomposed CREDITS_USED_ITEMS rows); every other user is 0,
-//     including user-05 whose only rows are the Aug31/Sep1 cliff edge fixture
-//     (outside the June cycle window -- 0 MTD this cycle, not a lifetime total).
+// costCenters,budgets}.ts against the DEWR world, README.md in that
+// directory), never wall-clock:
+//   - 81 licensed seats (licenses.ts's SEATS) -> the full roster, not just
+//     users with a usage row -> 9 pages at 10/page.
+//   - ~36 users have June-cycle credits (usage.ts's CREDITS_USED_ITEMS rows);
+//     every other seat is 0, including noah-tanaka whose only rows are the
+//     Aug31/Sep1 cliff edge fixture (outside the June cycle window -- 0 MTD
+//     this cycle, not a lifetime total).
 //   - Ranked order (core's rankHeavyUsers, descending creditsUsed, ties by
-//     ascending userId/login): user-26, user-01, user-16, then all 0-credit
-//     users in ascending login order.
+//     ascending userId): emily-zhao 5,480, aran-mehta 5,210, liam-obrien
+//     4,930, ... down through the roster, then all 0-credit users.
 //   - ULB precedence (CLAUDE.md §5, packages/core's resolveEffectiveUlb):
-//     user-01/Platform CC has no individual override -> Platform's CCULB
-//     (budget-cculb-platform-1, $45 -> 4,500 credits, "cost center" scope).
-//     user-20/Data & Analytics has the $0 individual ULB edge fixture
-//     (budget-ulb-zero-1) -> always blocks, wins over the universal fallback.
+//     rpatel2/Workforce Australia Platform has no individual override ->
+//     Workforce's CCULB (budget-cculb-workforce, $52 -> 5,200 credits, "cost
+//     center" scope). ext-dmorrow/Corporate Systems has the $0 individual ULB
+//     edge fixture (budget-ulb-zero) -> always blocks, wins over the
+//     universal fallback.
+//   - "At risk" (>= 90% of effective ULB, or an immediate $0 block, core's
+//     isUserAtRiskOfUlbBlock) cohort of 7: emily-zhao (91.3% of her 6,000
+//     Data & Evaluation CCULB), sarah-huang (91.5% of the 5,200 Workforce
+//     CCULB), hannah-webb (94.8% of the 4,600 universal ULB), ruby-carter
+//     (93.3%), faisal-noor (90.9%), ext-pshah (90.5% of their 1,900
+//     individual ULB), ext-dmorrow ($0-ULB, always blocked). 30 users are
+//     "active" (nonzero MTD, not at risk); 44 have "no usage" this cycle
+//     (noah-tanaka among them -- his cliff rows don't count).
 test('Users table renders the ranked fixture roster with working search, filters, and pagination', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-users-'));
@@ -38,13 +48,12 @@ test('Users table renders the ranked fixture roster with working search, filters
     await expect(screen).toBeVisible();
 
     const rows = screen.locator('.users-table__row');
-    await expect(rows).toHaveCount(10); // page 1 of 35, 10/page
+    await expect(rows).toHaveCount(10); // page 1 of 81, 10/page
 
-    // Default view: page 1 of the ranked roster -- descending MTD, ties broken
-    // ascending by userId (== ascending login for this fixture's numbering).
+    // Default view: page 1 of the ranked roster -- descending MTD credits.
     const row1 = rows.nth(0);
-    await expect(row1.locator('.users-table__login')).toHaveText('user-26');
-    await expect(row1.locator('.users-table__mtd')).toHaveText('500');
+    await expect(row1.locator('.users-table__login')).toHaveText('emily-zhao');
+    await expect(row1.locator('.users-table__mtd')).toHaveText('5,480');
 
     // Signature components render real content for an active user, not just
     // an empty cell (Sparkline + ModelMixBar, design/README.md's "small
@@ -53,90 +62,97 @@ test('Users table renders the ranked fixture roster with working search, filters
     await expect(row1.locator('.sparkline--empty')).toHaveCount(0);
     // The sparkline actually draws a polyline (non-empty path `d`), not a blank SVG.
     await expect(row1.locator('svg.sparkline path')).toHaveAttribute('d', /^M[\d.]/);
-    // Model-mix caption is the exact fixture-derived value: user-26's 500 credits
-    // decompose to 140 GPT-5.4 (28%), 110 Sonnet 4.6 (22%), 90 GPT-5 mini (18%),
-    // 160 unattributable (32%) -- caption leads with the top model + the explicit
-    // unattributable remainder (design/README.md: never imply false precision).
-    await expect(row1.locator('.model-mix-bar__caption')).toHaveText('GPT-5.4 28% · 32% unattr');
-    // 3 named-model segments + the unattributable segment = 4 drawn bars.
-    await expect(row1.locator('.model-mix-bar__segment')).toHaveCount(4);
+    // Model-mix caption is the exact fixture-derived value: emily-zhao's 5,480
+    // credits decompose to GPT-5.1 2,056 (37%), Claude Sonnet 4.5 913 (17%),
+    // Gemini 2.5 Pro 913 (17%), Claude Opus 4.5 685 (12%), and 913 (17%)
+    // untagged -- the largest-remainder rounding (core's computeModelMix)
+    // hands the leftover point to the three equal 16.66% shares before Opus's
+    // 12.5%, landing Opus at 12 not 13. Caption leads with the top model + the
+    // explicit unattributable remainder (design/README.md: never imply false
+    // precision).
+    await expect(row1.locator('.model-mix-bar__caption')).toHaveText('GPT-5.1 37% · 17% unattr');
+    // 4 named-model segments + the unattributable segment = 5 drawn bars.
+    await expect(row1.locator('.model-mix-bar__segment')).toHaveCount(5);
     await expect(row1.locator('.model-mix-bar--empty')).toHaveCount(0);
 
     const row2 = rows.nth(1);
-    await expect(row2.locator('.users-table__login')).toHaveText('user-01');
-    await expect(row2.locator('.users-table__mtd')).toHaveText('420');
+    await expect(row2.locator('.users-table__login')).toHaveText('aran-mehta');
+    await expect(row2.locator('.users-table__mtd')).toHaveText('5,210');
     const row3 = rows.nth(2);
-    await expect(row3.locator('.users-table__login')).toHaveText('user-16');
-    await expect(row3.locator('.users-table__mtd')).toHaveText('310');
+    await expect(row3.locator('.users-table__login')).toHaveText('liam-obrien');
+    await expect(row3.locator('.users-table__mtd')).toHaveText('4,930');
 
-    // 35 users / 10 per page -> 4 pages.
-    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 4');
-    await expect(screen.locator('.users__showing')).toHaveText('Showing 1–10 of 35');
-    await expect(screen.locator('.users__result-count')).toHaveText('35 users');
+    // 81 users / 10 per page -> 9 pages.
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 9');
+    await expect(screen.locator('.users__showing')).toHaveText('Showing 1–10 of 81');
+    await expect(screen.locator('.users__result-count')).toHaveText('81 users');
 
     // Prev is disabled on page 1 (never color-only: also aria-disabled).
     await expect(screen.getByRole('button', { name: '‹ Prev' })).toBeDisabled();
 
-    // Page 2: first row is the next user in rank order after the 3 active
-    // users and the first 7 zero-credit users (ascending login) -- user-09.
+    // Page 2: rank 11, diego-santos -- still a real, active user (the
+    // top ~36 ranks are all nonzero-MTD, so page 2 doesn't yet reach the
+    // zero-usage tail; that's covered by the "No usage" status filter below).
     await screen.getByRole('button', { name: 'Next ›' }).click();
-    await expect(screen.locator('.users__page-label')).toHaveText('Page 2 / 4');
-    await expect(rows.nth(0).locator('.users-table__login')).toHaveText('user-09');
-    await expect(rows.nth(0).locator('.users-table__mtd')).toHaveText('0');
-    await expect(rows.nth(0).locator('.users-table__sublabel')).toHaveText('no usage yet this cycle');
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 2 / 9');
+    await expect(rows.nth(0).locator('.users-table__login')).toHaveText('diego-santos');
+    await expect(rows.nth(0).locator('.users-table__mtd')).toHaveText('4,080');
+    await expect(rows.nth(0).locator('.users-table__sublabel')).toHaveCount(0);
 
     // Back to page 1 for the remaining assertions.
     await screen.getByRole('button', { name: '‹ Prev' }).click();
-    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 4');
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 9');
 
     // Search narrows to exactly one row.
-    await screen.getByLabel('Search login').fill('user-26');
+    await screen.getByLabel('Search login').fill('emily-zhao');
     await expect(rows).toHaveCount(1);
-    await expect(rows.nth(0).locator('.users-table__login')).toHaveText('user-26');
+    await expect(rows.nth(0).locator('.users-table__login')).toHaveText('emily-zhao');
     await expect(screen.locator('.users__result-count')).toHaveText('1 user');
     await screen.getByLabel('Search login').fill('');
-    await expect(screen.locator('.users__result-count')).toHaveText('35 users');
+    await expect(screen.locator('.users__result-count')).toHaveText('81 users');
 
-    // Cost-center filter narrows to that CC's 10 members (Data & Analytics = user-16..25).
-    await screen.getByLabel('Filter by cost center').selectOption('Data & Analytics');
-    await expect(screen.locator('.users__result-count')).toHaveText('10 users');
-    await expect(rows).toHaveCount(10);
+    // Cost-center filter narrows to that CC's members (Payments Integrity
+    // Engineering = 8 members, small enough to fit on one page).
+    await screen.getByLabel('Filter by cost center').selectOption('Payments Integrity Engineering');
+    await expect(screen.locator('.users__result-count')).toHaveText('8 users');
+    await expect(rows).toHaveCount(8);
     for (const row of await rows.all()) {
-      await expect(row.locator('.users-table__cc')).toHaveText('Data & Analytics');
+      await expect(row.locator('.users-table__cc')).toHaveText('Payments Integrity Engineering');
     }
     await screen.getByLabel('Filter by cost center').selectOption('all');
 
     // Status filter "No usage": every user with 0 MTD this cycle, including
-    // user-05 whose cliff-edge rows fall outside the June cycle window.
+    // noah-tanaka whose cliff-edge rows fall outside the June cycle window.
     await screen.getByRole('button', { name: 'No usage' }).click();
-    await expect(screen.locator('.users__result-count')).toHaveText('31 users');
-    const user05Row = rows.filter({ hasText: 'user-05' });
-    await expect(user05Row.locator('.users-table__sublabel')).toHaveText('no usage yet this cycle');
-    await expect(user05Row.locator('.users-table__mtd')).toHaveText('0');
+    await expect(screen.locator('.users__result-count')).toHaveText('44 users');
+    const noahRow = rows.filter({ hasText: 'noah-tanaka' });
+    await expect(noahRow.locator('.users-table__sublabel')).toHaveText('no usage yet this cycle');
+    await expect(noahRow.locator('.users-table__mtd')).toHaveText('0');
 
-    // Status filter "Active": the 3 users with real June-cycle usage.
+    // Status filter "Active": nonzero-MTD users who aren't at risk.
     await screen.getByRole('button', { name: 'Active' }).click();
-    await expect(screen.locator('.users__result-count')).toHaveText('3 users');
-    await expect(rows).toHaveCount(3);
+    await expect(screen.locator('.users__result-count')).toHaveText('30 users');
 
-    // Status filter "At risk": the $0-ULB edge fixture (user-20) -- always
-    // blocked (CLAUDE.md §5), the only user meeting the at-risk/blocked rule
-    // in this fixture set.
+    // Status filter "At risk": >= 90% of the effective ULB, or an immediate
+    // $0 block -- 7 users, including the $0-ULB edge fixture (ext-dmorrow),
+    // always blocked (CLAUDE.md §5).
     await screen.getByRole('button', { name: 'At risk' }).click();
-    await expect(screen.locator('.users__result-count')).toHaveText('1 user');
-    await expect(rows).toHaveCount(1);
-    await expect(rows.nth(0).locator('.users-table__login')).toHaveText('user-20');
-    await expect(rows.nth(0).locator('.users-table__ulb')).toHaveText('✕ $0 · blocked');
-    await expect(rows.nth(0).locator('.users-table__sublabel')).toHaveText('✕ blocked · $0 ULB');
+    await expect(screen.locator('.users__result-count')).toHaveText('7 users');
+    await expect(rows).toHaveCount(7);
+    const blockedRow = rows.filter({ hasText: 'ext-dmorrow' });
+    await expect(blockedRow.locator('.users-table__login')).toHaveText('ext-dmorrow');
+    await expect(blockedRow.locator('.users-table__ulb')).toHaveText('✕ $0 · blocked');
+    await expect(blockedRow.locator('.users-table__sublabel')).toHaveText('✕ blocked · $0 ULB');
 
     // Back to "All" to check the ULB column for a normal (non-blocked) user.
     await screen.getByRole('button', { name: 'All' }).click();
-    await screen.getByLabel('Search login').fill('user-01');
+    await screen.getByLabel('Search login').fill('rpatel2');
     await expect(rows).toHaveCount(1);
-    // user-01/Platform CC has no individual override -> falls back to the
-    // Platform CCULB ($45 -> 4,500 credits), not the universal ULB.
-    await expect(rows.nth(0).locator('.users-table__ulb')).toHaveText('4,500 · cost center');
-    await expect(rows.nth(0).locator('.users-table__cc')).toHaveText('Platform');
+    // rpatel2/Workforce Australia Platform has no individual override ->
+    // falls back to the Workforce CCULB ($52 -> 5,200 credits), not the
+    // universal ULB.
+    await expect(rows.nth(0).locator('.users-table__ulb')).toHaveText('5,200 · cost center');
+    await expect(rows.nth(0).locator('.users-table__cc')).toHaveText('Workforce Australia Platform');
 
     // Read-only screen (SPEC.md Assumption 4): no checkbox multi-select, no
     // "Set ULB" action, no cost-center reassignment <select> anywhere.

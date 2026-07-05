@@ -8,7 +8,7 @@ import { getDb } from './db';
 // Settings screen). Hardcoded to match the MSW fixture enterprise until then —
 // simulation is forced by default (see main/mode.ts), so today this client only
 // ever talks to MSW, never real GitHub.
-const ENTERPRISE_SLUG = 'acme-enterprise';
+const ENTERPRISE_SLUG = 'dewr';
 
 let apiClient: ApiClient | undefined;
 

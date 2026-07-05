@@ -84,13 +84,15 @@ async function launchApp(dbLabel: string) {
   return { app, dbDir };
 }
 
-// Raises the Platform cost-center spending limit ($600 -> $650) -- the same
-// fixture and scenario packages/data's write/engine.test.ts uses: an
-// unambiguous single 'change' entry, no validation warnings (cost_center
-// scope, not a ULB).
+// Raises the Workforce Australia Platform cost-center spending limit
+// ($600 -> $650) -- the same fixture and scenario packages/data's
+// write/engine.test.ts uses: an unambiguous single 'change' entry, no
+// validation warnings (cost_center scope, not a ULB).
 function raisePlatformAmount(live: ControlState[]): ControlState[] {
   return live.map((c) =>
-    c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Platform' ? { ...c, amountCredits: 65_000 } : c,
+    c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === 'Workforce Australia Platform'
+      ? { ...c, amountCredits: 65_000 }
+      : c,
   );
 }
 
@@ -107,7 +109,12 @@ test('stage -> dryRun -> apply round-trips end to end: mutates the correct endpo
       desiredControls,
     );
     expect(dryRun.plan.entries).toHaveLength(1);
-    expect(dryRun.plan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'change', scope: 'cost_center', entityName: 'Platform' });
+    expect(dryRun.plan.entries[0]).toMatchObject({
+      controlKind: 'budget',
+      action: 'change',
+      scope: 'cost_center',
+      entityName: 'Workforce Australia Platform',
+    });
     expect(dryRun.validation.isBlocked).toBe(false);
 
     const applied = await window.evaluate(
@@ -127,7 +134,7 @@ test('stage -> dryRun -> apply round-trips end to end: mutates the correct endpo
 
     expect(applied.auditEvents).toHaveLength(1);
     expect(applied.auditEvents[0]!.action).toBe('budget.update');
-    expect(applied.auditEvents[0]!.entityRef).toBe('budget:cost_center:Platform');
+    expect(applied.auditEvents[0]!.entityRef).toBe('budget:cost_center:Workforce Australia Platform');
     expect(applied.auditEvents[0]!.actor).toBe('e2e-test@example.com');
     expect(applied.auditEvents[0]!.trigger).toBe('manual');
   } finally {
@@ -154,11 +161,11 @@ test('aborts as drift when the staged plan no longer matches a fresh live re-rea
       isNoOp: false,
       entries: [
         {
-          id: 'budget:cost_center:Platform',
+          id: 'budget:cost_center:Workforce Australia Platform',
           controlKind: 'budget',
           action: 'change',
           scope: 'cost_center',
-          entityName: 'Platform',
+          entityName: 'Workforce Australia Platform',
           changes: [{ field: 'amountCredits', old: 999_999, new: 65_000 }],
         },
       ],

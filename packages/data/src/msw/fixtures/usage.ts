@@ -26,7 +26,9 @@ export interface UsageItem {
 // one report -- so some rows legitimately can't be attributed to a model.
 // `model: undefined` marks those; the Users screen's model-mix bar surfaces
 // that remainder as an explicit "unattributable %" rather than guessing
-// (design/README.md, never implying false precision).
+// (design/README.md, never implying false precision). 2026 Copilot model
+// lineup: GPT-5.1, Claude Sonnet 4.5, Claude Opus 4.5 (premium tier),
+// Gemini 2.5 Pro, GPT-5 mini.
 export interface CreditsUsedItem {
   date: string;
   user_id: string;
@@ -35,124 +37,222 @@ export interface CreditsUsedItem {
   model?: string;
 }
 
+// BILLING VIEW (drives the Overview enterprise burn-down + the Controls
+// per-CC/enterprise metered meters). Each CC's cycle pool draw is itemised as
+// discount-covered CC-aggregate rows (user_login null) spread across the June
+// weekdays so the burn-down ramps organically; enterprise pool burned by
+// 2026-06-14 = Σ(discount_amount × 100) over the cycle = 189,800 of 567,000
+// (~33.5%). Payments Integrity (cap-bound) draws its full 56,000 cap from the
+// pool then overflows 2,300 into metered (the net_amount > 0 row). The 2026-06-01
+// (cycle day 0) row is intentionally absent so the burn-down starts at 0. The
+// Aug 31 / Sep 1 rows are the promo→standard allowance-cliff edge fixture
+// (spec §1.1): the same user straddling the boundary, still pool-covered the
+// day before, tipped into metered the day after -- both fall OUTSIDE the June
+// cycle window (cycleBounds(SIM_CURRENT_DATE)), so they never touch the burn-down.
 export const USAGE_ITEMS: UsageItem[] = [
-  {
-    date: '2026-06-14',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.platform,
-    user_login: 'user-01',
-    quantity: 420,
-    gross_amount: 4.2,
-    discount_amount: 4.2,
-    net_amount: 0,
-  },
-  {
-    date: '2026-06-14',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.dataAnalytics,
-    user_login: 'user-16',
-    quantity: 310,
-    gross_amount: 3.1,
-    discount_amount: 3.1,
-    net_amount: 0,
-  },
-  // Edge fixture: cap-bound cost center. It drew its full 70,000 included-usage
-  // cap from the shared pool (this discount-covered row, itemised as a CC-aggregate
-  // pool draw with user_login null) and then overflowed the next 500 credits into
-  // metered (the row below, net_amount > 0). Both are itemised so the enterprise
-  // pool burn-down reflects this draw -- a cost center's pool draw IS enterprise
-  // pool consumption (CLAUDE.md §5) -- and the CC-level total (70,500) reconciles
-  // with its itemised rows. Enterprise pool burned by 2026-06-14 = 420 + 310 +
-  // 70,000 = 70,730 of 245,000 (~28.9%).
-  {
-    date: '2026-06-14',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.capBound,
-    user_login: null,
-    quantity: 70_000,
-    gross_amount: 700.0,
-    discount_amount: 700.0,
-    net_amount: 0,
-  },
-  {
-    date: '2026-06-14',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.capBound,
-    user_login: 'user-26',
-    quantity: 500,
-    gross_amount: 5.0,
-    discount_amount: 0,
-    net_amount: 5.0,
-  },
-  // Edge fixture: promo -> standard allowance cliff (1 Sep 2026, spec §1.1). Same user,
-  // straddling the boundary: still pool-phase (no charge) the day before, tipped into
-  // metered spend the day of/after once the smaller standard allowance takes over.
-  {
-    date: '2026-08-31',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.platform,
-    user_login: 'user-05',
-    quantity: 380,
-    gross_amount: 3.8,
-    discount_amount: 3.8,
-    net_amount: 0,
-  },
-  {
-    date: '2026-09-01',
-    product: 'copilot',
-    sku: 'ai_credits',
-    cost_center_id: COST_CENTER_IDS.platform,
-    user_login: 'user-05',
-    quantity: 380,
-    gross_amount: 3.8,
-    discount_amount: 1.9,
-    net_amount: 1.9,
-  },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 2876, gross_amount: 28.76, discount_amount: 28.76, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5753, gross_amount: 57.53, discount_amount: 57.53, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 7191, gross_amount: 71.91, discount_amount: 71.91, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5752, gross_amount: 57.52, discount_amount: 57.52, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 1800, gross_amount: 18, discount_amount: 18, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 4500, gross_amount: 45, discount_amount: 45, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 5333, gross_amount: 53.33, discount_amount: 53.33, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 13333, gross_amount: 133.33, discount_amount: 133.33, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 5467, gross_amount: 54.67, discount_amount: 54.67, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 13667, gross_amount: 136.67, discount_amount: 136.67, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 1429, gross_amount: 14.29, discount_amount: 14.29, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 3571, gross_amount: 35.71, discount_amount: 35.71, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1171, gross_amount: 11.71, discount_amount: 11.71, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2929, gross_amount: 29.29, discount_amount: 29.29, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: 'faisal-noor', quantity: 2300, gross_amount: 23, discount_amount: 0, net_amount: 23 },
+  { date: '2026-08-31', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 4.68, net_amount: 0 },
+  { date: '2026-09-01', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 2.34, net_amount: 2.34 },
 ];
 
-// user-01/16/26's single-day totals (420/310/500) are decomposed across
-// several June-cycle dates and tagged per-model (Task 2.4: the Users screen's
-// sparkline needs a daily shape and the model-mix bar needs per-model rows).
-// Each user's rows sum to EXACTLY its prior total -- github-impl.ts's
-// listCostCenters() per-member burn and github-impl.test.ts both reconcile
-// against these same totals (420/310/500), so the decomposition must not
-// change them. Every other licensed user (SEATS, licenses.ts) intentionally
-// carries no row here at all: they exercise the Users screen's "No usage"
-// filter and zero-length sparkline/model-mix rendering. user-05's Aug
-// 31/Sep 1 cliff-edge rows are untouched -- they stay outside the June cycle
-// window (cycleBounds(SIM_CURRENT_DATE)), so user-05 is 0 MTD this cycle
-// (the "no usage yet this cycle" case) despite having lifetime rows.
+
+// METRICS VIEW (drives the Users screen MTD/sparkline/model-mix + the Cost
+// Centers drill per-member burn). Per-user daily rows for the ~36 active users
+// of the 81-seat roster; every other seat carries NO row (the "no usage this
+// cycle" cohort). Each user's rows sum EXACTLY to their intended cycle total
+// and each row's `model` tag makes the model-mix + unattributable split sum to
+// that same total. Weekend dates (Jun 6/7/13) carry no rows, so every
+// sparkline is weekday-shaped. Each CC's members' burns sum to LESS than that
+// CC's billing mtd_burn_credits (costCenters.ts) -- the gap is shared/automated
+// pool draw; see README.md §Coherence. noah-tanaka's Aug 31 / Sep 1 rows are
+// the cliff edge fixture (outside the June cycle → 0 MTD this cycle despite
+// having lifetime rows). Generated from hand-authored totals + model splits.
 export const CREDITS_USED_ITEMS: CreditsUsedItem[] = [
-  // user-01 (Platform CC): 80+90 GPT-5.4, 70 Sonnet 4.6, 60 GPT-5 mini, 120 unattributable = 420.
-  { date: '2026-06-10', user_id: '1001', user_login: 'user-01', ai_credits_used: 80, model: 'GPT-5.4' },
-  { date: '2026-06-11', user_id: '1001', user_login: 'user-01', ai_credits_used: 90, model: 'GPT-5.4' },
-  { date: '2026-06-12', user_id: '1001', user_login: 'user-01', ai_credits_used: 70, model: 'Sonnet 4.6' },
-  { date: '2026-06-13', user_id: '1001', user_login: 'user-01', ai_credits_used: 60, model: 'GPT-5 mini' },
-  { date: '2026-06-14', user_id: '1001', user_login: 'user-01', ai_credits_used: 120 },
-
-  // user-16 (Data & Analytics CC): 50 GPT-5.4, 70+90 Sonnet 4.6, 40 GPT-5 mini, 60 unattributable = 310.
-  { date: '2026-06-05', user_id: '1016', user_login: 'user-16', ai_credits_used: 50, model: 'GPT-5.4' },
-  { date: '2026-06-08', user_id: '1016', user_login: 'user-16', ai_credits_used: 70, model: 'Sonnet 4.6' },
-  { date: '2026-06-11', user_id: '1016', user_login: 'user-16', ai_credits_used: 90, model: 'Sonnet 4.6' },
-  { date: '2026-06-13', user_id: '1016', user_login: 'user-16', ai_credits_used: 40, model: 'GPT-5 mini' },
-  { date: '2026-06-14', user_id: '1016', user_login: 'user-16', ai_credits_used: 60 },
-
-  // user-26 (Marketing/cap-bound CC): 60+80 GPT-5.4, 110 Sonnet 4.6, 90 GPT-5 mini, 160 unattributable = 500.
-  { date: '2026-06-03', user_id: '1026', user_login: 'user-26', ai_credits_used: 60, model: 'GPT-5.4' },
-  { date: '2026-06-06', user_id: '1026', user_login: 'user-26', ai_credits_used: 80, model: 'GPT-5.4' },
-  { date: '2026-06-09', user_id: '1026', user_login: 'user-26', ai_credits_used: 110, model: 'Sonnet 4.6' },
-  { date: '2026-06-12', user_id: '1026', user_login: 'user-26', ai_credits_used: 90, model: 'GPT-5 mini' },
-  { date: '2026-06-14', user_id: '1026', user_login: 'user-26', ai_credits_used: 160 },
-
-  // Edge fixture: promo -> standard allowance cliff (unchanged from Task 1.3/2.1/2.3 --
-  // both rows fall outside the June cycle window entirely, see cycleBounds note above).
-  { date: '2026-08-31', user_id: '1005', user_login: 'user-05', ai_credits_used: 380 },
-  { date: '2026-09-01', user_id: '1005', user_login: 'user-05', ai_credits_used: 380 },
+  { date: '2026-06-03', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 822, model: 'GPT-5.1' },
+  { date: '2026-06-05', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 1027, model: 'GPT-5.1' },
+  { date: '2026-06-08', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 822, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-10', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 616, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 822, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '5107', user_login: 'liam-obrien', ai_credits_used: 821 },
+  { date: '2026-06-03', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 794, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-05', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 992, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-08', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 793, model: 'GPT-5.1' },
+  { date: '2026-06-10', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 595, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 793, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '6218', user_login: 'sarah-huang', ai_credits_used: 793 },
+  { date: '2026-06-04', user_id: '4471', user_login: 'rpatel2', ai_credits_used: 1390, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-09', user_id: '4471', user_login: 'rpatel2', ai_credits_used: 1158, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-11', user_id: '4471', user_login: 'rpatel2', ai_credits_used: 927, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '4471', user_login: 'rpatel2', ai_credits_used: 695 },
+  { date: '2026-06-04', user_id: '7043', user_login: 'd-okafor', ai_credits_used: 1180, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '7043', user_login: 'd-okafor', ai_credits_used: 983, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '7043', user_login: 'd-okafor', ai_credits_used: 787, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '7043', user_login: 'd-okafor', ai_credits_used: 590 },
+  { date: '2026-06-04', user_id: '5389', user_login: 'jr-mitchell', ai_credits_used: 1003, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-09', user_id: '5389', user_login: 'jr-mitchell', ai_credits_used: 836, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-11', user_id: '5389', user_login: 'jr-mitchell', ai_credits_used: 669, model: 'GPT-5 mini' },
+  { date: '2026-06-12', user_id: '5389', user_login: 'jr-mitchell', ai_credits_used: 502 },
+  { date: '2026-06-04', user_id: '8102', user_login: 'amir-haddad', ai_credits_used: 827, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-09', user_id: '8102', user_login: 'amir-haddad', ai_credits_used: 689, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-11', user_id: '8102', user_login: 'amir-haddad', ai_credits_used: 551, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '8102', user_login: 'amir-haddad', ai_credits_used: 413 },
+  { date: '2026-06-04', user_id: '4630', user_login: 'claire-donnelly', ai_credits_used: 643, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '4630', user_login: 'claire-donnelly', ai_credits_used: 536, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '4630', user_login: 'claire-donnelly', ai_credits_used: 429, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '4630', user_login: 'claire-donnelly', ai_credits_used: 322 },
+  { date: '2026-06-10', user_id: '6884', user_login: 'wei-lin', ai_credits_used: 730, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '6884', user_login: 'wei-lin', ai_credits_used: 292 },
+  { date: '2026-06-12', user_id: '6884', user_login: 'wei-lin', ai_credits_used: 438, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-10', user_id: '5560', user_login: 'ben-fraser', ai_credits_used: 490, model: 'GPT-5 mini' },
+  { date: '2026-06-11', user_id: '5560', user_login: 'ben-fraser', ai_credits_used: 196 },
+  { date: '2026-06-12', user_id: '5560', user_login: 'ben-fraser', ai_credits_used: 294, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-04', user_id: '5921', user_login: 'hannah-webb', ai_credits_used: 1453, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '5921', user_login: 'hannah-webb', ai_credits_used: 1211, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '5921', user_login: 'hannah-webb', ai_credits_used: 969, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '5921', user_login: 'hannah-webb', ai_credits_used: 727 },
+  { date: '2026-06-04', user_id: '4088', user_login: 'george-apostol', ai_credits_used: 1327, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-09', user_id: '4088', user_login: 'george-apostol', ai_credits_used: 1106, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-11', user_id: '4088', user_login: 'george-apostol', ai_credits_used: 884, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '4088', user_login: 'george-apostol', ai_credits_used: 663 },
+  { date: '2026-06-04', user_id: '7710', user_login: 'nadia-rahman', ai_credits_used: 1157, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '7710', user_login: 'nadia-rahman', ai_credits_used: 964, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '7710', user_login: 'nadia-rahman', ai_credits_used: 771, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '7710', user_login: 'nadia-rahman', ai_credits_used: 578 },
+  { date: '2026-06-04', user_id: '6355', user_login: 'oscar-lindgren', ai_credits_used: 947, model: 'GPT-5 mini' },
+  { date: '2026-06-09', user_id: '6355', user_login: 'oscar-lindgren', ai_credits_used: 789, model: 'GPT-5 mini' },
+  { date: '2026-06-11', user_id: '6355', user_login: 'oscar-lindgren', ai_credits_used: 631, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '6355', user_login: 'oscar-lindgren', ai_credits_used: 473 },
+  { date: '2026-06-10', user_id: '4902', user_login: 'ext-pshah', ai_credits_used: 860, model: 'GPT-5 mini' },
+  { date: '2026-06-11', user_id: '4902', user_login: 'ext-pshah', ai_credits_used: 344 },
+  { date: '2026-06-12', user_id: '4902', user_login: 'ext-pshah', ai_credits_used: 516, model: 'GPT-5.1' },
+  { date: '2026-06-10', user_id: '8261', user_login: 'ivy-cheng', ai_credits_used: 320, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '8261', user_login: 'ivy-cheng', ai_credits_used: 128 },
+  { date: '2026-06-12', user_id: '8261', user_login: 'ivy-cheng', ai_credits_used: 192, model: 'GPT-5.1' },
+  { date: '2026-06-04', user_id: '5044', user_login: 'faisal-noor', ai_credits_used: 1393, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '5044', user_login: 'faisal-noor', ai_credits_used: 1161, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '5044', user_login: 'faisal-noor', ai_credits_used: 929, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '5044', user_login: 'faisal-noor', ai_credits_used: 697 },
+  { date: '2026-06-04', user_id: '6627', user_login: 'grace-omalley', ai_credits_used: 1340, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '6627', user_login: 'grace-omalley', ai_credits_used: 1117, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '6627', user_login: 'grace-omalley', ai_credits_used: 893, model: 'GPT-5 mini' },
+  { date: '2026-06-12', user_id: '6627', user_login: 'grace-omalley', ai_credits_used: 670 },
+  { date: '2026-06-04', user_id: '4319', user_login: 'hugo-almeida', ai_credits_used: 1160, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '4319', user_login: 'hugo-almeida', ai_credits_used: 967, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '4319', user_login: 'hugo-almeida', ai_credits_used: 773, model: 'Claude Opus 4.5' },
+  { date: '2026-06-12', user_id: '4319', user_login: 'hugo-almeida', ai_credits_used: 580 },
+  { date: '2026-06-04', user_id: '7856', user_login: 'ling-zhou', ai_credits_used: 993, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '7856', user_login: 'ling-zhou', ai_credits_used: 828, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '7856', user_login: 'ling-zhou', ai_credits_used: 662, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '7856', user_login: 'ling-zhou', ai_credits_used: 497 },
+  { date: '2026-06-04', user_id: '5271', user_login: 'yusuf-demir', ai_credits_used: 880, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '5271', user_login: 'yusuf-demir', ai_credits_used: 733, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '5271', user_login: 'yusuf-demir', ai_credits_used: 587, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '5271', user_login: 'yusuf-demir', ai_credits_used: 440 },
+  { date: '2026-06-04', user_id: '8408', user_login: 'peter-nkosi', ai_credits_used: 737, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '8408', user_login: 'peter-nkosi', ai_credits_used: 614, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '8408', user_login: 'peter-nkosi', ai_credits_used: 491, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '8408', user_login: 'peter-nkosi', ai_credits_used: 368 },
+  { date: '2026-06-10', user_id: '4763', user_login: 'sofia-marin', ai_credits_used: 360, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '4763', user_login: 'sofia-marin', ai_credits_used: 144 },
+  { date: '2026-06-12', user_id: '4763', user_login: 'sofia-marin', ai_credits_used: 216, model: 'GPT-5 mini' },
+  { date: '2026-06-03', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 914, model: 'GPT-5.1' },
+  { date: '2026-06-05', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 1142, model: 'GPT-5.1' },
+  { date: '2026-06-08', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 913, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-10', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 685, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 913, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '5182', user_login: 'emily-zhao', ai_credits_used: 913 },
+  { date: '2026-06-03', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 869, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-05', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 1086, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-08', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 868, model: 'GPT-5.1' },
+  { date: '2026-06-10', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 651, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 868, model: 'Claude Opus 4.5' },
+  { date: '2026-06-12', user_id: '6749', user_login: 'aran-mehta', ai_credits_used: 868 },
+  { date: '2026-06-04', user_id: '4205', user_login: 'kirsty-boyd', ai_credits_used: 1573, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '4205', user_login: 'kirsty-boyd', ai_credits_used: 1311, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '4205', user_login: 'kirsty-boyd', ai_credits_used: 1049, model: 'GPT-5 mini' },
+  { date: '2026-06-12', user_id: '4205', user_login: 'kirsty-boyd', ai_credits_used: 787 },
+  { date: '2026-06-04', user_id: '7532', user_login: 'diego-santos', ai_credits_used: 1360, model: 'Claude Opus 4.5' },
+  { date: '2026-06-09', user_id: '7532', user_login: 'diego-santos', ai_credits_used: 1133, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '7532', user_login: 'diego-santos', ai_credits_used: 907, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '7532', user_login: 'diego-santos', ai_credits_used: 680 },
+  { date: '2026-06-04', user_id: '5896', user_login: 'wendy-oakes', ai_credits_used: 1120, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '5896', user_login: 'wendy-oakes', ai_credits_used: 933, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '5896', user_login: 'wendy-oakes', ai_credits_used: 747, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '5896', user_login: 'wendy-oakes', ai_credits_used: 560 },
+  { date: '2026-06-04', user_id: '8017', user_login: 'raymond-li', ai_credits_used: 847, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '8017', user_login: 'raymond-li', ai_credits_used: 706, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '8017', user_login: 'raymond-li', ai_credits_used: 564, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '8017', user_login: 'raymond-li', ai_credits_used: 423 },
+  { date: '2026-06-03', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 805, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-05', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 1006, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-08', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 805, model: 'Claude Opus 4.5' },
+  { date: '2026-06-10', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 604, model: 'Claude Opus 4.5' },
+  { date: '2026-06-11', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 805, model: 'GPT-5 mini' },
+  { date: '2026-06-12', user_id: '5613', user_login: 'sam-kelly', ai_credits_used: 805 },
+  { date: '2026-06-04', user_id: '4488', user_login: 'ruby-carter', ai_credits_used: 1430, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '4488', user_login: 'ruby-carter', ai_credits_used: 1192, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '4488', user_login: 'ruby-carter', ai_credits_used: 953, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '4488', user_login: 'ruby-carter', ai_credits_used: 715 },
+  { date: '2026-06-04', user_id: '7126', user_login: 'omar-farah', ai_credits_used: 1140, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '7126', user_login: 'omar-farah', ai_credits_used: 950, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '7126', user_login: 'omar-farah', ai_credits_used: 760, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-12', user_id: '7126', user_login: 'omar-farah', ai_credits_used: 570 },
+  { date: '2026-06-10', user_id: '6042', user_login: 'lucas-meyer', ai_credits_used: 445, model: 'Gemini 2.5 Pro' },
+  { date: '2026-06-11', user_id: '6042', user_login: 'lucas-meyer', ai_credits_used: 178 },
+  { date: '2026-06-12', user_id: '6042', user_login: 'lucas-meyer', ai_credits_used: 267, model: 'GPT-5.1' },
+  { date: '2026-06-04', user_id: '5934', user_login: 'karen-fox', ai_credits_used: 1253, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '5934', user_login: 'karen-fox', ai_credits_used: 1044, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '5934', user_login: 'karen-fox', ai_credits_used: 836, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-12', user_id: '5934', user_login: 'karen-fox', ai_credits_used: 627 },
+  { date: '2026-06-04', user_id: '4177', user_login: 'ali-rezaei', ai_credits_used: 1027, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-09', user_id: '4177', user_login: 'ali-rezaei', ai_credits_used: 856, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '4177', user_login: 'ali-rezaei', ai_credits_used: 684, model: 'GPT-5.1' },
+  { date: '2026-06-12', user_id: '4177', user_login: 'ali-rezaei', ai_credits_used: 513 },
+  { date: '2026-06-04', user_id: '7605', user_login: 'josh-bright', ai_credits_used: 813, model: 'GPT-5.1' },
+  { date: '2026-06-09', user_id: '7605', user_login: 'josh-bright', ai_credits_used: 678, model: 'GPT-5.1' },
+  { date: '2026-06-11', user_id: '7605', user_login: 'josh-bright', ai_credits_used: 542, model: 'GPT-5 mini' },
+  { date: '2026-06-12', user_id: '7605', user_login: 'josh-bright', ai_credits_used: 407 },
+  { date: '2026-06-10', user_id: '6488', user_login: 'mia-larsson', ai_credits_used: 840, model: 'Claude Sonnet 4.5' },
+  { date: '2026-06-11', user_id: '6488', user_login: 'mia-larsson', ai_credits_used: 336 },
+  { date: '2026-06-12', user_id: '6488', user_login: 'mia-larsson', ai_credits_used: 504, model: 'GPT-5.1' },
+  { date: '2026-08-31', user_id: '7219', user_login: 'noah-tanaka', ai_credits_used: 468 },
+  { date: '2026-09-01', user_id: '7219', user_login: 'noah-tanaka', ai_credits_used: 468 },
 ];
 
 export { ENTERPRISE_SLUG as USAGE_ENTITY };

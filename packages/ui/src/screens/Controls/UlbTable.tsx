@@ -15,7 +15,7 @@ import './UlbTable.css';
 // layers ONLY the new classes this family needs on top.
 
 export interface UlbRowModel {
-  /** core controlIdentity, e.g. `budget:individual:user-07` -- also the row's data-control-id hook. */
+  /** core controlIdentity, e.g. `budget:individual:liam-obrien` -- also the row's data-control-id hook. */
   id: string;
   scope: UlbBudgetScope;
   entityName: string;

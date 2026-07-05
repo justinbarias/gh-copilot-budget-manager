@@ -12,16 +12,22 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 // simulated.
 //
 // Every expected value below is derived from committed fixtures
-// (msw/fixtures/budgets.ts, usage.ts, costCenters.ts), never observed output:
-//   - Platform cost-center spending limit: $600 -> 60,000 credits (PFU false).
-//   - Data & Analytics cost-center spending limit: $250 -> 25,000 credits
-//     (PFU TRUE -- the one hard-stop-on Family-B fixture, added for §6.3).
-//   - Enterprise spending limit: $8,000 -> 800,000 credits.
+// (msw/fixtures/budgets.ts, usage.ts, costCenters.ts) against the DEWR world
+// (packages/data/src/msw/fixtures/README.md), never observed output:
+//   - Workforce Australia Platform cost-center spending limit: $600 ->
+//     60,000 credits (PFU false).
+//   - Data & Evaluation Platform cost-center spending limit: $250 ->
+//     25,000 credits (PFU TRUE -- the one hard-stop-on Family-B fixture,
+//     for §6.3).
+//   - Enterprise spending limit (entity `dewr`): $8,000 -> 800,000 credits.
 //   - Cost-center sum post-fixtures: 60,000 + 25,000 = 85,000.
-//   - Platform 60,000 -> 65,000 stages one 'change' entry; simulatePlan yields
-//     0 newly blocked / 0 newly unblocked (nobody is spending-limit-bound at
-//     current usage) and a +5,000-credit / $50.00 metered-capacity delta.
+//   - Workforce 60,000 -> 65,000 stages one 'change' entry; simulatePlan
+//     yields 0 newly blocked / 0 newly unblocked (nobody is spending-limit-
+//     bound at current usage) and a +5,000-credit / $50.00 metered-capacity
+//     delta.
 //   - PATCH body for that change: {"budget_amount":650} (65,000 credits = $650).
+//   - Workforce's metered spend meter: 234 credits (noah-tanaka's
+//     2026-09-01 cliff row, net $2.34) against 60,000.
 
 async function launchApp(dbLabel: string) {
   const appDir = path.join(__dirname, '..');
@@ -56,29 +62,32 @@ test('stage -> dry-run -> apply: exact diff, fixture-derived simulation, correct
     await expect(table.locator('.controls-table__row')).toHaveCount(4);
     await expect(table.getByText('metered only')).toHaveCount(4);
 
-    const platformRow = table.locator('[data-control-id="budget:cost_center:Platform"]');
-    await expect(platformRow.getByText('CC: Platform')).toBeVisible();
+    const workforceRow = table.locator('[data-control-id="budget:cost_center:Workforce Australia Platform"]');
+    await expect(workforceRow.getByText('CC: Workforce Australia Platform')).toBeVisible();
 
-    // Utilization meters are fixture-derived, never faked: Platform's metered
-    // spend is 190 credits (user-05's 2026-09-01 net $1.90) against 60,000.
-    // The org row has no per-org usage attribution -> honest empty meter.
-    await expect(platformRow.getByText('0% used · 190 of 60,000')).toBeVisible();
-    const orgRow = table.locator('[data-control-id="budget:organization:acme-eng-org"]');
+    // Utilization meters are fixture-derived, never faked: Workforce's metered
+    // spend is 234 credits (noah-tanaka's 2026-09-01 cliff-row net $2.34)
+    // against 60,000. The org row has no per-org usage attribution -> honest
+    // empty meter.
+    await expect(workforceRow.getByText('0% used · 234 of 60,000')).toBeVisible();
+    const orgRow = table.locator('[data-control-id="budget:organization:dewr-digital"]');
     await expect(orgRow.getByText('no per-org usage data')).toBeVisible();
 
     // Before any edit: the rail shows the empty-plan card, no staged markers.
     await expect(window.getByText('No staged changes')).toBeVisible();
     await expect(table.getByText('● staged change')).toHaveCount(0);
 
-    // Stage: raise the Platform cap 60,000 -> 65,000. Local-only (nothing writes).
-    await platformRow.getByLabel('Cap (credits) — CC: Platform').fill('65000');
-    await expect(platformRow.getByText('● staged change')).toBeVisible();
+    // Stage: raise the Workforce cap 60,000 -> 65,000. Local-only (nothing writes).
+    await workforceRow.getByLabel('Cap (credits) — CC: Workforce Australia Platform').fill('65000');
+    await expect(workforceRow.getByText('● staged change')).toBeVisible();
 
     // The rail's Terraform-style diff line is exact.
     const rail = window.locator('.plan-rail');
     await expect(rail.getByText('Plan — desired vs. live')).toBeVisible();
     await expect(rail.locator('.plan-rail__diff-line')).toHaveCount(1);
-    await expect(rail.locator('.plan-rail__diff-line')).toHaveText('~ cost_center["Platform"].cap: 60,000 → 65,000');
+    await expect(rail.locator('.plan-rail__diff-line')).toHaveText(
+      '~ cost_center["Workforce Australia Platform"].cap: 60,000 → 65,000',
+    );
 
     // No dry-run yet -> no justification/apply section at all.
     await expect(rail.getByLabel('Justification (required)')).toHaveCount(0);
@@ -93,7 +102,7 @@ test('stage -> dry-run -> apply: exact diff, fixture-derived simulation, correct
     // Apply gating: justification required.
     const applyButton = rail.getByRole('button', { name: /Apply changes/ });
     await expect(applyButton).toBeDisabled();
-    await rail.getByLabel('Justification (required)').fill('e2e: raise Platform metered cap for Q1 crunch');
+    await rail.getByLabel('Justification (required)').fill('e2e: raise Workforce metered cap for Q1 crunch');
     await expect(applyButton).toBeEnabled();
 
     // §6.8: the apply affordance itself says it is simulated, before clicking.
@@ -109,10 +118,10 @@ test('stage -> dry-run -> apply: exact diff, fixture-derived simulation, correct
     await expect(applied).toBeVisible();
     await expect(applied.getByText(/Simulated apply — no real GitHub budget or cap was changed/i)).toBeVisible();
     await expect(applied).toContainText('PATCH');
-    await expect(applied).toContainText('/settings/billing/budgets/budget-cost-center-platform-metered-1');
+    await expect(applied).toContainText('/settings/billing/budgets/budget-cost-center-workforce-metered');
     await expect(applied).toContainText('{"budget_amount":650}');
     await expect(applied).toContainText('budget.update');
-    await expect(applied).toContainText('budget:cost_center:Platform');
+    await expect(applied).toContainText('budget:cost_center:Workforce Australia Platform');
     await expect(applied).toContainText('you (FinOps)');
 
     // Success toast (§6.8: never looks live).
@@ -134,13 +143,13 @@ test('blocker path: enterprise cap below the sum of cost-center limits renders t
     await openControls(window);
 
     const table = window.locator('.controls-table');
-    const entRow = table.locator('[data-control-id="budget:enterprise:acme-enterprise"]');
+    const entRow = table.locator('[data-control-id="budget:enterprise:dewr"]');
 
     // Stage the enterprise cap (800,000) below the cost-center sum (85,000).
     await entRow.getByLabel('Cap (credits) — Enterprise metered budget').fill('50000');
 
     const rail = window.locator('.plan-rail');
-    await expect(rail.locator('.plan-rail__diff-line')).toHaveText('~ enterprise["acme-enterprise"].cap: 800,000 → 50,000');
+    await expect(rail.locator('.plan-rail__diff-line')).toHaveText('~ enterprise["dewr"].cap: 800,000 → 50,000');
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
 
@@ -166,23 +175,25 @@ test('§6.3 path: turning a hard stop off demands the explicit override acknowle
     await openControls(window);
 
     const table = window.locator('.controls-table');
-    const daRow = table.locator('[data-control-id="budget:cost_center:Data & Analytics"]');
+    const dataEvalRow = table.locator('[data-control-id="budget:cost_center:Data & Evaluation Platform"]');
 
-    // Live state: the D&A limit is the one hard-stop-ON Family-B fixture --
-    // green toggle, no alert-only pill.
-    const toggle = daRow.getByRole('switch', { name: 'Hard stop — CC: Data & Analytics' });
+    // Live state: the Data & Evaluation limit is the one hard-stop-ON
+    // Family-B fixture -- green toggle, no alert-only pill.
+    const toggle = dataEvalRow.getByRole('switch', { name: 'Hard stop — CC: Data & Evaluation Platform' });
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect(daRow.getByText(/Alert-only — spend continues past this limit/)).toHaveCount(0);
+    await expect(dataEvalRow.getByText(/Alert-only — spend continues past this limit/)).toHaveCount(0);
 
     // Stage: toggle the hard stop off. The loud pill appears immediately and
     // the diff line records the hard_stop transition.
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect(daRow.getByText('⚠ Alert-only — spend continues past this limit. No hard stop.')).toBeVisible();
-    await expect(daRow.getByText('● staged change')).toBeVisible();
+    await expect(dataEvalRow.getByText('⚠ Alert-only — spend continues past this limit. No hard stop.')).toBeVisible();
+    await expect(dataEvalRow.getByText('● staged change')).toBeVisible();
 
     const rail = window.locator('.plan-rail');
-    await expect(rail.locator('.plan-rail__diff-line')).toHaveText('- cost_center["Data & Analytics"].hard_stop: true → false');
+    await expect(rail.locator('.plan-rail__diff-line')).toHaveText(
+      '- cost_center["Data & Evaluation Platform"].hard_stop: true → false',
+    );
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
 
@@ -193,7 +204,7 @@ test('§6.3 path: turning a hard stop off demands the explicit override acknowle
     await expect(ack).toBeVisible();
 
     const applyButton = rail.getByRole('button', { name: /Apply changes/ });
-    await rail.getByLabel('Justification (required)').fill('e2e: alert-only for D&A during migration');
+    await rail.getByLabel('Justification (required)').fill('e2e: alert-only for Data & Evaluation during migration');
     await expect(applyButton).toBeDisabled(); // justification alone is NOT enough (§6.3)
     await ack.check();
     await expect(applyButton).toBeEnabled();
@@ -205,7 +216,7 @@ test('§6.3 path: turning a hard stop off demands the explicit override acknowle
     await expect(applied).toBeVisible();
     await expect(applied).toContainText('{"prevent_further_usage":false}');
     await expect(applied).toContainText('budget.update');
-    await expect(applied).toContainText('budget:cost_center:Data & Analytics');
+    await expect(applied).toContainText('budget:cost_center:Data & Evaluation Platform');
     await expect(window.locator('.controls-toast')).toContainText(/Simulated apply/i);
   } finally {
     await app.close();
@@ -220,17 +231,17 @@ test('stale dry-run: any further edit invalidates the simulation and disables Ap
     await openControls(window);
 
     const table = window.locator('.controls-table');
-    const platformRow = table.locator('[data-control-id="budget:cost_center:Platform"]');
+    const workforceRow = table.locator('[data-control-id="budget:cost_center:Workforce Australia Platform"]');
     const rail = window.locator('.plan-rail');
 
-    await platformRow.getByLabel('Cap (credits) — CC: Platform').fill('65000');
+    await workforceRow.getByLabel('Cap (credits) — CC: Workforce Australia Platform').fill('65000');
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
     await rail.getByLabel('Justification (required)').fill('e2e: staleness check');
     const applyButton = rail.getByRole('button', { name: /Apply changes/ });
     await expect(applyButton).toBeEnabled();
 
     // Edit again after the dry-run: the plan changed, so the simulation is stale.
-    await platformRow.getByLabel('Cap (credits) — CC: Platform').fill('70000');
+    await workforceRow.getByLabel('Cap (credits) — CC: Workforce Australia Platform').fill('70000');
     await expect(rail.getByText(/Plan changed since the last dry-run/)).toBeVisible();
     await expect(applyButton).toBeDisabled();
 

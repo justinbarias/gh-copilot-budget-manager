@@ -18,16 +18,17 @@ describe('licenses/seats handler', () => {
     const page1 = await fetch(`${url}?page=1&per_page=30`, { headers });
     expect(page1.status).toBe(200);
     const body1 = (await page1.json()) as { total_seats: number; seats: Array<{ assignee: { login: string } }> };
-    expect(body1.total_seats).toBe(35);
+    expect(body1.total_seats).toBe(81);
     expect(body1.seats).toHaveLength(30);
     expect(page1.headers.get('link')).toContain('rel="next"');
     expect(page1.headers.get('link')).toContain('rel="last"');
 
-    const page2 = await fetch(`${url}?page=2&per_page=30`, { headers });
-    const body2 = (await page2.json()) as { seats: Array<{ assignee: { login: string } }> };
-    expect(body2.seats).toHaveLength(5);
-    expect(page2.headers.get('link')).not.toContain('rel="next"');
-    expect(body2.seats[0]?.assignee.login).not.toBe(body1.seats[0]?.assignee.login);
+    // 81 seats at 30/page -> 30 + 30 + 21; the final page has no rel="next".
+    const page3 = await fetch(`${url}?page=3&per_page=30`, { headers });
+    const body3 = (await page3.json()) as { seats: Array<{ assignee: { login: string } }> };
+    expect(body3.seats).toHaveLength(21);
+    expect(page3.headers.get('link')).not.toContain('rel="next"');
+    expect(body3.seats[0]?.assignee.login).not.toBe(body1.seats[0]?.assignee.login);
   });
 });
 
@@ -43,16 +44,16 @@ describe('cost centers handler', () => {
 
   it('lists membership resources for a specific cost center', async () => {
     const res = await fetch(
-      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/cost-centers/${COST_CENTER_IDS.platform}/resource`,
+      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/cost-centers/${COST_CENTER_IDS.workforce}/resource`,
       { headers },
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { resources: Array<{ type: string; name: string; via_ent_team?: string }> };
-    expect(body.resources).toHaveLength(15);
-    // user-01 carries enterprise-team provenance (Task 2.3 drill-modal badges);
-    // members without provenance omit the field entirely.
-    expect(body.resources[0]).toEqual({ type: 'User', name: 'user-01', via_ent_team: 'payments' });
-    expect(body.resources[3]).toEqual({ type: 'User', name: 'user-04' });
+    expect(body.resources).toHaveLength(24);
+    // liam-obrien carries enterprise-team provenance (Task 2.3 drill-modal
+    // badges); members without provenance omit the field entirely.
+    expect(body.resources[0]).toEqual({ type: 'User', name: 'liam-obrien', via_ent_team: 'payments-eng' });
+    expect(body.resources[3]).toEqual({ type: 'User', name: 'd-okafor' });
   });
 });
 
@@ -92,13 +93,18 @@ describe('usage/cost reporting handlers', () => {
   });
 
   it('reports promo -> standard cliff datapoints spanning 1 Sep 2026', async () => {
-    const res = await fetch(
-      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/copilot/metrics/reports/users-28-day`,
-      { headers },
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Array<{ date: string; user_login: string; ai_credits_used: number }>;
-    const cliffDates = body.filter((row) => row.user_login === 'user-05').map((row) => row.date);
+    // The per-user report now carries ~150 rows, so it paginates -- walk every
+    // page (the cliff edge-fixture rows sort at the very end of the fixture).
+    const base = `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/copilot/metrics/reports/users-28-day`;
+    const rows: Array<{ date: string; user_login: string; ai_credits_used: number }> = [];
+    for (let page = 1; ; page++) {
+      const res = await fetch(`${base}?page=${page}&per_page=100`, { headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{ date: string; user_login: string; ai_credits_used: number }>;
+      rows.push(...body);
+      if (!res.headers.get('link')?.includes('rel="next"')) break;
+    }
+    const cliffDates = rows.filter((row) => row.user_login === 'noah-tanaka').map((row) => row.date);
     expect(cliffDates).toEqual(expect.arrayContaining(['2026-08-31', '2026-09-01']));
   });
 });

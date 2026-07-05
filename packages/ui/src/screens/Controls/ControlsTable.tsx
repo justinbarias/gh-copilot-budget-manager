@@ -13,7 +13,7 @@ import './ControlsTable.css';
 export type { RowUtilization };
 
 export interface SpendingLimitRowModel {
-  /** core controlIdentity, e.g. `budget:cost_center:Platform` -- also the row's data-control-id hook. */
+  /** core controlIdentity, e.g. `budget:cost_center:Workforce Australia Platform` -- also the row's data-control-id hook. */
   id: string;
   title: string;
   capsCopy: string;
