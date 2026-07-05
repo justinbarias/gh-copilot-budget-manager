@@ -71,6 +71,39 @@ export const budget = sqliteTable('budget', {
   alertRecipients: text('alert_recipients'), // JSON-encoded string[]
 });
 
+// Task 4.15: one row per `syncNow` ingestion, holding the FULL live-control
+// projection (core's ControlState[] -- BudgetControl/IncludedCapControl/
+// CostCenterControl) as of that sync. This is the "last synced" reference
+// the Controls screen compares a fresh live read against to surface
+// out-of-band drift ("⤺ drift — reconcile"); append-only sibling of
+// usage_fact/credits_used_fact (CLAUDE.md §6: never updated/deleted, one row
+// inserted per sync, scoped by snapshotId).
+//
+// A single JSON column, not per-field columns, because ControlState is a
+// discriminated union of three structurally different shapes -- the same
+// "serialize the whole domain object" precedent audit_event already
+// establishes (envelopeSnapshot/before/after below). This also keeps the
+// table schema-stable as ControlState itself grows fields/kinds across
+// Phases 5-7, with no migration required each time.
+//
+// Considered and rejected: populating the existing `budget` table (its
+// single-string `id` primary key has no snapshotId column, so making it
+// append-only per generation would mean recreating the table -- not
+// additive); a bare column added directly to `snapshot` (rejected only to
+// keep `snapshot` a pure ingestion-run marker, matching its own doc comment,
+// rather than overloading every snapshot row with a payload every reader of
+// that table -- e.g. getSyncStatus's latest-row lookup -- doesn't need).
+// `snapshotId` is unique: syncNow inserts exactly one control_snapshot row
+// per generation, never zero, never more than one.
+export const controlSnapshot = sqliteTable('control_snapshot', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  snapshotId: integer('snapshot_id')
+    .notNull()
+    .unique()
+    .references(() => snapshot.id),
+  controlsJson: text('controls_json').notNull(),
+});
+
 // Append-only, hash-chained audit log (CLAUDE.md §6.5 / PLAN.md Task 4.7).
 // No code path in this package updates or deletes a row here -- the only
 // writer is packages/data/src/audit/writer.ts's `appendAuditEvent`, and that

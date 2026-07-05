@@ -473,6 +473,21 @@ function applyCostCenterChanges(control: CostCenterControl, changes: readonly Co
   return next;
 }
 
+// Task 4.15: browse-time drift detection (Controls screen row markers) --
+// deliberately built on diffControls, the SAME comparator applyPlan's §6.2
+// apply-time drift-abort and the Controls rail's staged-vs-live diff both
+// use, rather than a bespoke equality check. `previous` is the last-synced
+// (persisted, append-only) control snapshot; `current` is a fresh live read
+// -- any id diffControls would emit an add/change/delete entry for is
+// "drifted": live moved out-of-band since the last explicit Sync Now.
+// BudgetControl.simulatedUiHidden safely never causes a false-positive here:
+// diffBudget's field list deliberately excludes it (see that field's own doc
+// comment), so a control present-with-the-flag on one side and
+// absent-without-it on the other still compares equal.
+export function driftedControlIds(previous: readonly ControlState[], current: readonly ControlState[]): ReadonlySet<string> {
+  return new Set(diffControls(previous, current).entries.map((entry) => entry.id));
+}
+
 // Applies a Plan onto a live control list to produce the post-plan state --
 // what `live` becomes after Apply. Shared by validatePlan (post-plan checks
 // like the enterprise-cap-below-sum blocker) and simulatePlan (before-vs-

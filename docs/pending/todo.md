@@ -24,7 +24,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 4.12 Included-usage caps family — per-CC cards, toggle + block/overflow, no amount input anywhere [M]
 - [x] 4.13 Cost-center lifecycle writes — new-CC modal, membership, exclude toggle, Users reassignment [M]
 - [x] 4.14 ULB display-bug detection + repair banner (FR3) [S/M]
-- [ ] 4.15 Controls ingestion on sync + staged/drift markers [S/M]
+- [x] 4.15 Controls ingestion on sync + staged/drift markers [S/M]
 
 ### Checkpoint 4 — control administration complete
 - [ ] Every PRD §1.3/§1.4 control CRUD-able, API-first, no write bypasses the rail; invariants §6.1–§6.5 hold; gate green; human review

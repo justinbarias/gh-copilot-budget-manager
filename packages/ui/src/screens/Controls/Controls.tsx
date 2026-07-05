@@ -3,6 +3,7 @@ import {
   controlIdentity,
   detectUlbRepairCandidates,
   diffControls,
+  driftedControlIds,
   isUlbScope,
   DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
   type AlertingState,
@@ -14,7 +15,7 @@ import {
   type UlbBudgetScope,
   type UlbRepairCandidate,
 } from '@copilot-budget/core';
-import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
+import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser, LastSyncedControls } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { parseCredits, parseRecipients } from '../../lib/creditsInput';
 import { ControlsTable, type RowUtilization, type SpendingEnforcementFilter, type SpendingLimitRowModel, type SpendingScopeFilter } from './ControlsTable';
@@ -200,6 +201,25 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   const [live, setLive] = useState<ControlState[] | null>(null);
   const [meters, setMeters] = useState<MeterData | null>(null);
   const [mode, setMode] = useState<'simulation' | 'live' | null>(null);
+  // Task 4.15: the "last synced" baseline for the browse-time drift marker
+  // ("⤺ drift — reconcile"), fetched once alongside `live` below. Legitimately
+  // null once loaded (not a "still loading" sentinel -- that's what `live`'s
+  // own null already gates): no Sync Now has ever run yet, so there is
+  // nothing to compare against and no drift can honestly be shown (see
+  // `driftedIds` below).
+  const [lastSynced, setLastSynced] = useState<LastSyncedControls | null>(null);
+  // Session-only "I've reviewed this drift" acknowledgments from the rail's
+  // per-row reconcile action (see onReconcileDrift below) -- NOT persisted:
+  // reconciling here re-reads live state and suppresses the marker for this
+  // browser session, but only a real Sync Now (Settings) actually advances
+  // the persisted `lastSynced` baseline. A relaunch/refresh honestly shows
+  // the drift again until that happens (CLAUDE.md §6: snapshots are
+  // append-only, so this action must never fabricate one).
+  const [reconciledIds, setReconciledIds] = useState<ReadonlySet<string>>(new Set());
+  // The one control id currently showing the "this row is also staged —
+  // reconcile anyway?" collision prompt (see onReconcileDrift) -- at most one
+  // at a time, cleared by confirming, cancelling, or reconciling a different row.
+  const [driftCollisionId, setDriftCollisionId] = useState<string | null>(null);
   // Task 4.10: the ULB family's entity pickers (NewUlbModal) and utilization
   // meters need the same listHeavyUsers()/listCostCenters() data the Users/
   // CostCenters screens already fetch -- stored here rather than re-derived,
@@ -315,12 +335,13 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const [controls, runtimeMode, summary, costCenters, users] = await Promise.all([
+      const [controls, runtimeMode, summary, costCenters, users, lastSyncedControls] = await Promise.all([
         api.getControls(),
         api.getMode(),
         api.getUsageSummary(),
         api.listCostCenters(),
         api.listHeavyUsers(),
+        api.getLastSyncedControls(),
       ]);
       // Per-scope metered utilization is derived from real usage data only
       // (never faked): the enterprise row from the all-up usage summary's net
@@ -336,6 +357,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         usedCreditsByCostCenterName[name] = Math.round(ccSummary.totalNetAmountUsd * 100);
       }
       setLive(controls);
+      setLastSynced(lastSyncedControls);
       setMode(runtimeMode);
       setMeters({
         enterpriseUsedCredits: Math.round(summary.totalNetAmountUsd * 100),
@@ -409,6 +431,30 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
       ),
     [plan],
   );
+
+  // Diff-driven staging markers ("● staged change"): a row is "staged" exactly
+  // when the derived plan carries an entry for it. Hoisted above the loading
+  // guard (was previously computed inline, post-guard) so onReconcileControlDrift
+  // below -- a hook, which must be declared unconditionally -- can read it.
+  const stagedIds = useMemo(() => new Set(plan.entries.map((entry) => entry.id)), [plan]);
+
+  // Task 4.15: browse-time drift ("⤺ drift — reconcile") -- reuses core's
+  // driftedControlIds (built on the SAME diffControls comparator the staged
+  // plan above uses), fed (last-synced baseline, fresh live). Null lastSynced
+  // (no Sync Now has ever run) deliberately yields no drift at all -- see
+  // `lastSynced`'s own doc comment above.
+  const driftedIds = useMemo(
+    () => (live === null || lastSynced === null ? new Set<string>() : driftedControlIds(lastSynced.controls, live)),
+    [lastSynced, live],
+  );
+  // Session-reconciled ids are subtracted client-side (see `reconciledIds`'s
+  // doc comment) -- the persisted comparison itself is never mutated.
+  const effectiveDriftedIds = useMemo(() => {
+    if (reconciledIds.size === 0) return driftedIds;
+    const next = new Set(driftedIds);
+    for (const id of reconciledIds) next.delete(id);
+    return next;
+  }, [driftedIds, reconciledIds]);
 
   const stageEdit = useCallback((id: string, patch: StagedBudgetEdit) => {
     setDesired((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
@@ -556,6 +602,37 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     setApplyResult(null);
   }, [refreshLive]);
 
+  // Task 4.15: per-row browse-time reconcile ("⤺ drift — reconcile"),
+  // distinct from onReconcileDrift above (that one clears PlanRail's
+  // apply-time §6.2 drift-abort result). "Reconcile" here means: refresh live
+  // state so the table + rail re-derive, then treat the fresh live value as
+  // this control's new comparison baseline for the rest of this session
+  // (reconciledIds) -- it never touches `desired`/`desiredCaps`/
+  // `stagedDeletes`/`stagedNewUlbs`, so a staged edit on this or any other
+  // row survives untouched.
+  //
+  // Staged-vs-drifted collision (CLAUDE.md-style honesty: never silently
+  // paper over a conflict): if this control ALSO has a pending staged edit,
+  // the first click only raises the inline "reconcile anyway?" prompt
+  // (driftCollisionId) instead of acting -- the admin's staged edit was made
+  // without seeing this out-of-band change, so it's surfaced, not silently
+  // dropped. A second click (from that prompt's "Reconcile anyway" button,
+  // which calls this again with the same id) proceeds.
+  const onReconcileControlDrift = useCallback(
+    async (id: string) => {
+      if (stagedIds.has(id) && driftCollisionId !== id) {
+        setDriftCollisionId(id);
+        return;
+      }
+      setDriftCollisionId(null);
+      setReconciledIds((current) => new Set(current).add(id));
+      await refreshLive();
+    },
+    [stagedIds, driftCollisionId, refreshLive],
+  );
+
+  const onCancelDriftCollision = useCallback(() => setDriftCollisionId(null), []);
+
   if (live === null || meters === null || mode === null || heavyUsers === null || costCentersList === null) {
     return (
       <section className="controls" aria-label="Controls">
@@ -563,11 +640,6 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
       </section>
     );
   }
-
-  // Diff-driven staging markers: a row is "staged" exactly when the derived
-  // plan carries an entry for it (matches the rail 1:1 -- typing a value and
-  // reverting it back to the live value never leaves a phantom marker).
-  const stagedIds = new Set(plan.entries.map((entry) => entry.id));
 
   const rows: SpendingLimitRowModel[] = live
     .filter(isSpendingBudget)
@@ -595,6 +667,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         willAlert: effective.alerting.willAlert,
         recipientsRaw: edit.recipientsRaw ?? control.alerting.alertRecipients.join(', '),
         staged,
+        drifted: effectiveDriftedIds.has(id),
         utilization,
       };
     });
@@ -617,6 +690,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // Honesty note (rendered in this screen's own layout, near the rail --
   // never inside PlanRail): staged rows the CURRENT search/filter/page hides.
   const spendingHiddenStagedCount = rows.filter((row) => row.staged && !spendingVisibleIds.has(row.id)).length;
+  // Task 4.15: same honesty rule for drift -- count from the FULL set, never
+  // the filtered/paginated page.
+  const spendingHiddenDriftedCount = rows.filter((row) => row.drifted && !spendingVisibleIds.has(row.id)).length;
 
   // Task 4.10: ULB family rows. Utilization is derived honestly from
   // listHeavyUsers() (the same precomputed, precedence-resolved
@@ -663,6 +739,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         willAlert: effective.alerting.willAlert,
         recipientsRaw: markedForDelete ? control.alerting.alertRecipients.join(', ') : (edit.recipientsRaw ?? control.alerting.alertRecipients.join(', ')),
         staged: stagedIds.has(id),
+        drifted: effectiveDriftedIds.has(id),
         isNew: false,
         markedForDelete,
         zeroWarning: effective.amountCredits <= DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
@@ -683,6 +760,10 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
       willAlert: control.alerting.willAlert,
       recipientsRaw: control.alerting.alertRecipients.join(', '),
       staged: true,
+      // A staged-NEW ULB has no live counterpart yet, so it can never appear
+      // in driftedIds (derived only from ids present in `live`) -- false
+      // unconditionally, not just as a default.
+      drifted: false,
       isNew: true,
       markedForDelete: false,
       zeroWarning: control.amountCredits <= DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
@@ -710,6 +791,10 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // this only ever counts EXISTING staged edits/deletes the current
   // search/filter/page is hiding.
   const ulbHiddenStagedCount = ulbExisting.filter((row) => row.staged && !ulbVisibleIds.has(row.id)).length;
+  // Task 4.15: same honesty rule for drift (pinned-new rows are never
+  // drifted -- see their `drifted: false` above -- so ulbExisting alone is
+  // the full drift-eligible set).
+  const ulbHiddenDriftedCount = ulbExisting.filter((row) => row.drifted && !ulbVisibleIds.has(row.id)).length;
 
   // Task 4.14: the FULL detected repair-candidate set (never the
   // filtered/paginated table view -- CLAUDE.md's UI-honesty rule), derived
@@ -796,6 +881,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
       memberCount: summary?.memberCount ?? 0,
       drawnCredits: summary?.mtdBurnCredits ?? 0,
       staged: stagedIds.has(id),
+      drifted: effectiveDriftedIds.has(id),
     };
   });
 
@@ -804,11 +890,15 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   const capsFiltered = capRows.filter((row) => matchesScaleSearch(row.costCenterName, capsSearch));
   const capsVisibleIds = new Set(capsFiltered.map((row) => row.id));
   const capsHiddenStagedCount = capRows.filter((row) => row.staged && !capsVisibleIds.has(row.id)).length;
+  const capsHiddenDriftedCount = capRows.filter((row) => row.drifted && !capsVisibleIds.has(row.id)).length;
 
   // The active family tab's count of staged rows the current search/filter/
   // page is hiding -- drives the honesty note rendered near the rail below.
   const hiddenStagedCount =
     family === 'userlevel' ? ulbHiddenStagedCount : family === 'spending' ? spendingHiddenStagedCount : capsHiddenStagedCount;
+  // Task 4.15: same, for drifted rows the current search/filter/page hides.
+  const hiddenDriftedCount =
+    family === 'userlevel' ? ulbHiddenDriftedCount : family === 'spending' ? spendingHiddenDriftedCount : capsHiddenDriftedCount;
 
   // NewUlbModal's entity pickers, narrowed to genuinely-new targets (CLAUDE.md
   // build brief: "filtered to exclude existing overrides") -- a scope/entity
@@ -892,6 +982,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
               page={spendingClampedPage}
               pageCount={spendingPageCount}
               onPageChange={setSpendingPage}
+              driftCollisionId={driftCollisionId}
+              onReconcileDrift={(id) => void onReconcileControlDrift(id)}
+              onCancelDriftCollision={onCancelDriftCollision}
             />
           )}
           {family === 'userlevel' && (
@@ -927,6 +1020,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
                 page={ulbClampedPage}
                 pageCount={ulbPageCount}
                 onPageChange={setUlbPage}
+                driftCollisionId={driftCollisionId}
+                onReconcileDrift={(id) => void onReconcileControlDrift(id)}
+                onCancelDriftCollision={onCancelDriftCollision}
               />
             </>
           )}
@@ -937,6 +1033,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
               onOverflowChange={onCapOverflowChange}
               search={capsSearch}
               onSearchChange={setCapsSearch}
+              driftCollisionId={driftCollisionId}
+              onReconcileDrift={(id) => void onReconcileControlDrift(id)}
+              onCancelDriftCollision={onCancelDriftCollision}
             />
           )}
         </div>
@@ -946,6 +1045,14 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
             <span aria-hidden="true">◐ </span>
             {hiddenStagedCount} staged change{hiddenStagedCount === 1 ? '' : 's'} not shown by the current search/filter/page — clear
             them to review it before applying.
+          </p>
+        )}
+
+        {hiddenDriftedCount > 0 && (
+          <p className="controls__hidden-drifted-note" role="status">
+            <span aria-hidden="true">◐ </span>
+            {hiddenDriftedCount} drifted row{hiddenDriftedCount === 1 ? '' : 's'} not shown by the current search/filter/page — clear
+            them to review before reconciling.
           </p>
         )}
 

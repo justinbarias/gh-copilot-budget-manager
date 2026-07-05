@@ -13,6 +13,7 @@ const apiClientBridge: ApiClient = {
   getSyncStatus: () => ipcRenderer.invoke('apiClient:getSyncStatus'),
   syncNow: () => ipcRenderer.invoke('apiClient:syncNow'),
   getControls: () => ipcRenderer.invoke('apiClient:getControls'),
+  getLastSyncedControls: () => ipcRenderer.invoke('apiClient:getLastSyncedControls'),
   dryRunPlan: (desiredControls, justification) =>
     ipcRenderer.invoke('apiClient:dryRunPlan', desiredControls, justification),
   applyPlan: (stagedPlan, desiredControls, input) =>

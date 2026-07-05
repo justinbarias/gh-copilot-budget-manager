@@ -12,6 +12,7 @@ import {
 import { ALERTS } from '../msw/fixtures/alerts.js';
 import { API_VERSION, SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
+  getLastSyncedControls as readLastSyncedControls,
   getSyncStatus as readSyncStatus,
   syncNow as ingestSnapshot,
   type IngestCostCenterMember,
@@ -33,6 +34,7 @@ import type {
   DryRunResult,
   HeavyUser,
   HeavyUserDailyPoint,
+  LastSyncedControls,
   SyncStatus,
   UsageSummary,
   UsageSummaryParams,
@@ -398,11 +400,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function syncNow(): Promise<SyncStatus> {
-    const [usageItems, creditsUsedItems, costCentersRaw, seats] = await Promise.all([
+    // Task 4.15: the controls phase reuses fetchLiveControls verbatim -- the
+    // SAME live-control read getControls()/the write engine's re-read call --
+    // rather than re-deriving BudgetControl/IncludedCapControl/
+    // CostCenterControl by hand from costCentersRaw/resourcesByCostCenter
+    // below (a second, independently-written projection of the same wire data
+    // could drift from the first). This does re-fetch cost centers + their
+    // resource rosters a second time (fetchLiveControls does its own
+    // paginated reads); acceptable against MSW/a handful of live cost
+    // centers, and keeps the controls-ingestion path structurally identical
+    // to every other getControls() caller.
+    const [usageItems, creditsUsedItems, costCentersRaw, seats, live] = await Promise.all([
       fetchUsageItems(),
       fetchCreditsUsedItems(),
       fetchCostCentersRaw(),
       fetchSeats(),
+      fetchLiveControls(octokit, enterprise),
     ]);
 
     const resourcesByCostCenter = await Promise.all(
@@ -446,10 +459,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
         costCenterId: loginToCostCenter.get(seat.assignee.login) ?? null,
         assignedAt: new Date(seat.created_at),
       })),
+      controls: live.controls,
     };
 
     ingestSnapshot(config.db, config.source, data);
     return readSyncStatus(config.db);
+  }
+
+  // Task 4.15: the Controls screen's "last synced" baseline for browse-time
+  // drift detection (core's driftedControlIds, fed (getLastSyncedControls(),
+  // getControls())). A thin read-through to the sync package -- capturedAt is
+  // surfaced as an ISO string (matching SyncStatus.lastSyncedAt's convention)
+  // rather than the internal Date, since a preload/IPC/renderer caller has no
+  // use for a raw Date across that boundary.
+  async function getLastSyncedControls(): Promise<LastSyncedControls | null> {
+    const result = readLastSyncedControls(config.db);
+    return result ? { capturedAt: result.capturedAt.toISOString(), controls: result.controls } : null;
   }
 
   // Task 4.8's write engine. getControls IS the write engine's own re-read
@@ -494,6 +519,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     getSyncStatus,
     syncNow,
     getControls,
+    getLastSyncedControls,
     dryRunPlan,
     applyPlan,
   };

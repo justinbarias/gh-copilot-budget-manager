@@ -52,6 +52,12 @@ export interface UlbRowModel {
   recipientsRaw: string;
   /** Has a pending plan entry of any kind (add/change/delete) -- matches the rail 1:1. */
   staged: boolean;
+  /**
+   * Task 4.15: live moved out-of-band since the last explicit Sync Now.
+   * Always false for `isNew` rows (no live counterpart exists yet to have
+   * drifted) -- see Controls.tsx's ulbRows construction.
+   */
+  drifted: boolean;
   /** True for a row from `stagedNewUlbs` (not yet live) -- rendered read-only pre-apply; see Controls.tsx. */
   isNew: boolean;
   /** True once staged for deletion via the row's Delete button. */
@@ -91,6 +97,10 @@ interface UlbTableProps {
   page: number;
   pageCount: number;
   onPageChange: (page: number) => void;
+  /** Task 4.15: the one row id currently showing the staged-vs-drifted collision prompt, if any. */
+  driftCollisionId: string | null;
+  onReconcileDrift: (id: string) => void;
+  onCancelDriftCollision: () => void;
 }
 
 const SCOPE_LABEL: Record<UlbBudgetScope, string> = {
@@ -117,6 +127,9 @@ export function UlbTable({
   page,
   pageCount,
   onPageChange,
+  driftCollisionId,
+  onReconcileDrift,
+  onCancelDriftCollision,
 }: UlbTableProps) {
   function renderRow(row: UlbRowModel) {
     const rowClass = [
@@ -206,6 +219,11 @@ export function UlbTable({
               {row.markedForDelete && <span className="controls-ulb__marker controls-ulb__marker--delete">● staged: delete</span>}
               {!row.markedForDelete && row.isNew && <span className="controls-ulb__marker controls-ulb__marker--new">● staged: new</span>}
               {!row.markedForDelete && !row.isNew && row.staged && <span className="controls-table__staged">● staged change</span>}
+              {row.drifted && driftCollisionId !== row.id && (
+                <button type="button" className="controls-table__drift" onClick={() => onReconcileDrift(row.id)}>
+                  ⤺ drift — reconcile
+                </button>
+              )}
               {row.isNew ? (
                 <button type="button" className="controls-ulb__discard-btn" onClick={() => onDiscardNew(row.id)}>
                   ✕ discard
@@ -218,6 +236,26 @@ export function UlbTable({
             </div>
           </div>
         </div>
+
+        {/* Task 4.15: full-width (matches ControlsTable.tsx's alert-only pill
+            convention -- needs room for text + two buttons, unlike the
+            narrow utility column the "⤺ drift — reconcile" link above lives
+            in). Never silently reconciles a row that also has a pending
+            staged edit. */}
+        {row.drifted && driftCollisionId === row.id && (
+          <div className="controls-table__drift-collision" role="alert">
+            <span aria-hidden="true">⚠ </span>This row also has a staged edit made before this drift was detected —
+            review it before reconciling.
+            <div className="controls-table__drift-collision-actions">
+              <button type="button" className="controls-table__drift-confirm" onClick={() => onReconcileDrift(row.id)}>
+                ⤺ Reconcile anyway
+              </button>
+              <button type="button" className="controls-table__drift-cancel" onClick={onCancelDriftCollision}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

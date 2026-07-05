@@ -4,6 +4,7 @@ import {
   controlIdentity,
   creditsToUsd,
   diffControls,
+  driftedControlIds,
   INCLUDED_CAP_CREDITS_PER_SEAT,
   isSpendingLimitScope,
   isUlbScope,
@@ -519,5 +520,48 @@ describe('applyPlanToControls (cost_center)', () => {
     const desired: ControlState[] = [costCenter({ name: 'Fresh', members: [{ type: 'User', name: 'x' }] })];
     const result = applyPlanToControls([], diffControls([], desired));
     expect(result).toEqual(desired);
+  });
+});
+
+// Task 4.15: the Controls screen's browse-time drift marker ("⤺ drift —
+// reconcile") is derived entirely from this comparator, fed
+// (lastSyncedControls, liveControls).
+describe('driftedControlIds', () => {
+  it('is empty when the two lists are identical', () => {
+    const controls: ControlState[] = [budget(), cap()];
+    expect(driftedControlIds(controls, controls)).toEqual(new Set());
+  });
+
+  it('flags a control whose field changed out-of-band', () => {
+    const previous: ControlState[] = [budget({ amountCredits: 6000 })];
+    const current: ControlState[] = [budget({ amountCredits: 7000 })];
+    expect(driftedControlIds(previous, current)).toEqual(new Set([controlIdentity(budget())]));
+  });
+
+  it('flags a control added live since the last sync', () => {
+    const previous: ControlState[] = [];
+    const current: ControlState[] = [budget({ scope: 'individual', entityName: 'new-hire' })];
+    expect(driftedControlIds(previous, current)).toEqual(new Set([controlIdentity(current[0]!)]));
+  });
+
+  it('flags a control removed live since the last sync', () => {
+    const previous: ControlState[] = [budget()];
+    const current: ControlState[] = [];
+    expect(driftedControlIds(previous, current)).toEqual(new Set([controlIdentity(budget())]));
+  });
+
+  it('never flags a budget purely for BudgetControl.simulatedUiHidden differing (display-only, not diffed)', () => {
+    const previous: ControlState[] = [budget({ simulatedUiHidden: true })];
+    const current: ControlState[] = [budget()];
+    expect(driftedControlIds(previous, current)).toEqual(new Set());
+  });
+
+  it('leaves unrelated, unchanged controls out of the drifted set', () => {
+    const previous: ControlState[] = [budget({ entityName: 'user-07' }), budget({ scope: 'individual', entityName: 'user-08' })];
+    const current: ControlState[] = [
+      budget({ entityName: 'user-07', amountCredits: 9999 }),
+      budget({ scope: 'individual', entityName: 'user-08' }),
+    ];
+    expect(driftedControlIds(previous, current)).toEqual(new Set([controlIdentity(budget({ entityName: 'user-07' }))]));
   });
 });

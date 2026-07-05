@@ -1,10 +1,12 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from '../db/schema.js';
+import type { BudgetControl, ControlState, IncludedCapControl } from '@copilot-budget/core';
+import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from '../db/schema.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
-import { getSyncStatus, syncNow, type IngestData } from './sync-now.js';
+import { getLastSyncedControls, getSyncStatus, syncNow, type IngestData } from './sync-now.js';
 
 let tmpDir: string;
 let db: Db;
@@ -41,6 +43,28 @@ const baseData: IngestData = {
     { userId: '1001', costCenterId: 'cc-platform', assignedAt: new Date('2026-06-01T00:00:00Z') },
     { userId: '1016', costCenterId: 'cc-data-analytics', assignedAt: new Date('2026-06-01T00:00:00Z') },
   ],
+  controls: [
+    {
+      kind: 'budget',
+      scope: 'individual',
+      entityName: 'user-01',
+      amountCredits: 6000,
+      preventFurtherUsage: true,
+      alerting: { willAlert: true, alertRecipients: ['copilot-admins@acme.example'] },
+      // Task 4.15: this is the ONE fixture control here that carries the
+      // simulation-only display-bug enrichment -- exercises
+      // stripDisplayOnlyFields without needing a second describe block's
+      // worth of setup.
+      simulatedUiHidden: true,
+    } satisfies BudgetControl,
+    {
+      kind: 'included_cap',
+      costCenterName: 'Platform',
+      enabled: true,
+      overflow: 'block',
+      computedLimitCredits: 105_000,
+    } satisfies IncludedCapControl,
+  ],
 };
 
 describe('syncNow', () => {
@@ -49,6 +73,7 @@ describe('syncNow', () => {
 
     expect(result.usageFactCount).toBe(2);
     expect(result.creditsUsedFactCount).toBe(2);
+    expect(result.controlCount).toBe(2);
 
     const usageRows = db.select().from(usageFact).all();
     expect(usageRows).toHaveLength(2);
@@ -101,5 +126,187 @@ describe('syncNow', () => {
 
     expect(status.inProgress).toBe(false);
     expect(status.lastSyncedAt).toBe(result.capturedAt.toISOString());
+  });
+});
+
+// Task 4.15: budgets + cap state ingested into snapshots on syncNow, and the
+// "last synced" read path (getLastSyncedControls) the Controls screen's
+// browse-time drift marker compares a fresh live read against.
+describe('syncNow control ingestion (Task 4.15)', () => {
+  it('persists exactly one control_snapshot row, referencing the sync generation', () => {
+    const result = syncNow(db, 'msw', baseData);
+
+    const rows = db.select().from(controlSnapshot).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.snapshotId).toBe(result.snapshotId);
+  });
+
+  it('strips BudgetControl.simulatedUiHidden before persisting -- the stored record is faithful GitHub wire truth, not a simulation enrichment', () => {
+    syncNow(db, 'msw', baseData);
+
+    const row = db.select().from(controlSnapshot).all()[0]!;
+    const persisted = JSON.parse(row.controlsJson) as ControlState[];
+    const persistedBudget = persisted.find((c) => c.kind === 'budget') as BudgetControl;
+    expect(persistedBudget).toBeDefined();
+    expect('simulatedUiHidden' in persistedBudget).toBe(false);
+    // Every OTHER field survives the round-trip untouched.
+    expect(persistedBudget).toMatchObject({
+      scope: 'individual',
+      entityName: 'user-01',
+      amountCredits: 6000,
+      preventFurtherUsage: true,
+    });
+
+    // The in-memory input object itself is untouched (stripping produces a
+    // new object; syncNow must not mutate the caller's controls array).
+    const originalBudget = baseData.controls.find((c) => c.kind === 'budget') as BudgetControl;
+    expect(originalBudget.simulatedUiHidden).toBe(true);
+  });
+
+  it('is append-only across two syncNow calls: one new control_snapshot row per generation, both retained', () => {
+    const first = syncNow(db, 'msw', baseData);
+
+    const secondControls: ControlState[] = [
+      {
+        kind: 'budget',
+        scope: 'individual',
+        entityName: 'user-01',
+        amountCredits: 9000, // changed out-of-band relative to baseData's 6000
+        preventFurtherUsage: true,
+        alerting: { willAlert: true, alertRecipients: ['copilot-admins@acme.example'] },
+      },
+    ];
+    const second = syncNow(db, 'msw', { ...baseData, controls: secondControls });
+
+    const rows = db.select().from(controlSnapshot).all();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.snapshotId).sort((a, b) => a - b)).toEqual([first.snapshotId, second.snapshotId].sort((a, b) => a - b));
+
+    // The FIRST generation's row is untouched by the second call (append,
+    // never update) -- still carries the original 6000, not 9000.
+    const firstRow = rows.find((r) => r.snapshotId === first.snapshotId)!;
+    const firstBudget = (JSON.parse(firstRow.controlsJson) as ControlState[]).find((c) => c.kind === 'budget') as BudgetControl;
+    expect(firstBudget.amountCredits).toBe(6000);
+  });
+
+  it('produces identical ingested content across two syncNow calls given identical input (determinism)', () => {
+    syncNow(db, 'msw', baseData);
+    const firstJson = db.select().from(controlSnapshot).all()[0]!.controlsJson;
+
+    // Fresh DB, same input.
+    const tmpDir2 = mkdtempSync(path.join(tmpdir(), 'copilot-budget-sync-determinism-'));
+    try {
+      const db2 = createDb(path.join(tmpDir2, 'test.sqlite'));
+      runMigrations(db2);
+      syncNow(db2, 'msw', baseData);
+      const secondJson = db2.select().from(controlSnapshot).all()[0]!.controlsJson;
+      expect(secondJson).toBe(firstJson);
+    } finally {
+      rmSync(tmpDir2, { recursive: true, force: true });
+    }
+  });
+
+  describe('getLastSyncedControls', () => {
+    it('returns null before any sync has run', () => {
+      expect(getLastSyncedControls(db)).toBeNull();
+    });
+
+    it('returns the ingested controls, matching the fixture-derived input (minus the stripped display-only field)', () => {
+      syncNow(db, 'msw', baseData);
+      const result = getLastSyncedControls(db);
+
+      expect(result).not.toBeNull();
+      expect(result!.controls).toHaveLength(2);
+      const cap = result!.controls.find((c): c is IncludedCapControl => c.kind === 'included_cap');
+      expect(cap).toMatchObject({ costCenterName: 'Platform', enabled: true, overflow: 'block', computedLimitCredits: 105_000 });
+    });
+
+    it('returns only the LATEST generation, never an earlier one', () => {
+      syncNow(db, 'msw', baseData);
+
+      const secondControls: ControlState[] = [
+        { kind: 'included_cap', costCenterName: 'Platform', enabled: false, overflow: 'metered', computedLimitCredits: 105_000 },
+      ];
+      const second = syncNow(db, 'msw', { ...baseData, controls: secondControls });
+
+      const result = getLastSyncedControls(db);
+      expect(result!.capturedAt).toEqual(second.capturedAt);
+      expect(result!.controls).toEqual(secondControls);
+    });
+  });
+});
+
+// --- Task 4.15 acceptance: "Migration applies cleanly to an existing MVP
+// database (additive only)" -- mirrors writer.test.ts's Task 4.7 upgrade
+// smoke test, one migration further: a database with 0000+0001 already
+// applied and real MVP data (including an audit event, so the hash chain
+// itself survives the upgrade untouched), then 0002_control_snapshot lands on
+// top, then a sync ingests + reads back through the new table immediately. --
+
+const REAL_MIGRATIONS_FOLDER = fileURLToPath(new URL('../../migrations', import.meta.url));
+
+function buildMigrations0000And0001OnlyFolder(rootDir: string): string {
+  const folder = path.join(rootDir, 'migrations-0000-0001-only');
+  mkdirSync(path.join(folder, 'meta'), { recursive: true });
+
+  for (const tag of ['0000_init', '0001_audit']) {
+    writeFileSync(path.join(folder, `${tag}.sql`), readFileSync(path.join(REAL_MIGRATIONS_FOLDER, `${tag}.sql`)));
+    writeFileSync(
+      path.join(folder, 'meta', `${tag === '0000_init' ? '0000_snapshot' : '0001_snapshot'}.json`),
+      readFileSync(path.join(REAL_MIGRATIONS_FOLDER, 'meta', `${tag === '0000_init' ? '0000_snapshot' : '0001_snapshot'}.json`)),
+    );
+  }
+
+  const fullJournal = JSON.parse(readFileSync(path.join(REAL_MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8')) as {
+    entries: unknown[];
+  };
+  const truncatedJournal = { ...fullJournal, entries: fullJournal.entries.slice(0, 2) };
+  writeFileSync(path.join(folder, 'meta', '_journal.json'), JSON.stringify(truncatedJournal));
+
+  return folder;
+}
+
+describe('0002_control_snapshot migration -- upgrade path smoke test', () => {
+  it('applies additively onto an existing MVP+audit database with real data, and syncNow ingests + reads back through the new table immediately', () => {
+    const upgradeTmpDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-control-snapshot-upgrade-test-'));
+    try {
+      const upgradeDb = createDb(path.join(upgradeTmpDir, 'upgrade.sqlite'));
+
+      // 1. Simulate the pre-existing database: only 0000+0001 applied.
+      const partialFolder = buildMigrations0000And0001OnlyFolder(upgradeTmpDir);
+      runMigrations(upgradeDb, partialFolder);
+
+      // 2. Seed real pre-existing data, including a snapshot generation from
+      // BEFORE this migration existed -- it must survive the upgrade untouched
+      // (no control_snapshot row for it, and that's correct: it predates the
+      // table).
+      const preExistingSnapshot = upgradeDb
+        .insert(snapshot)
+        .values({ capturedAt: new Date('2026-06-01T00:00:00Z'), source: 'msw' })
+        .returning()
+        .get();
+      upgradeDb.insert(costCenter).values({ id: 'cc-platform', name: 'Platform', state: 'active' }).run();
+
+      // 3. Apply the new migration on top of the existing, data-populated DB.
+      runMigrations(upgradeDb, REAL_MIGRATIONS_FOLDER);
+
+      // 4. Pre-existing data survived untouched; the pre-migration snapshot
+      // generation has no control_snapshot row (never had one recorded).
+      expect(upgradeDb.select().from(snapshot).all()).toHaveLength(1);
+      expect(upgradeDb.select().from(costCenter).all()).toHaveLength(1);
+      expect(getLastSyncedControls(upgradeDb)).toBeNull();
+
+      // 5. The new table works immediately: a sync run post-upgrade ingests
+      // and is readable straight away, referencing a NEW snapshot generation
+      // (not the pre-existing one).
+      const result = syncNow(upgradeDb, 'msw', baseData);
+      expect(result.snapshotId).not.toBe(preExistingSnapshot.id);
+
+      const lastSynced = getLastSyncedControls(upgradeDb);
+      expect(lastSynced).not.toBeNull();
+      expect(lastSynced!.controls).toHaveLength(2);
+    } finally {
+      rmSync(upgradeTmpDir, { recursive: true, force: true });
+    }
   });
 });

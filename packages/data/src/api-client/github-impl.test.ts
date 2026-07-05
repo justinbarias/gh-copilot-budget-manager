@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { driftedControlIds } from '@copilot-budget/core';
 import { server } from '../msw/server.js';
 import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG } from '../msw/fixtures/index.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
@@ -218,6 +219,45 @@ describe('createGitHubApiClient', () => {
     expect(db.select().from(costCenter).all()).toHaveLength(6);
     expect(db.select().from(license).all()).toHaveLength(81);
     expect(db.select().from(costCenterMember).all()).toHaveLength(81);
+  });
+
+  // --- Task 4.15: syncNow's controls phase + getLastSyncedControls, wired
+  // through the real ApiClient surface (deep ingestion/append-only/strip
+  // behaviour is covered exhaustively against the bare sync-now.ts functions
+  // by sync-now.test.ts; these confirm createGitHubApiClient wires
+  // fetchLiveControls into syncNow's IngestData.controls correctly, and that
+  // getLastSyncedControls reads it back through the SAME client). ---------
+
+  it('getLastSyncedControls is null before any sync, then agrees with a fresh getControls() read immediately after one (MSW never actually drifts)', async () => {
+    expect(await client.getLastSyncedControls()).toBeNull();
+
+    await client.syncNow();
+    const live = await client.getControls();
+    const lastSynced = await client.getLastSyncedControls();
+
+    expect(lastSynced).not.toBeNull();
+    expect(lastSynced!.capturedAt).not.toBeNull();
+    // The REAL comparator the Controls screen's drift marker uses (core's
+    // driftedControlIds): a sync immediately followed by a live re-read must
+    // show ZERO drift, including for the display-bug budget whose
+    // simulatedUiHidden enrichment is present live but stripped from the
+    // persisted record -- proving that asymmetry never false-positives here,
+    // end-to-end through the real ApiClient, not just at the unit level.
+    expect(driftedControlIds(lastSynced!.controls, live)).toEqual(new Set());
+  });
+
+  it('syncNow ingests controls into a NEW generation each call (append-only), not just usage/dimension rows', async () => {
+    const first = await client.syncNow();
+    const second = await client.syncNow();
+    expect(second.lastSyncedAt).not.toBe(first.lastSyncedAt);
+
+    // Both generations' worth of control_snapshot rows exist -- proven
+    // indirectly here (schema-level row counts are sync-now.test.ts's job):
+    // getLastSyncedControls must still resolve to a real, non-null result
+    // after two syncs, keyed to the LATEST one.
+    const lastSynced = await client.getLastSyncedControls();
+    expect(lastSynced).not.toBeNull();
+    expect(lastSynced!.capturedAt).toBe(second.lastSyncedAt);
   });
 
   // --- Task 4.8: write engine wiring through the real ApiClient surface ---

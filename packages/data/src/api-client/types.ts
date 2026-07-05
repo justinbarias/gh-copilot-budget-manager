@@ -94,6 +94,18 @@ export interface SyncStatus {
   inProgress: boolean;
 }
 
+/**
+ * Task 4.15: the Controls screen's "last synced" baseline for browse-time
+ * drift detection -- the control state as of the last explicit Sync Now,
+ * persisted append-only (schema.ts's control_snapshot). Null exactly when no
+ * sync has ever run (nothing to compare against yet); `capturedAt` is an ISO
+ * string, matching SyncStatus.lastSyncedAt's convention across this boundary.
+ */
+export interface LastSyncedControls {
+  capturedAt: string;
+  controls: ControlState[];
+}
+
 export interface ApplyPlanInput {
   /**
    * Attributed actor for the audit log (CLAUDE.md §6.5). No admin
@@ -120,6 +132,15 @@ export interface ApplyPlanInput {
 // caller's desired end-state; the "did live move" comparison is always
 // computed server-side, fresh, both in preview and at apply.
 //
+// Task 4.15 adds getLastSyncedControls -- the ONE bridge/ApiClient addition
+// this task makes (see packages/data/src/sync/sync-now.ts's doc comments and
+// the Task 4.15 build report's migration-review packet for the full
+// rationale): there is no existing read surface that can hand the renderer
+// the persisted "last synced" control snapshot getControls() itself never
+// carries (it only ever reads LIVE). PLAN.md's own architecture note ("each
+// phase... one ApiClient/bridge-extension task") anticipates exactly one
+// such addition per phase; this is Phase 4's.
+//
 // Reserved (documented now, NOT implemented by this task -- naming ratified
 // at Checkpoint 4a; see that review packet for the full Phase 4-8 proposal):
 //   Phase 5: getForecast(...): Promise<ForecastResult> (read-only)
@@ -137,6 +158,13 @@ export interface ApiClient {
   syncNow(): Promise<SyncStatus>;
   /** The current live control state (ULBs + included-usage caps) -- the Controls screen's "live" side of the diff. */
   getControls(): Promise<ControlState[]>;
+  /**
+   * Task 4.15: the control state as of the last explicit Sync Now (persisted,
+   * append-only) -- the Controls screen's "last synced" reference for
+   * browse-time drift markers ("⤺ drift — reconcile"), fed alongside a fresh
+   * getControls() into core's driftedControlIds. Null if no sync has ever run.
+   */
+  getLastSyncedControls(): Promise<LastSyncedControls | null>;
   /** Simulate-before-apply preview (CLAUDE.md §6.1): re-reads live, diffs against `desiredControls`, validates, and simulates who newly blocks/unblocks. Never mutates. */
   dryRunPlan(desiredControls: readonly ControlState[], justification?: string | null): Promise<DryRunResult>;
   /**

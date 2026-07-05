@@ -36,6 +36,13 @@ export interface SpendingLimitRowModel {
   recipientsRaw: string;
   staged: boolean;
   /**
+   * Task 4.15: live moved out-of-band since the last explicit Sync Now
+   * (core's driftedControlIds, fed (lastSynced, live) by Controls.tsx) --
+   * renders the "⤺ drift — reconcile" marker. Independent of `staged`: a row
+   * can be both (see ControlsTableProps.driftCollisionId).
+   */
+  drifted: boolean;
+  /**
    * Fixture-derived metered utilization, or null when it genuinely is not
    * derivable for this scope (org rows: no per-org usage attribution exists
    * in the data layer) -- rendered as an honestly-empty meter with a text
@@ -65,6 +72,10 @@ interface ControlsTableProps {
   page: number;
   pageCount: number;
   onPageChange: (page: number) => void;
+  /** Task 4.15: the one row id currently showing the staged-vs-drifted collision prompt, if any (Controls.tsx owns this -- at most one at a time). */
+  driftCollisionId: string | null;
+  onReconcileDrift: (id: string) => void;
+  onCancelDriftCollision: () => void;
 }
 
 export function ControlsTable({
@@ -84,6 +95,9 @@ export function ControlsTable({
   page,
   pageCount,
   onPageChange,
+  driftCollisionId,
+  onReconcileDrift,
+  onCancelDriftCollision,
 }: ControlsTableProps) {
   return (
     <div className="controls-table">
@@ -191,6 +205,11 @@ export function ControlsTable({
                 />
               </div>
               {row.staged && <span className="controls-table__staged">● staged change</span>}
+              {row.drifted && driftCollisionId !== row.id && (
+                <button type="button" className="controls-table__drift" onClick={() => onReconcileDrift(row.id)}>
+                  ⤺ drift — reconcile
+                </button>
+              )}
             </div>
           </div>
 
@@ -199,6 +218,25 @@ export function ControlsTable({
           {!row.hardStop && (
             <div className="controls-table__alert-only-pill">
               ⚠ Alert-only — spend continues past this limit. No hard stop.
+            </div>
+          )}
+
+          {/* Task 4.15: full-width (not the narrow utility column above --
+              this needs room for two buttons + explanatory text) staged-vs-
+              drifted collision prompt. Never silently reconciles a row that
+              also has a pending staged edit. */}
+          {row.drifted && driftCollisionId === row.id && (
+            <div className="controls-table__drift-collision" role="alert">
+              <span aria-hidden="true">⚠ </span>This row also has a staged edit made before this drift was detected —
+              review it before reconciling.
+              <div className="controls-table__drift-collision-actions">
+                <button type="button" className="controls-table__drift-confirm" onClick={() => onReconcileDrift(row.id)}>
+                  ⤺ Reconcile anyway
+                </button>
+                <button type="button" className="controls-table__drift-cancel" onClick={onCancelDriftCollision}>
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>

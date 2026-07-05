@@ -1,5 +1,10 @@
 import { classifyHeadroom, includedCapHeadroom, LOW_HEADROOM_THRESHOLD_CREDITS, type CapOverflow, type HeadroomTone } from '@copilot-budget/core';
 import { formatCredits } from './Meter';
+// Task 4.15: reuses ControlsTable.css's .controls-table__drift* classes for
+// the "⤺ drift — reconcile" marker + staged-vs-drifted collision prompt --
+// same cross-family reuse UlbTable.css already established for this file's
+// sibling (importing rather than forking a second copy of the same rules).
+import './ControlsTable.css';
 import './IncludedCapsGrid.css';
 
 // Included-usage caps family (Family C / Lever C -- design/README.md §3, Task
@@ -44,6 +49,8 @@ export interface IncludedCapRowModel {
   drawnCredits: number;
   /** Has a pending plan entry (enabled and/or overflow changed) -- matches the rail 1:1. */
   staged: boolean;
+  /** Task 4.15: live moved out-of-band since the last explicit Sync Now. */
+  drifted: boolean;
 }
 
 interface IncludedCapsGridProps {
@@ -54,6 +61,10 @@ interface IncludedCapsGridProps {
   /** "Controls scale features": free-text cost-center-name filter only -- no sort/pagination at 6 cards. */
   search: string;
   onSearchChange: (value: string) => void;
+  /** Task 4.15: the one card id currently showing the staged-vs-drifted collision prompt, if any. */
+  driftCollisionId: string | null;
+  onReconcileDrift: (id: string) => void;
+  onCancelDriftCollision: () => void;
 }
 
 const TONE_TO_BAR_CLASS: Record<HeadroomTone, string> = {
@@ -62,7 +73,16 @@ const TONE_TO_BAR_CLASS: Record<HeadroomTone, string> = {
   negative: 'included-caps__bar-fill--red',
 };
 
-export function IncludedCapsGrid({ rows, onToggle, onOverflowChange, search, onSearchChange }: IncludedCapsGridProps) {
+export function IncludedCapsGrid({
+  rows,
+  onToggle,
+  onOverflowChange,
+  search,
+  onSearchChange,
+  driftCollisionId,
+  onReconcileDrift,
+  onCancelDriftCollision,
+}: IncludedCapsGridProps) {
   return (
     <div className="included-caps">
       <div className="included-caps__toolbar">
@@ -156,6 +176,25 @@ export function IncludedCapsGrid({ rows, onToggle, onOverflowChange, search, onS
             </div>
 
             {row.staged && <div className="included-caps__staged">● staged change</div>}
+            {row.drifted && driftCollisionId !== row.id && (
+              <button type="button" className="controls-table__drift" onClick={() => onReconcileDrift(row.id)}>
+                ⤺ drift — reconcile
+              </button>
+            )}
+            {row.drifted && driftCollisionId === row.id && (
+              <div className="controls-table__drift-collision" role="alert">
+                <span aria-hidden="true">⚠ </span>This cost center also has a staged edit made before this drift was
+                detected — review it before reconciling.
+                <div className="controls-table__drift-collision-actions">
+                  <button type="button" className="controls-table__drift-confirm" onClick={() => onReconcileDrift(row.id)}>
+                    ⤺ Reconcile anyway
+                  </button>
+                  <button type="button" className="controls-table__drift-cancel" onClick={onCancelDriftCollision}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         );
       })}

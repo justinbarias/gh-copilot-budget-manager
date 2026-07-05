@@ -31,6 +31,7 @@ export function registerApiClientIpcHandlers(source: 'msw' | 'github'): void {
   ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());
   ipcMain.handle('apiClient:syncNow', () => client.syncNow());
   ipcMain.handle('apiClient:getControls', () => client.getControls());
+  ipcMain.handle('apiClient:getLastSyncedControls', () => client.getLastSyncedControls());
   ipcMain.handle('apiClient:dryRunPlan', (_event, desiredControls: readonly ControlState[], justification?: string | null) =>
     client.dryRunPlan(desiredControls, justification),
   );

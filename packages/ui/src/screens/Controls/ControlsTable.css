@@ -345,6 +345,87 @@
   font-weight: 500;
 }
 
+/* Task 4.15: browse-time drift marker ("⤺ drift — reconcile") -- blue,
+   matching both the design prototype's own drift span (dc.html:
+   color:#8dd6ff) and this app's existing apply-time drift affordance
+   (PlanRail.css's .plan-rail__result--drift / .plan-rail__secondary-btn,
+   also var(--blue)), so the two drift surfaces read as the same concept. A
+   real button (not a plain span like .controls-table__staged), since this
+   one is clickable. */
+.controls-table__drift {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--blue);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.controls-table__drift:hover {
+  text-decoration: underline;
+}
+
+/* Staged-vs-drifted collision prompt: full-width (matches
+   .controls-table__alert-only-pill's placement, below the row grid) since
+   it needs room for explanatory text + two buttons, unlike the compact
+   .controls-table__drift link above. Blue-tinted like the marker it follows
+   from, not amber/red -- this is a "review before reconciling" prompt, not
+   itself a hard blocker or a staged-change indicator. */
+.controls-table__drift-collision {
+  margin: 0 18px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  background: rgba(141, 214, 255, 0.1);
+  border: 1px solid rgba(141, 214, 255, 0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-default);
+  line-height: 1.4;
+}
+
+.controls-table__drift-collision-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.controls-table__drift-confirm {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--blue);
+  background: none;
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.controls-table__drift-confirm:hover {
+  filter: brightness(1.15);
+}
+
+.controls-table__drift-cancel {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.controls-table__drift-cancel:hover {
+  color: var(--text-default);
+  border-color: var(--text-muted);
+}
+
 .controls-table__alert-only-pill {
   display: inline-flex;
   align-items: center;
