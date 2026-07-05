@@ -19,6 +19,23 @@ export interface Budget {
   budget_amount: number;
   prevent_further_usage: boolean;
   budget_alerting: { will_alert: boolean; alert_recipients: string[] };
+  /**
+   * MSW-ONLY simulation enrichment (docs/api-surface-validation.md's "ULB
+   * display-bug detection signal" entry, Task 4.14) -- NOT a real GitHub
+   * wire field. Real GitHub's Budgets API has no way to report that its own
+   * "Budgets and alerts" UI is hiding a budget from its list view (the
+   * display bug is a UI-side symptom, invisible to the API that serves this
+   * exact list) -- so this flag only exists so the mock can model that known
+   * bug (CLAUDE.md §5 / PRD §1.4) for detection/repair to demonstrate
+   * against. Set `true` on exactly one fixture below (`ulbDisplayBug`); every
+   * other budget leaves it undefined. The live read
+   * (write/live-state.ts's toBudgetControl) carries it onto
+   * BudgetControl.simulatedUiHidden so core's detectUlbRepairCandidates sees
+   * it via getControls(); a real GitHub response never populates it -- see
+   * BudgetControl.simulatedUiHidden's doc comment (packages/core) for the
+   * honest consequence (display-bug detection is simulation-only today).
+   */
+  simulatedUiHidden?: boolean;
 }
 
 // CC display names (must equal the CostCenter.name in costCenters.ts, since
@@ -56,6 +73,12 @@ export const BUDGETS: Budget[] = [
     budget_amount: 58, // 5,800 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['copilot-admins@dewr.gov.au'] },
+    // The one fixture this enrichment models (see Budget.simulatedUiHidden's
+    // doc comment above): Task 4.14's ULB-repair banner detects this budget
+    // via this flag, not via any inference from amount/scope -- nothing else
+    // about this row (a normal, non-zero, hard-stop individual override)
+    // would otherwise distinguish it from any other healthy individual ULB.
+    simulatedUiHidden: true,
   },
   // Edge fixture: a $0 individual ULB, which hard-blocks that user immediately in
   // both phases (spec §1.3). An offboarding external contractor. Exercises the

@@ -132,3 +132,13 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* Task 4.14: "View & edit via API" (the ULB-repair banner) navigates to and
+   highlights its target row -- a violet ring (matching the repair banner's
+   own accent, CLAUDE.md's "never color-only" rule doesn't apply here since
+   this is a transient locator cue layered on a row whose OWN content already
+   carries its state via text/icons, not a new state encoded in color alone). */
+.controls-ulb__row--repair-highlight {
+  box-shadow: 0 0 0 1px var(--violet) inset;
+  background: rgba(147, 80, 255, 0.06);
+}

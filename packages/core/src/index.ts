@@ -10,4 +10,5 @@ export * from './ranking.js';
 export * from './simulate.js';
 export * from './snapshot.js';
 export * from './ulb.js';
+export * from './ulbRepair.js';
 export * from './validation.js';

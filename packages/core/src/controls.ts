@@ -52,6 +52,22 @@ export interface BudgetControl {
   amountCredits: number;
   preventFurtherUsage: boolean;
   alerting: AlertingState;
+  /**
+   * DISPLAY-ONLY enrichment, never a diffable/writable field (Task 4.14, PRD
+   * FR3). Carries the simulation-only "GitHub's own Budgets UI is hiding this
+   * budget from its list view" signal (the display bug, CLAUDE.md §5 / §1.4)
+   * so the Controls screen's ULB-repair banner can detect it -- see
+   * ulbRepair.ts's detectUlbRepairCandidates. Deliberately absent from
+   * BudgetDiffField/BudgetFieldChange, so diffBudget never compares it and it
+   * can never enter a Plan or a mutation payload (the write engine builds
+   * every request body from named fields, never a spread of this control).
+   * Populated only by the live read (packages/data/src/write/live-state.ts's
+   * toBudgetControl, from MSW's `simulatedUiHidden` fixture enrichment); a
+   * real GitHub response never carries it, so it stays undefined live -- see
+   * docs/api-surface-validation.md's "ULB display-bug detection signal" entry
+   * for the honest account of why display-bug detection is simulation-only.
+   */
+  simulatedUiHidden?: boolean;
 }
 
 // The included-usage cap (Lever C, CLAUDE.md §5): `enabled` + `overflow` are

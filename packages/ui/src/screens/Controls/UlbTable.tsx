@@ -80,6 +80,8 @@ interface UlbTableProps {
   onRecipientsChange: (id: string, raw: string) => void;
   onDeleteToggle: (id: string) => void;
   onDiscardNew: (id: string) => void;
+  /** Task 4.14: the ULB-repair banner's "View & edit via API" target, if any -- renders a violet locator ring on that row. */
+  highlightedId?: string | null;
   search: string;
   onSearchChange: (value: string) => void;
   scopeFilter: UlbScopeFilter;
@@ -105,6 +107,7 @@ export function UlbTable({
   onRecipientsChange,
   onDeleteToggle,
   onDiscardNew,
+  highlightedId,
   search,
   onSearchChange,
   scopeFilter,
@@ -121,6 +124,7 @@ export function UlbTable({
       row.staged ? 'controls-table__row--staged' : '',
       row.markedForDelete ? 'controls-ulb__row--delete' : '',
       row.isNew ? 'controls-ulb__row--new' : '',
+      row.id === highlightedId ? 'controls-ulb__row--repair-highlight' : '',
     ]
       .filter(Boolean)
       .join(' ');

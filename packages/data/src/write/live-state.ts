@@ -43,6 +43,15 @@ interface WireBudget {
   budget_amount: number;
   prevent_further_usage: boolean;
   budget_alerting: { will_alert: boolean; alert_recipients: string[] };
+  /**
+   * Task 4.14: MSW-only simulation enrichment (NOT a real GitHub wire field --
+   * docs/api-surface-validation.md's "ULB display-bug detection signal"
+   * entry). Modelled on the budgets LIST response MSW already serves, set on
+   * exactly one fixture (the `ulbDisplayBug` budget); carried onto
+   * BudgetControl.simulatedUiHidden below so the pure ULB-repair detector can
+   * see it via getControls(). Always undefined against real GitHub.
+   */
+  simulatedUiHidden?: boolean;
 }
 
 interface WireCostCenter {
@@ -80,6 +89,11 @@ function toBudgetControl(wire: WireBudget): BudgetControl {
     amountCredits: usdToCredits(wire.budget_amount),
     preventFurtherUsage: wire.prevent_further_usage,
     alerting: { willAlert: wire.budget_alerting.will_alert, alertRecipients: wire.budget_alerting.alert_recipients },
+    // Task 4.14: carry the display-bug enrichment through for the ULB-repair
+    // detector (only present in simulation -- see WireBudget/BudgetControl).
+    // Omit the key entirely when absent so a healthy control deepEquals one
+    // built from a response without the field (drift-check / audit fidelity).
+    ...(wire.simulatedUiHidden === undefined ? {} : { simulatedUiHidden: wire.simulatedUiHidden }),
   };
 }
 

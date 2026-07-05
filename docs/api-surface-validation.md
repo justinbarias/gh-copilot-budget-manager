@@ -172,6 +172,33 @@ cost-center create response shape wasn't fully surfaced. MSW's cost-center creat
 echoes the full object incl. `resources` for in-session UI convenience. Harmless
 enrichment; pinned at 9.2.
 
+**8 — ULB display-bug detection signal (Task 4.14), `simulatedUiHidden`.**
+**Simulation-enrichment — will never reconcile at 9.2 (not a drift, a permanent
+gap).** Real GitHub's Budgets API has no field reporting that its own
+"Budgets and alerts" UI is hiding a given budget from its list view — the
+display bug (CLAUDE.md §5 / PRD §1.4) is a symptom of the UI layer, invisible
+to the API endpoint that serves this exact list, so there is nothing for a
+real wire field to even carry. MSW's `Budget` fixture type
+(`msw/fixtures/budgets.ts`) adds an extra `simulatedUiHidden?: boolean` field,
+set `true` on exactly one fixture (`ulbDisplayBug`, liam-obrien) and left
+undefined everywhere else. It rides the **same already-validated** `GET
+.../settings/billing/budgets` LIST endpoint (see R4 above) that `getControls()`
+already reads — no new endpoint, no new bridge method, just one extra field MSW
+controls on the existing response shape. `write/live-state.ts`'s
+`toBudgetControl` carries it onto `BudgetControl.simulatedUiHidden` (a
+display-only, never-diffed enrichment), and core's
+`packages/core/src/ulbRepair.ts` `detectUlbRepairCandidates` reads it off the
+same `ControlState[]` the Controls tab already holds from `getControls()`.
+**Live consequence (honest, not deferred):** a real GitHub response will never
+carry this field, so the `display_bug_hidden` candidate kind can only ever
+fire in simulation mode. Live ULB-repair detection is limited to the
+`orphaned_zero` heuristic (`$0` + hard-stop, a real, always-present wire
+signal — not an enrichment) until GitHub ships an actual signal for this (e.g.
+a documented field, or a future heuristic that cross-references the UI
+independently). Not on the Task 9.2 checklist below: unlike inferences 1–7,
+there is no real wire shape to reconcile this *against* — 9.2 should instead
+re-confirm the gap still exists (or note if GitHub ever adds a real signal).
+
 ---
 
 ## Additional confirmed divergences (beyond the 7)

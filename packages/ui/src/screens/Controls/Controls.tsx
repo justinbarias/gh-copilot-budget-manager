@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   controlIdentity,
+  detectUlbRepairCandidates,
   diffControls,
   isUlbScope,
   DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
@@ -11,6 +12,7 @@ import {
   type IncludedCapControl,
   type SpendingLimitScope,
   type UlbBudgetScope,
+  type UlbRepairCandidate,
 } from '@copilot-budget/core';
 import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
@@ -23,11 +25,13 @@ import {
   DEFAULT_SCALE_SORT,
   matchesScaleSearch,
   paginateScaleRows,
+  SCALE_PAGE_SIZE,
   sortScaleRows,
   toggleScaleSort,
   type ScaleSortField,
   type ScaleSortState,
 } from './tableScale';
+import { UlbRepairBanner } from './UlbRepairBanner';
 import { UlbTable, type UlbRowModel, type UlbScopeFilter } from './UlbTable';
 import './Controls.css';
 
@@ -203,6 +207,19 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // table's per-CC meters (previously a local, unstored `const`).
   const [heavyUsers, setHeavyUsers] = useState<HeavyUser[] | null>(null);
   const [costCentersList, setCostCentersList] = useState<CostCenterSummary[] | null>(null);
+  // Task 4.14: the ULB-repair banner is derived client-side, from the SAME
+  // `live`/getControls() ControlState[] the tab already fetched -- no
+  // dedicated fetch or bridge method. detectUlbRepairCandidates (pure core)
+  // reads BudgetControl.simulatedUiHidden (the display-bug enrichment) plus
+  // the real $0/hard-stop signal off that list; see the render body below.
+  // Dismissal is session-only, in-memory state (survives family-tab switches
+  // since this component stays mounted across them; resets on relaunch since
+  // a new Electron process means a fresh React root).
+  const [ulbRepairDismissed, setUlbRepairDismissed] = useState(false);
+  // "View & edit via API"'s target row, if any -- cleared by a genuine
+  // follow-up search/filter/sort interaction (see onUlbSearchChange etc.
+  // below), not by the repair navigation itself.
+  const [ulbRepairHighlightId, setUlbRepairHighlightId] = useState<string | null>(null);
 
   // Design's ULB-first tab order (design/*.dc.html's FAMILY_TABS order) --
   // 'spending' was a Task 4.9 stopgap default until this slice existed.
@@ -257,17 +274,25 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // to sort by anyway).
   const [capsSearch, setCapsSearch] = useState('');
 
+  // Task 4.14: a genuine follow-up search/filter/sort interaction (as opposed
+  // to the repair banner's OWN "View & edit via API" navigation, which sets
+  // ulbSearch/ulbScopeFilter/ulbPage directly rather than through these
+  // wrapped callbacks -- see onViewAndEditUlbRepair below) clears the repair
+  // highlight, since the admin has moved on to something else.
   const onUlbSearchChange = useCallback((value: string) => {
     setUlbSearch(value);
     setUlbPage(0);
+    setUlbRepairHighlightId(null);
   }, []);
   const onUlbScopeFilterChange = useCallback((value: UlbScopeFilter) => {
     setUlbScopeFilter(value);
     setUlbPage(0);
+    setUlbRepairHighlightId(null);
   }, []);
   const onUlbSortToggle = useCallback((field: ScaleSortField) => {
     setUlbSort((current) => toggleScaleSort(current, field));
     setUlbPage(0);
+    setUlbRepairHighlightId(null);
   }, []);
 
   const onSpendingSearchChange = useCallback((value: string) => {
@@ -474,6 +499,15 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   }, [api, desiredControls, justification, planKey]);
 
   const refreshLive = useCallback(async () => {
+    // Task 4.14: the repair-candidate banner is derived from `live` (see the
+    // render body), so re-reading getControls() here also refreshes it --
+    // the candidate set reflects LIVE truth, never merely-staged state.
+    // Against a real (non-stateless) GitHub backend this would make the
+    // banner's count actually drop once a delete lands; against MSW's
+    // deliberately STATELESS mock (CLAUDE.md §7) a DELETE response doesn't
+    // remove the canonical fixture entry, so in simulation mode today `live`
+    // (and thus the candidate set) is unchanged post-apply (see
+    // apps/desktop/e2e/controls-repair.spec.ts's apply test).
     const fresh = await api.getControls();
     setLive(fresh);
   }, [api]);
@@ -677,6 +711,59 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // search/filter/page is hiding.
   const ulbHiddenStagedCount = ulbExisting.filter((row) => row.staged && !ulbVisibleIds.has(row.id)).length;
 
+  // Task 4.14: the FULL detected repair-candidate set (never the
+  // filtered/paginated table view -- CLAUDE.md's UI-honesty rule), derived
+  // client-side from `live` (the same getControls() list the tab already
+  // holds) via pure core. Cheap O(n) over the control list, recomputed each
+  // render like ulbFiltered/ulbSorted above; the banner reads LIVE truth
+  // because `live` is what refreshLive re-reads after an apply.
+  const ulbRepairCandidates = detectUlbRepairCandidates(live);
+
+  // Task 4.14: "a repair target must never hide behind a filter" -- computes
+  // which page a given ULB row would land on if search/scope-filter were
+  // cleared (but the CURRENT sort kept, since the design brief only calls
+  // out clearing "filters/search", not sort). Uses `ulbExisting` (unfiltered)
+  // directly rather than `ulbFiltered`/`ulbSorted` above -- those reflect the
+  // CURRENT (possibly hiding) search/filter, which is exactly what this is
+  // computing past.
+  function ulbRepairTargetPage(id: string): number {
+    const cleared = sortScaleRows(ulbExisting, ulbSort.field, ulbSort.dir);
+    const index = cleared.findIndex((row) => row.id === id);
+    return index >= 0 ? Math.floor(index / SCALE_PAGE_SIZE) : 0;
+  }
+
+  // "View & edit via API": reveal the target row (clear search + scope
+  // filter, jump to its page) and highlight it. The row's own cap input is
+  // already a live, editable field (UlbTable.tsx) -- there is no separate
+  // "edit" UI to open here, just navigation to where the existing inline
+  // edit already lives. Judgment call (see Task 4.14's build report): if
+  // more than one display_bug_hidden candidate ever existed, this targets
+  // only the ONE candidate UlbRepairBanner hands it (the first of that
+  // kind) -- a documented limitation, not a per-candidate action list.
+  function onViewAndEditUlbRepair(candidate: UlbRepairCandidate) {
+    setUlbSearch('');
+    setUlbScopeFilter('all');
+    setUlbPage(ulbRepairTargetPage(candidate.id));
+    setUlbRepairHighlightId(candidate.id);
+  }
+
+  // "Delete the $0 ULB": stages the SAME delete every row's own "✕ delete"
+  // button stages (Task 4.10's stagedDeletes mechanism) -- no parallel delete
+  // path. Deliberately idempotent (ensures staged, never un-stages) rather
+  // than calling the row button's onDeleteToggle (a toggle) directly: a
+  // second click on this banner button must never silently undo an
+  // already-staged delete just because the admin clicked it again without
+  // realizing it had already taken effect. Reveals the row the same way
+  // "View & edit" does (so the "● staged: delete" marker is immediately
+  // visible), but does NOT apply the violet highlight -- the row's own
+  // staged-delete tint/marker (UlbTable.tsx) already makes it stand out.
+  function onRepairDeleteZeroUlb(candidate: UlbRepairCandidate) {
+    setStagedDeletes((current) => (current.has(candidate.id) ? current : new Set(current).add(candidate.id)));
+    setUlbSearch('');
+    setUlbScopeFilter('all');
+    setUlbPage(ulbRepairTargetPage(candidate.id));
+  }
+
   // Task 4.12: included-usage cap family rows. Natural order (the order
   // getControls() returns included_cap entries in, which mirrors the fixture
   // declaration order in msw/fixtures/costCenters.ts) -- no re-sort, since
@@ -809,6 +896,14 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
           )}
           {family === 'userlevel' && (
             <>
+              {!ulbRepairDismissed && ulbRepairCandidates.length > 0 && (
+                <UlbRepairBanner
+                  candidates={ulbRepairCandidates}
+                  onViewAndEdit={onViewAndEditUlbRepair}
+                  onDeleteZeroUlb={onRepairDeleteZeroUlb}
+                  onDismiss={() => setUlbRepairDismissed(true)}
+                />
+              )}
               <div className="controls__create-row">
                 <button type="button" className="controls__create-btn" onClick={() => setCreatingUlb(true)}>
                   + New user-level budget
@@ -822,6 +917,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
                 onRecipientsChange={onRecipientsChange}
                 onDeleteToggle={onDeleteToggle}
                 onDiscardNew={onDiscardNewUlb}
+                highlightedId={ulbRepairHighlightId}
                 search={ulbSearch}
                 onSearchChange={onUlbSearchChange}
                 scopeFilter={ulbScopeFilter}
