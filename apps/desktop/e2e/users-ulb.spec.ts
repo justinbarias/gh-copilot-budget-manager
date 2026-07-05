@@ -10,51 +10,57 @@ import { test, expect, _electron as electron, type Page, type Locator } from '@p
 //
 // Every value below is fixture-derived (packages/data/src/msw/fixtures/
 // {budgets,usage,costCenters,constants}.ts, README.md in that directory),
-// never observed output. Two fixture facts drive every dry-run assertion
-// here:
+// never observed output.
 //
-//   1. simulatePlan's blocked/unblocked math reads usageState.users, which
-//      write/live-state.ts's assembleUsageState builds ONLY from the
-//      enterprise billing-usage report (`/settings/billing/usage`,
-//      usage.ts's USAGE_ITEMS) -- and that report carries rows for exactly
-//      TWO logins in this whole fixture world: faisal-noor and noah-tanaka
-//      (see apps/desktop/e2e/controls-ulb.spec.ts's file-header note, which
-//      documents and routes around the same constraint). None of the users
-//      this file edits (hannah-webb, ext-pshah, emily-zhao, aran-mehta,
-//      liam-obrien) is either of those two, so every dry-run below honestly
-//      reports 0 newly-blocked / 0 newly-unblocked, REGARDLESS of the amount
-//      staged. That is deliberately the strongest assertion available for
-//      these users: the design prototype's own ulbSimText is a client-side
-//      heuristic ("below current MTD usage -> blocked now") that would
-//      WRONGLY predict hannah-webb blocks when staged below her own 4,360
-//      MTD; the real simulatePlan this modal calls correctly reports 0/0
-//      instead, because she isn't tracked in that billing report at all.
-//      Staging BELOW her MTD (3,000) is exactly the case that would fool a
-//      fake heuristic, which is why it's used here.
-//   2. Individual-scope budget changes are excluded from simulatePlan's
-//      scope-delta rollup entirely (core/simulate.ts's toScopeDeltaTarget
-//      returns null for 'individual') -- so no pool/metered Δ row ever
-//      renders for these plans either.
+// Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix, docs/pending/todo.md's
+// REQUIRED pre-Checkpoint-4 line): simulatePlan's blocked/unblocked math
+// reads usageState.users, which write/live-state.ts's assembleUsageState used
+// to build ONLY from the enterprise billing-usage report
+// (`/settings/billing/usage`, usage.ts's USAGE_ITEMS) -- a report that carries
+// per-user rows for exactly TWO logins in this whole fixture world
+// (faisal-noor, noah-tanaka). None of the users this file edits was either of
+// those two, so every dry-run here used to honestly-but-misleadingly report
+// 0/0 regardless of the amount staged. assembleUsageState now ALSO folds in
+// the per-user metrics/CREDITS_USED report (the same one the Users screen's
+// own MTD/at-risk numbers already read) over the full 81-seat roster
+// (write/live-state.test.ts pins the fold itself) -- so the dry-runs below
+// now correctly move real users' blocked status, not just faisal-noor's/
+// noah-tanaka's. Individual-scope budget changes are still excluded from
+// simulatePlan's scope-delta rollup entirely (core/simulate.ts's
+// toScopeDeltaTarget returns null for 'individual') -- so no pool/metered Δ
+// row ever renders for these plans, fold or no fold.
 //
 //   - hannah-webb: Employer & Provider Portals (no CCULB there) -> no
 //     individual override -> falls back to the universal ULB (4,600
 //     credits). 4,360 MTD credits (June-cycle CREDITS_USED_ITEMS rows:
 //     1,453 + 1,211 + 969 + 727), the same "at risk" fixture users.spec.ts
-//     already exercises. No individual ULB exists for her -> Set ULB is a
-//     CREATE (a `+` plan entry, a POST mutation).
+//     already exercises -- comfortably under 4,600, so she is NOT blocked
+//     today. No individual ULB exists for her -> Set ULB is a CREATE (a `+`
+//     plan entry, a POST mutation). Staged at 3,000 (below her 4,360 MTD):
+//     an individual override outranks the universal fallback (CLAUDE.md §5),
+//     so 3,000 − 4,360 <= 0 -> she is NEWLY BLOCKED by this plan -- the
+//     dry-run now correctly shows 1 newly-blocked, not the old 0/0.
 //   - ext-pshah: an existing individual ULB, budget-ulb-contractor-pshah,
 //     $19 -> 1,900 credits (BUDGET_IDS.individualContractor) -> Set ULB is a
-//     CHANGE (a `~` plan entry, a PATCH to that exact budget id).
+//     CHANGE (a `~` plan entry, a PATCH to that exact budget id). 1,720 MTD
+//     credits (860 + 344 + 516) is under BOTH 1,900 (today) and 2,400 (the
+//     staged raise) -> stays unblocked before and after -- correctly 0/0,
+//     computed for real this time rather than accidentally.
 //   - Bulk: the top 3 rows on page 1 of the default (descending-MTD) sort --
 //     emily-zhao (5,480), aran-mehta (5,210), liam-obrien (4,930). Both
 //     emily-zhao and aran-mehta are Data & Evaluation Platform members with
 //     no individual override (their effective ULB is that CC's 6,000-credit
-//     CCULB) -> CREATEs; liam-obrien already has an individual override
+//     CCULB, under which neither is blocked today: 5,480 < 6,000, 5,210 <
+//     6,000) -> CREATEs; liam-obrien already has an individual override
 //     (budget-ulb-display-bug, $58 -> 5,800 credits, the ULB-display-bug
-//     fixture) -> a CHANGE. One staged value (5,000 credits -> $50) thus
-//     produces 2 POSTs + 1 PATCH = 3 mutations and 3 audit events, exactly
-//     Task 4.11's "an N-user bulk apply issues N budget mutations" -- and,
-//     deliberately, a MIXED create/change batch, not a homogeneous one.
+//     fixture, also unblocked today: 4,930 < 5,800) -> a CHANGE. One staged
+//     value (5,000 credits -> $50) thus produces 2 POSTs + 1 PATCH = 3
+//     mutations and 3 audit events, exactly Task 4.11's "an N-user bulk apply
+//     issues N budget mutations" -- and, deliberately, a MIXED create/change
+//     batch, not a homogeneous one. Post-fold, staging 5,000 for all three
+//     newly blocks emily-zhao (5,000 − 5,480 <= 0) and aran-mehta (5,000 −
+//     5,210 <= 0) but NOT liam-obrien (5,000 − 4,930 = 70 > 0, still
+//     headroom) -- 2 newly-blocked, 0 newly-unblocked.
 //   - creditsToUsd: budget_amount = credits / 100 (CLAUDE.md §5): 3,000 ->
 //     $30; 2,400 -> $24; 5,000 -> $50.
 
@@ -113,10 +119,14 @@ test('row "Set ULB" CREATEs a new individual ULB (hannah-webb): real dry-run (ho
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
 
-    // The REAL simulation, honestly: hannah-webb isn't one of the two logins
-    // simulatePlan's usageState.users ever carries (see file header) -- 0/0,
-    // not a fabricated "newly blocked: 1".
-    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
+    // The REAL simulation, correctly: staging 3,000 below her 4,360 MTD
+    // newly blocks hannah-webb (see file header) -- exactly the case a naive
+    // client-side heuristic would ALSO call "blocked now", but this time
+    // simulatePlan agrees, for the right reason (an individual override that
+    // outranks her universal fallback, evaluated against her real MTD burn
+    // from the folded metrics report).
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('1');
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-users')).toHaveText('hannah-webb');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__blocker')).toHaveCount(0);
     await expect(rail.locator('.plan-rail__warning')).toHaveCount(0);
@@ -183,6 +193,9 @@ test('row "Set ULB" CHANGEs an existing individual ULB (ext-pshah): PATCH to the
     await expect(rail.locator('.plan-rail__diff-line')).toHaveText('~ individual["ext-pshah"].cap: 1,900 → 2,400');
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
+    // Correctly 0/0: her 1,720 MTD (folded from the metrics report -- see
+    // file header) sits under BOTH 1,900 (today) and 2,400 (staged) -- never
+    // blocked, before or after.
     await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__warning')).toHaveCount(0);
@@ -263,7 +276,12 @@ test('bulk-select the top 3 users on page 1: one staged value produces 2 creates
     await expect(rail.locator('.plan-rail__diff-line').nth(2)).toHaveText('~ individual["liam-obrien"].cap: 5,800 → 5,000');
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
-    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
+    // emily-zhao (5,000 - 5,480 <= 0) and aran-mehta (5,000 - 5,210 <= 0) are
+    // newly blocked; liam-obrien keeps 70 credits of headroom (5,000 - 4,930)
+    // and stays unblocked (see file header) -- sorted alphabetically, same
+    // ordering as the diff lines above.
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('2');
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-users')).toHaveText('aran-mehta, emily-zhao');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__warning')).toHaveCount(0);
 

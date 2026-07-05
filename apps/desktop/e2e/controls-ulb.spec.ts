@@ -36,19 +36,33 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 //   - Individual liam-obrien's own cycle-to-date credits = 4,930 ->
 //     "85% used · 4,930 of 5,800" (exactly 85% -- fixture-authored clean).
 //   - Individual ext-dmorrow: $0 cap -> the meter's "blocked ($0 cap)" branch.
-//   - simulatePlan's usageState.users is seeded ONLY from the enterprise-wide
-//     /settings/billing/usage report (packages/data/src/write/live-state.ts's
-//     assembleUsageState) -- a DIFFERENT GitHub report than the per-user
-//     metrics report (CREDITS_USED_ITEMS) the Users screen and the utilization
-//     meters above read. In this fixture world that billing report carries
-//     per-user rows for exactly two logins: faisal-noor (2,300 metered
-//     credits, Payments Integrity Engineering) and noah-tanaka (936 credits
-//     split pool/metered, Workforce, the allowance-cliff fixture) -- never
-//     liam-obrien, ext-dmorrow, rpatel2, or anyone else this file edits. So
-//     every dry-run below honestly shows 0 newly-blocked / 0 newly-unblocked
-//     regardless of the cap staged, whether raised, dropped to $0, created, or
-//     deleted -- asserted as 0 throughout (not a fabricated non-zero count and
-//     not omitted).
+//
+// Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix, docs/pending/todo.md's
+// REQUIRED pre-Checkpoint-4 line): simulatePlan's usageState.users used to be
+// seeded ONLY from the enterprise-wide /settings/billing/usage report
+// (packages/data/src/write/live-state.ts's assembleUsageState) -- a
+// DIFFERENT GitHub report than the per-user metrics report
+// (CREDITS_USED_ITEMS) the Users screen and the utilization meters above
+// read, and one that carries per-user rows for exactly two logins in this
+// fixture world (faisal-noor, noah-tanaka). assembleUsageState now ALSO folds
+// in that metrics report over the full 81-seat roster
+// (write/live-state.test.ts pins the fold itself), so every dry-run below is
+// now a REAL, roster-wide simulation, not an accidental 0/0. Two of the six
+// tests below now genuinely flip:
+//   - Staging a $0 individual ULB for liam-obrien (4,930 MTD, see above) now
+//     correctly shows him newly BLOCKED (0 − 4,930 <= 0).
+//   - Deleting ext-dmorrow's $0 individual ULB now correctly shows him newly
+//     UNBLOCKED: his metrics-report usage this cycle is 0 (no rows at all),
+//     and headroom = cap − usage = 0 − 0 = 0 <= 0 is the boundary case that
+//     STILL blocks (a zero-usage user against a $0 cap is blocked, not
+//     exempt) -- so he was blocked before the delete and isn't after (his
+//     Corporate Systems cost center has no CCULB, so he falls back to the
+//     4,600-credit universal ULB, 4,600 credits of headroom against 0 used).
+// The other four (universal-ULB raise, CCULB-create for Employer & Provider
+// Portals, individual-create for rpatel2) hand-derive to a genuine,
+// roster-wide 0/0 -- not because nobody is tracked, but because nobody in the
+// affected population actually crosses either boundary (see each test's own
+// comment for the derivation).
 
 async function launchApp(dbLabel: string) {
   const appDir = path.join(__dirname, '..');
@@ -150,12 +164,20 @@ test('edit the universal ULB cap: stage -> diff -> dry-run -> apply with exact P
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
 
-    // The only two users simulatePlan ever evaluates (faisal-noor,
-    // noah-tanaka -- see the file-header note) are neither universal-bound
-    // in a way this raise moves: faisal-noor IS universal-bound but his
-    // billing-report usage (2,300 credits) stays well under both 4,600 and
-    // 5,100; noah-tanaka is Workforce-CCULB-bound, unaffected by this control
-    // entirely. This edit moves nobody's block status.
+    // Genuinely 0/0 across the full roster (post-4.11b fold), hand-derived:
+    // the universal ULB only governs users with NEITHER an individual
+    // override NOR CCULB-cost-center membership -- i.e. Employer & Provider
+    // Portals (minus ext-pshah), Payments Integrity Engineering, Cyber &
+    // Identity Services (minus sam-kelly), and Corporate Systems (minus
+    // ext-dmorrow); Workforce Australia Platform and Data & Evaluation
+    // Platform are entirely CCULB-governed instead. That population's highest
+    // MTD burn this cycle is hannah-webb's 4,360 (the same figure the
+    // universal row's own utilization meter above shows) -- under BOTH 4,600
+    // (today) and 5,100 (staged). Nobody else in that ~45-user population
+    // comes close (next-highest: faisal-noor 4,180, grace-omalley 4,020,
+    // ruby-carter 4,290, karen-fox 3,760). So this raise moves nobody's block
+    // status -- not because they're untracked, but because nobody in the
+    // governed population is within 1,000 credits of either boundary.
     await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__blocker')).toHaveCount(0);
@@ -238,9 +260,14 @@ test('CREATE a CCULB for Employer & Provider Portals: the POST payload matches t
     );
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
-    // Neither of the two users simulatePlan evaluates (faisal-noor,
-    // noah-tanaka) is an Employer & Provider Portals member -- this control
-    // can never move either of their block statuses, at any cap.
+    // Genuinely 0/0 (post-4.11b fold), hand-derived: this CCULB (5,000)
+    // governs every Employer & Provider Portals member without an individual
+    // override (ext-pshah keeps his own 1,900 ULB) -- and since 5,000 is
+    // HIGHER than the 4,600 universal fallback it replaces for them, it can
+    // only ever unblock someone, never newly block. Nobody in that population
+    // was blocked under the 4,600 universal fallback to begin with (highest
+    // MTD: hannah-webb 4,360, under 4,600) -- so there is nobody left to
+    // unblock either. Net: 0/0, for a real (not accidental) reason.
     await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__blocker')).toHaveCount(0);
@@ -318,8 +345,11 @@ test('CREATE an individual ULB (rpatel2): the POST carries budget_scope:"individ
     await expect(rail.locator('.plan-rail__diff-line')).toHaveText('+ individual["rpatel2"]: cap 5,000 · hard-stop');
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
-    // rpatel2 isn't one of the two logins simulatePlan's usageState.users
-    // carries (faisal-noor, noah-tanaka) -- nobody's status moves.
+    // Genuinely 0/0 (post-4.11b fold): rpatel2 is now tracked for real (4,170
+    // MTD, see the test's own header derivation). Her new individual ULB
+    // (5,000) replaces her Workforce CCULB (5,200) as her effective cap --
+    // LOWER, but still comfortably above her 4,170 MTD (830 headroom) -- so
+    // nobody's status moves.
     await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
     await expect(rail.locator('.plan-rail__blocker')).toHaveCount(0);
@@ -372,9 +402,13 @@ test('stage a $0 individual ULB (liam-obrien): the zero_or_near_zero_ulb warning
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
 
-    // liam-obrien isn't one of the two logins simulatePlan's usageState.users
-    // carries (faisal-noor, noah-tanaka) -- honestly 0/0.
-    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
+    // Post-4.11b fold: liam-obrien is now tracked for real (4,930 MTD, see
+    // the file header). His individual ULB going 5,800 -> 0 flips his
+    // headroom from +870 to -4,930 -- correctly newly BLOCKED, exactly the
+    // preview-fidelity gap this task fixes (the old code silently showed 0/0
+    // here for a money-affecting $0-cap stage).
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('1');
+    await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-users')).toHaveText('liam-obrien');
     await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
 
     const warning = rail.locator('.plan-rail__warning');
@@ -427,8 +461,17 @@ test('delete the $0 individual ULB (ext-dmorrow): diff line + DELETE request + a
     await expect(rail.locator('.plan-rail__diff-line')).toHaveText('- individual["ext-dmorrow"]: cap 0');
 
     await rail.getByRole('button', { name: 'Run dry-run simulation' }).click();
+    // Post-4.11b fold: ext-dmorrow has NO usage rows at all this cycle (0
+    // MTD) -- against his live $0 ULB, headroom = 0 - 0 = 0, and
+    // simulatePlan's <= 0 predicate blocks at exactly zero headroom, so he
+    // reads blockedBefore: true (the boundary case the file header calls
+    // out: a zero-usage user against a $0 cap IS blocked, not exempt).
+    // Deleting the $0 ULB falls him back to Corporate Systems' universal ULB
+    // (no CCULB there): 4,600 credits of headroom against 0 used -> newly
+    // UNBLOCKED.
     await expect(rail.locator('.plan-rail__sim-tile--blocked .plan-rail__sim-count')).toHaveText('0');
-    await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('0');
+    await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-count')).toHaveText('1');
+    await expect(rail.locator('.plan-rail__sim-tile--unblocked .plan-rail__sim-users')).toHaveText('ext-dmorrow');
     await expect(rail.locator('.plan-rail__blocker')).toHaveCount(0);
     await expect(rail.locator('.plan-rail__warning')).toHaveCount(0);
 

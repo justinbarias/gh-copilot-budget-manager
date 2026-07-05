@@ -384,4 +384,50 @@ describe('dryRunPlan', () => {
       });
     }
   });
+
+  // Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix): before this task,
+  // assembleUsageState built usageState.users from the billing-usage report
+  // alone, which never itemises emily-zhao by login -- so staging a $0 ULB
+  // for her (5,480 MTD credits this cycle, per CREDITS_USED_ITEMS) previewed
+  // "0 newly blocked", a structurally misleading preview for a money-affecting
+  // hard-block. Now that assembleUsageState folds in the per-user metrics
+  // report (write/live-state.test.ts pins the fold itself), the SAME dry run
+  // correctly shows her newly blocked: her effective ULB today is the Data &
+  // Evaluation Platform CCULB (6,000 credits, 5,480 < 6,000 -> not blocked);
+  // staging an individual $0 override outranks the CCULB (individual >
+  // CCULB > universal, CLAUDE.md §5) and 0 - 5,480 <= 0 -> blocked.
+  it('previews emily-zhao newly blocked when staging a $0 individual ULB -- the exact preview-fidelity gap this task fixes', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const desiredControls: ControlState[] = [
+      ...live.controls,
+      {
+        kind: 'budget',
+        scope: 'individual',
+        entityName: 'emily-zhao',
+        amountCredits: 0,
+        preventFurtherUsage: true,
+        alerting: { willAlert: false, alertRecipients: [] },
+      },
+    ];
+
+    const result = await dryRunPlan(desiredControls, {
+      enterprise: ENTERPRISE_SLUG,
+      octokit,
+      asOfDate: new Date('2026-06-14T00:00:00.000Z'),
+    });
+
+    expect(result.plan.entries).toHaveLength(1);
+    expect(result.plan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'add', scope: 'individual', entityName: 'emily-zhao' });
+    expect(result.simulation.newlyBlockedUserLogins).toEqual(['emily-zhao']);
+    expect(result.simulation.summary.newlyBlockedCount).toBe(1);
+    expect(result.simulation.summary.newlyUnblockedCount).toBe(0);
+
+    const emilyStatus = result.simulation.userBlockStatus.find((u) => u.userLogin === 'emily-zhao');
+    expect(emilyStatus).toEqual({
+      userLogin: 'emily-zhao',
+      blockedBefore: false,
+      blockedAfter: true,
+      bindingConstraintAfter: 'ulb',
+    });
+  });
 });

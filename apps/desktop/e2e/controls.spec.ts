@@ -28,6 +28,23 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 //   - PATCH body for that change: {"budget_amount":650} (65,000 credits = $650).
 //   - Workforce's metered spend meter: 234 credits (noah-tanaka's
 //     2026-09-01 cliff row, net $2.34) against 60,000.
+//
+// Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix): write/live-state.ts's
+// assembleUsageState now folds the per-user metrics report into
+// simulatePlan's usageState.users over the full 81-seat roster (previously
+// it only carried the two logins the billing-usage report itemises by name).
+// Re-verified against the full roster: this file's 0/0 dry-run assertions do
+// NOT change. simulatePlan only evaluates a spending-limit candidate for a
+// user whose OWN meteredCreditsUsed > 0 (core/simulate.ts's
+// resolveUserBlockStatus) -- i.e. already tipped into the metered phase --
+// and in this cycle that is true for exactly one person enterprise-wide,
+// faisal-noor (Payments Integrity Engineering, a cost center with no
+// cost_center-scope spending limit at all). Nobody in Workforce Australia
+// Platform or Data & Evaluation Platform (the two cost centers this file's
+// spending-limit edits touch) has any in-cycle metered spend -- their burn is
+// entirely pool-phase -- so raising/toggling those two cost centers'
+// spending limits was, is, and remains a 0/0 preview, now for a fully
+// roster-verified reason instead of an accidental one.
 
 async function launchApp(dbLabel: string) {
   const appDir = path.join(__dirname, '..');
