@@ -1,28 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  controlIdentity,
   diffControls,
   isUlbScope,
   DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
   type AlertingState,
   type BudgetControl,
+  type CapOverflow,
   type ControlState,
+  type IncludedCapControl,
   type SpendingLimitScope,
   type UlbBudgetScope,
 } from '@copilot-budget/core';
 import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { parseCredits, parseRecipients } from '../../lib/creditsInput';
-import { ComingSoon } from '../_stubs/ComingSoon';
 import { ControlsTable, type RowUtilization, type SpendingLimitRowModel } from './ControlsTable';
+import { IncludedCapsGrid, type IncludedCapRowModel } from './IncludedCapsGrid';
 import { NewUlbModal } from './NewUlbModal';
 import { PlanRail } from './PlanRail';
 import { UlbTable, type UlbRowModel } from './UlbTable';
 import './Controls.css';
 
-// Controls screen (Task 4.9 spending limits, Task 4.10 user-level budgets):
-// family tabs + explainer, both families end to end, and the reusable
-// plan/simulate/apply right rail. Included-usage caps (Task 4.12) stays a
-// consistent within-screen placeholder until that slice lands.
+// Controls screen (Task 4.9 spending limits, Task 4.10 user-level budgets,
+// Task 4.12 included-usage caps): family tabs + explainer, all three families
+// end to end, and the reusable plan/simulate/apply right rail.
 //
 // Staging model (design/README.md "State management"): `desired` is an edit
 // overlay keyed by control identity; the full desired ControlState list is
@@ -71,6 +73,15 @@ interface StagedBudgetEdit {
   recipientsRaw?: string;
 }
 
+// Included-usage cap edit overlay (Task 4.12): deliberately only `enabled`/
+// `overflow` -- CapDiffField in core/controls.ts has no `computedLimitCredits`
+// counterpart, so there is structurally no field name this overlay could ever
+// carry to stage an amount edit (CLAUDE.md §5: the cap is never dial-able).
+interface StagedCapEdit {
+  enabled?: boolean;
+  overflow?: CapOverflow;
+}
+
 interface MeterData {
   enterpriseUsedCredits: number;
   usedCreditsByCostCenterName: Record<string, number>;
@@ -98,6 +109,22 @@ function applyEdit(control: BudgetControl, edit: StagedBudgetEdit): BudgetContro
 // (the only kind this slice stages).
 function budgetIdentity(control: BudgetControl): string {
   return `budget:${control.scope}:${control.entityName}`;
+}
+
+// Task 4.12's included_cap edits use core's controlIdentity directly (rather
+// than a second inlined helper like budgetIdentity above) -- included_cap's
+// identity is a single-field key (`included_cap:${costCenterName}`) with no
+// analogous "only this slice stages it" history to preserve.
+function applyCapEdit(control: IncludedCapControl, edit: StagedCapEdit): IncludedCapControl {
+  return {
+    ...control,
+    enabled: edit.enabled ?? control.enabled,
+    overflow: edit.overflow ?? control.overflow,
+  };
+}
+
+function isCapControl(control: ControlState): control is IncludedCapControl {
+  return control.kind === 'included_cap';
 }
 
 const SPENDING_SCOPE_ORDER: Record<SpendingLimitScope, number> = { enterprise: 0, organization: 1, cost_center: 2 };
@@ -172,6 +199,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // 'spending' was a Task 4.9 stopgap default until this slice existed.
   const [family, setFamily] = useState<FamilyId>('userlevel');
   const [desired, setDesired] = useState<Record<string, StagedBudgetEdit>>({});
+  // Task 4.12's included_cap edit overlay -- keyed by controlIdentity, the
+  // same "desired overlays live" pattern `desired` already uses for budgets.
+  const [desiredCaps, setDesiredCaps] = useState<Record<string, StagedCapEdit>>({});
   // Task 4.10's CREATE/DELETE staging, additive to the `desired` edit overlay
   // above: stagedNewUlbs are appended to desiredControls (diffControls then
   // sees them as 'add' entries against a live state that doesn't have them);
@@ -248,18 +278,23 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   // control (ULBs + caps this slice doesn't edit) passes straight through, so
   // diffControls never fabricates deletes/changes for controls nothing here
   // stages -- stagedDeletes is the ONLY thing that removes a control from the
-  // desired list, and it does so explicitly.
+  // desired list, and it does so explicitly. Task 4.12 adds the included_cap
+  // branch alongside the budget one -- same "overlay keyed by identity" shape,
+  // a different overlay map (desiredCaps) and apply function (applyCapEdit).
   const desiredControls = useMemo<ControlState[]>(() => {
     if (live === null) return [];
     const edited = live
       .filter((control) => !(control.kind === 'budget' && stagedDeletes.has(budgetIdentity(control))))
       .map((control) => {
-        if (control.kind !== 'budget') return control;
-        const edit = desired[budgetIdentity(control)];
-        return edit ? applyEdit(control, edit) : control;
+        if (control.kind === 'budget') {
+          const edit = desired[budgetIdentity(control)];
+          return edit ? applyEdit(control, edit) : control;
+        }
+        const capEdit = desiredCaps[controlIdentity(control)];
+        return capEdit ? applyCapEdit(control, capEdit) : control;
       });
     return [...edited, ...stagedNewUlbs];
-  }, [live, desired, stagedDeletes, stagedNewUlbs]);
+  }, [live, desired, desiredCaps, stagedDeletes, stagedNewUlbs]);
 
   const plan = useMemo(() => diffControls(live ?? [], desiredControls), [live, desiredControls]);
   const planKey = useMemo(() => JSON.stringify(plan.entries), [plan]);
@@ -301,8 +336,28 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     [live],
   );
 
+  // Task 4.12: toggle the effective `enabled` (staged ?? live), same
+  // read-effective-then-flip shape as onHardStopToggle above.
+  const onCapToggle = useCallback(
+    (id: string) => {
+      if (live === null) return;
+      const control = live.find((c) => c.kind === 'included_cap' && controlIdentity(c) === id);
+      if (!control || control.kind !== 'included_cap') return;
+      setDesiredCaps((current) => {
+        const effective = current[id]?.enabled ?? control.enabled;
+        return { ...current, [id]: { ...current[id], enabled: !effective } };
+      });
+    },
+    [live],
+  );
+
+  const onCapOverflowChange = useCallback((id: string, overflow: CapOverflow) => {
+    setDesiredCaps((current) => ({ ...current, [id]: { ...current[id], overflow } }));
+  }, []);
+
   const onDiscard = useCallback(() => {
     setDesired({});
+    setDesiredCaps({});
     setStagedNewUlbs([]);
     setStagedDeletes(new Set());
     setDryRun(null);
@@ -362,6 +417,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
 
       if (result.status === 'applied') {
         setDesired({});
+        setDesiredCaps({});
         setStagedNewUlbs([]);
         setStagedDeletes(new Set());
         setDryRun(null);
@@ -507,6 +563,41 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     })),
   ].sort((a, b) => ULB_SCOPE_ORDER[a.scope] - ULB_SCOPE_ORDER[b.scope] || a.entityName.localeCompare(b.entityName));
 
+  // Task 4.12: included-usage cap family rows. Natural order (the order
+  // getControls() returns included_cap entries in, which mirrors the fixture
+  // declaration order in msw/fixtures/costCenters.ts) -- no re-sort, since
+  // unlike the ULB table this is a single homogeneous list with no
+  // scope-then-name grouping to reproduce.
+  //
+  // memberCount/mtdBurnCredits aren't on ControlState (core's IncludedCapControl
+  // only carries enabled/overflow/computedLimitCredits, CLAUDE.md §5's "never
+  // dial-able" surface) -- joined here from costCentersList, the SAME
+  // listCostCenters() fetch Controls.tsx already loads for the spending
+  // table's per-CC meters, by cost-center name (no new IPC call). "Drawn"
+  // deliberately reads mtdBurnCredits (not a separately-derived pool-only
+  // figure): it's the exact field + headroom convention the Cost Centers
+  // screen already established (CostCentersTable.tsx's
+  // includedCapHeadroom(computedLimitCredits, mtdBurnCredits)) for these same
+  // fixtures, so a cost center can't read "within cap" here and "over cap"
+  // there.
+  const costCenterSummaryByName = new Map(costCentersList.map((cc) => [cc.name, cc]));
+  const capRows: IncludedCapRowModel[] = live.filter(isCapControl).map((control) => {
+    const id = controlIdentity(control);
+    const edit = desiredCaps[id] ?? {};
+    const effective = applyCapEdit(control, edit);
+    const summary = costCenterSummaryByName.get(control.costCenterName);
+    return {
+      id,
+      costCenterName: control.costCenterName,
+      enabled: effective.enabled,
+      overflow: effective.overflow,
+      computedLimitCredits: control.computedLimitCredits,
+      memberCount: summary?.memberCount ?? 0,
+      drawnCredits: summary?.mtdBurnCredits ?? 0,
+      staged: stagedIds.has(id),
+    };
+  });
+
   // NewUlbModal's entity pickers, narrowed to genuinely-new targets (CLAUDE.md
   // build brief: "filtered to exclude existing overrides") -- a scope/entity
   // already covered (live and not staged for delete, or already staged-new)
@@ -597,12 +688,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
               />
             </>
           )}
-          {family === 'included' && (
-            <ComingSoon
-              screenName="Included-usage caps"
-              message="Coming soon — per-cost-center included-usage cap cards arrive with Task 4.12."
-            />
-          )}
+          {family === 'included' && <IncludedCapsGrid rows={capRows} onToggle={onCapToggle} onOverflowChange={onCapOverflowChange} />}
         </div>
 
         <PlanRail

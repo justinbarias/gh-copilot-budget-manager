@@ -1,0 +1,222 @@
+/* Task 4.12: Included-usage caps family grid. Self-contained (does not rely
+   on ControlsTable.css/UlbTable.css load order) -- every class this component
+   uses is defined here, even where it echoes an existing shape (e.g. the
+   34x20 toggle pill), matching UlbTable.css's own "additive, don't assume
+   sibling files loaded first" convention. */
+
+.included-caps__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: var(--space-gap);
+}
+
+.included-caps__card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: var(--space-card);
+}
+
+/* Amber staged tint, matching the rest of the Controls screen's staged cue. */
+.included-caps__card--staged {
+  border-color: rgba(227, 179, 65, 0.4);
+  background: rgba(227, 179, 65, 0.03);
+}
+
+.included-caps__card--disabled {
+  opacity: 0.72;
+}
+
+.included-caps__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.included-caps__name-col {
+  min-width: 0;
+}
+
+.included-caps__name-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.included-caps__name {
+  font-size: 14px;
+  color: var(--text-default);
+  font-weight: 500;
+}
+
+/* Every card in this family is API-only (CLAUDE.md §5: the included-usage cap
+   has no native GitHub UI at all) -- unlike UlbTable's CCULB-only pill, this
+   one is unconditional, so no `staged`/count-gating logic is needed here. */
+.included-caps__apionly-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--violet-light);
+  background: rgba(147, 80, 255, 0.14);
+  border: 1px solid rgba(147, 80, 255, 0.4);
+  border-radius: 5px;
+  padding: 2px 6px;
+  vertical-align: middle;
+  cursor: default;
+}
+
+.included-caps__subtitle {
+  font-size: 11px;
+  color: var(--text-neutral);
+  margin-top: 3px;
+}
+
+/* Enable toggle: on/off, deliberately NOT the hard-stop/alert-only green-vs-
+   amber pair ControlsTable.css's .controls-toggle uses -- this switch has no
+   "alert-only" meaning, so off renders neutral gray, not amber. */
+.included-caps__toggle {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 9999px;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.included-caps__toggle--on {
+  background: var(--green-toggle-on);
+  border: 1px solid var(--green-toggle-on-hover);
+}
+
+.included-caps__toggle--off {
+  background: var(--border);
+  border: 1px solid var(--hairline);
+}
+
+.included-caps__toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #ffffff;
+  transition: transform 0.15s;
+}
+
+.included-caps__toggle--on .included-caps__toggle-knob {
+  transform: translateX(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .included-caps__toggle,
+  .included-caps__toggle-knob {
+    transition: none;
+  }
+}
+
+.included-caps__limit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.included-caps__limit-value {
+  font-size: 21px;
+  color: var(--text-default);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.included-caps__limit-sub {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+}
+
+.included-caps__bar-track {
+  height: 8px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  margin: 10px 0 5px;
+  overflow: hidden;
+}
+
+.included-caps__bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+}
+
+.included-caps__bar-fill--green {
+  background: var(--green);
+}
+
+.included-caps__bar-fill--amber {
+  background: var(--amber);
+}
+
+.included-caps__bar-fill--red {
+  background: var(--red);
+}
+
+.included-caps__drawn-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--text-neutral);
+  margin-bottom: 14px;
+}
+
+.included-caps__drawn-row--over {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.included-caps__overflow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.included-caps__overflow-label {
+  font-size: 11px;
+  color: var(--text-neutral);
+}
+
+.included-caps__seg {
+  display: flex;
+  gap: 6px;
+}
+
+.included-caps__seg-btn {
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.included-caps__seg-btn--active {
+  border-color: var(--blue);
+  background: rgba(141, 214, 255, 0.1);
+  color: var(--blue);
+}
+
+.included-caps__staged {
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 500;
+  margin-top: 11px;
+}
