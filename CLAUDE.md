@@ -182,6 +182,24 @@ Ask the maintainer and record the answers at the top of the repo README; several
 - Keep this file current: when a decision changes, update `CLAUDE.md` in the same PR.
 - Fill in the `## Commands` section below as you scaffold (install / dev / build / test / e2e / package).
 
+---
+
+## 11. Orchestration model
+
+Default operating model for all work in this repo, not just one task:
+
+- **The main session is the orchestrator; it does not implement.** It sequences the plan, writes task briefs — acceptance criteria, expected values, constraints — precise enough that a fresh subagent needs no back-channel context, holds ask-first items for a maintainer checkpoint, and relays outcomes.
+  - Ask-first items: schema/migrations, `preload`/`ApiClient` interface extensions, and any design gap `design/` doesn't cover — never guess these, checkpoint them.
+- **Implementation is delegated to subagents.**
+  - **Sonnet**, at task granularity, by default.
+  - **Opus**, optionally, for complex multi-layer work delivered in one shot — cross-package engine changes, dataset/system design, anything with coupled judgment calls spanning `core`/`data`/`ui` at once.
+- **Post-validation is always a separate Opus subagent applying the rules already in this file — never the builder marking its own work.**
+  - Both halves of the §6.7 gate: Playwright headless, and §7's interactive CDP verification.
+  - §6.9's API-surface validation, wherever a hand-wrapped GitHub call changed.
+  - An adversarial verify-don't-trust pass: hand-recompute money-affecting math against the fixtures, sweep the diff's actual scope (and for injected/unsafe patterns), strengthen weak tests rather than merely flag them.
+  - **Fix-minor inline; block-fundamental back to the orchestrator.**
+- **Builders never commit.** Only the validator commits, and only when genuinely green — ticking the corresponding plan/todo checkbox in the same commit. Briefs must carry enough expected values (exact numbers, states, error text) that the validator can independently recompute the result, not take the builder's report on faith.
+
 ## Commands
 
 ```
