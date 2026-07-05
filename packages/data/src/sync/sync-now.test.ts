@@ -65,6 +65,7 @@ const baseData: IngestData = {
       computedLimitCredits: 105_000,
     } satisfies IncludedCapControl,
   ],
+  forecasts: [],
 };
 
 describe('syncNow', () => {

@@ -228,11 +228,21 @@ re-confirm the gap still exists (or note if GitHub ever adds a real signal).
   can be surfaced on request without changing either endpoint's default
   (no-param) response or its response wire shape. These param names match
   real GitHub's documented enhanced-billing usage-report query parameters
-  (`year`/`month`/`day`/`hour`); `github-impl.ts` does not send them yet (no
-  Phase-5 forecasting consumer wired up in this task) — request-side only,
-  no new response field, so this doesn't change either row's read-shape
-  verdict above. Confirm the exact parameter set against the OpenAPI schema
-  at 9.2 alongside R5/R6's existing "pin at 9.2" items.
+  (`year`/`month`/`day`/`hour`) — request-side only, no new response field,
+  so this doesn't change either row's read-shape verdict above.
+- **Task 5.4 — `github-impl.ts` now SENDS `year`/`since`.** The Task 5.1 note
+  above ("github-impl.ts does not send them yet") is superseded: Task 5.4's
+  forecast-on-sync consumer (`fetchHistoricalUsageItems`/
+  `fetchHistoricalCreditsUsedItems`, `packages/data/src/api-client/
+  github-impl.ts`) now sends `year` (R5, whole current year — MSW resolves
+  this as the open cycle unioned with the 3 prior closed cycles) and `since`
+  (R6, 3 calendar months before the current cycle start, computed from
+  `cycleBounds`, never hardcoded) on every `syncNow`. Both remain request-side
+  only — the response wire shape these two calls parse is byte-identical to
+  R5/R6's existing (no-param) shape, so neither row's read-shape verdict
+  changes. Confirm the exact parameter set (and that real GitHub accepts a
+  bare `year` with no `month`, and `since` with no `until`) against the
+  OpenAPI schema at 9.2 alongside R5/R6's existing "pin at 9.2" items.
 
 ---
 

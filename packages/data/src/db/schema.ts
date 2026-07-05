@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // Ingestion-run marker. Append-only (CLAUDE.md §6): rows are never updated or deleted,
 // only inserted by "Sync now"; usage_fact/credits_used_fact rows reference the run that produced them.
@@ -103,6 +103,41 @@ export const controlSnapshot = sqliteTable('control_snapshot', {
     .references(() => snapshot.id),
   controlsJson: text('controls_json').notNull(),
 });
+
+// Task 5.4: one row per (snapshot generation x scope x entity) forecast
+// computed at the end of `syncNow` -- append-only sibling of control_snapshot
+// above (never updated/deleted; a fresh generation is inserted every sync
+// that computes one). `scope` is 'enterprise' | 'cost_center' | 'user'
+// (packages/data/src/api-client/types.ts's ForecastScope); `entityRef` is
+// null for the enterprise scope, a cost-center id for 'cost_center', a user
+// id for 'user'. `forecastJson` is core's ForecastResult serialized verbatim
+// (dailySeries + exhaustionDate(s) + runwayDays + projectedMetered{Credits,
+// Dollars} + basis) -- a single JSON column for the same reason
+// control_snapshot uses one: the shape is a nested domain object, not a flat
+// row, and keeping it schema-stable means no migration is required as
+// ForecastResult itself grows fields. `mape` (from core's backtest()) is
+// nullable -- null wherever the entity's historical depth was insufficient
+// to backtest (packages/data/src/forecast/compute.ts's window-picking logic).
+// `computedAt` is the sync's as-of date (SIM_CURRENT_DATE convention --
+// never wall-clock), stored as the same ISO 'YYYY-MM-DD' text every other
+// as-of-date field in this codebase uses (never an integer timestamp column).
+// The (snapshot_id, scope, entity_ref) index backs `getLatestForecast`'s
+// per-scope/entity latest-row lookup (packages/data/src/sync/sync-now.ts).
+export const forecast = sqliteTable(
+  'forecast',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    snapshotId: integer('snapshot_id')
+      .notNull()
+      .references(() => snapshot.id),
+    scope: text('scope').notNull(),
+    entityRef: text('entity_ref'),
+    computedAt: text('computed_at').notNull(),
+    forecastJson: text('forecast_json').notNull(),
+    mape: real('mape'),
+  },
+  (table) => [index('forecast_snapshot_id_scope_entity_ref_idx').on(table.snapshotId, table.scope, table.entityRef)],
+);
 
 // Append-only, hash-chained audit log (CLAUDE.md §6.5 / PLAN.md Task 4.7).
 // No code path in this package updates or deletes a row here -- the only

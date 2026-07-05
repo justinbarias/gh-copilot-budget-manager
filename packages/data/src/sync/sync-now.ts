@@ -1,5 +1,5 @@
-import { desc, eq } from 'drizzle-orm';
-import type { ControlState } from '@copilot-budget/core';
+import { and, desc, eq, isNull } from 'drizzle-orm';
+import type { ControlState, ForecastResult } from '@copilot-budget/core';
 import * as schema from '../db/schema.js';
 import type { Db } from '../db/client.js';
 
@@ -38,6 +38,20 @@ export interface IngestLicense {
   assignedAt: Date | null;
 }
 
+/** Task 5.4: 'enterprise' has no entity (entityRef null); 'cost_center'/'user' are keyed by that entity's id. */
+export type ForecastScope = 'enterprise' | 'cost_center' | 'user';
+
+export interface IngestForecastItem {
+  scope: ForecastScope;
+  /** Null for 'enterprise'; a cost-center id for 'cost_center'; a user id (matching credits_used_fact.userId) for 'user'. */
+  entityId: string | null;
+  /** The sync's as-of date (SIM_CURRENT_DATE convention -- never wall-clock), ISO 'YYYY-MM-DD'. */
+  computedAt: string;
+  result: ForecastResult;
+  /** From core's backtest(); null wherever historical depth was insufficient (packages/data/src/forecast/compute.ts). */
+  mape: number | null;
+}
+
 export interface IngestData {
   entity: string;
   usageItems: IngestUsageItem[];
@@ -53,6 +67,14 @@ export interface IngestData {
    * marker compares a fresh live read against.
    */
   controls: ControlState[];
+  /**
+   * Task 5.4: one forecast per (scope, entity) -- enterprise, every active
+   * cost center, every licensed user -- computed by the caller (github-impl.ts,
+   * via packages/data/src/forecast/compute.ts) from the SAME sync's fetched
+   * usage rows, and persisted append-only (schema.ts's `forecast` table)
+   * alongside the snapshot/control rows it derives from (FR18 "forecast basis").
+   */
+  forecasts: IngestForecastItem[];
 }
 
 export interface SyncResult {
@@ -61,6 +83,17 @@ export interface SyncResult {
   usageFactCount: number;
   creditsUsedFactCount: number;
   controlCount: number;
+  forecastCount: number;
+}
+
+/** Task 5.4: `getLatestForecast`'s return shape -- the latest persisted forecast for a (scope, entity). */
+export interface StoredForecast {
+  snapshotId: number;
+  scope: ForecastScope;
+  entityId: string | null;
+  computedAt: string;
+  mape: number | null;
+  result: ForecastResult;
 }
 
 export interface SyncStatus {
@@ -160,12 +193,32 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       })
       .run();
 
+    // Task 5.4: one forecast row per (scope, entity), in the SAME transaction
+    // as the snapshot/control writes above -- append-only, same convention
+    // (never conditioned on "something changed"; every row references this
+    // generation's snapshotId, the FR18 "forecast basis").
+    if (data.forecasts.length > 0) {
+      tx.insert(schema.forecast)
+        .values(
+          data.forecasts.map((f) => ({
+            snapshotId: snapshotRow.id,
+            scope: f.scope,
+            entityRef: f.entityId,
+            computedAt: f.computedAt,
+            forecastJson: JSON.stringify(f.result),
+            mape: f.mape,
+          })),
+        )
+        .run();
+    }
+
     return {
       snapshotId: snapshotRow.id,
       capturedAt: snapshotRow.capturedAt,
       usageFactCount: data.usageItems.length,
       creditsUsedFactCount: data.creditsUsedItems.length,
       controlCount: data.controls.length,
+      forecastCount: data.forecasts.length,
     };
   });
 }
@@ -197,4 +250,37 @@ export function getLastSyncedControls(db: Db): LastSyncedControls | null {
     .all()[0];
   if (!latest) return null;
   return { capturedAt: latest.capturedAt, controls: JSON.parse(latest.controlsJson) as ControlState[] };
+}
+
+// Task 5.4: the Forecast screen's (and Overview/Users' forecast overlays,
+// Phase 5's later tasks) read surface -- the latest persisted forecast for
+// one (scope, entity), regardless of which snapshot generation produced it
+// (a forecast is recomputed every sync, but a caller asking "what's the
+// current forecast for cost center X" wants the newest one, not necessarily
+// tied to the newest snapshot's OTHER rows). `entityId` omitted/undefined
+// selects the row with a NULL entity_ref (the 'enterprise' scope's only
+// shape); passing it for 'enterprise' would simply match nothing (its rows
+// never carry a non-null entityRef), returning null -- not a footgun in
+// practice since ForecastScope callers only ever pass entityId for
+// 'cost_center'/'user'. Null exactly when this (scope, entity) has never been
+// computed -- in practice, only true pre-sync (syncNow always computes
+// enterprise + every active cost center + every licensed user, so any
+// synced app has a row for every legitimate combination).
+export function getLatestForecast(db: Db, scope: ForecastScope, entityId?: string): StoredForecast | null {
+  const condition =
+    entityId !== undefined
+      ? and(eq(schema.forecast.scope, scope), eq(schema.forecast.entityRef, entityId))
+      : and(eq(schema.forecast.scope, scope), isNull(schema.forecast.entityRef));
+
+  const row = db.select().from(schema.forecast).where(condition).orderBy(desc(schema.forecast.id)).limit(1).all()[0];
+  if (!row) return null;
+
+  return {
+    snapshotId: row.snapshotId,
+    scope: row.scope as ForecastScope,
+    entityId: row.entityRef,
+    computedAt: row.computedAt,
+    mape: row.mape,
+    result: JSON.parse(row.forecastJson) as ForecastResult,
+  };
 }

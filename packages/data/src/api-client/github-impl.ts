@@ -2,21 +2,34 @@ import { Octokit } from 'octokit';
 import {
   computeModelMix,
   cycleBounds,
+  fixedAllowanceLine,
+  poolAllowanceLine,
   rankHeavyUsers,
   resolveEffectiveUlb,
+  type AllowanceBasis,
   type ControlState,
   type ModelUsageRow,
   type Plan,
   type UlbCandidate,
 } from '@copilot-budget/core';
+import {
+  assembleCostCenterSeries,
+  assembleEnterpriseSeries,
+  assembleUserSeries,
+  computeScopeForecast,
+  type AssembleCreditsUsedRow,
+  type AssembleUsageRow,
+} from '../forecast/compute.js';
 import { ALERTS } from '../msw/fixtures/alerts.js';
 import { API_VERSION, SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
   getLastSyncedControls as readLastSyncedControls,
+  getLatestForecast as readLatestForecast,
   getSyncStatus as readSyncStatus,
   syncNow as ingestSnapshot,
   type IngestCostCenterMember,
   type IngestData,
+  type IngestForecastItem,
   type IngestResourceType,
 } from '../sync/sync-now.js';
 import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
@@ -32,9 +45,11 @@ import type {
   CostCenterSummary,
   DailyBurnPoint,
   DryRunResult,
+  ForecastScope,
   HeavyUser,
   HeavyUserDailyPoint,
   LastSyncedControls,
+  StoredForecast,
   SyncStatus,
   UsageSummary,
   UsageSummaryParams,
@@ -111,6 +126,28 @@ const RESOURCE_TYPE_MAP: Record<CostCenterResource['type'], IngestResourceType> 
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Task 5.4: the SAME allowance basis Overview.tsx hardcodes (ALLOWANCE_BASIS)
+// -- duplicated here rather than imported (packages/ui must never be a
+// dependency of packages/data, CLAUDE.md §2) -- until CLAUDE.md §9 Q1
+// ("Enterprise or Business, github.com or GHE.com?") is answered and this
+// becomes real ingested configuration instead of a pinned literal.
+const ALLOWANCE_BASIS: AllowanceBasis = { edition: 'enterprise', existingCustomer: true };
+
+// Task 5.4: whether pool exhaustion meters at $0.01/credit or hard-blocks
+// (CLAUDE.md §9 Q2, still an open question generally). The DEWR fixture world
+// itself demonstrates metered billing actually occurring at the enterprise
+// level (the cap-bound CC's 2,300-credit overflow, the Aug31/Sep1 promo-cliff
+// row) -- so `true` is the only value consistent with this simulation's own
+// data, not an arbitrary default. Revisit once the real policy flag is
+// ingested (Settings screen's "Policy state" per the design brief).
+const ENTERPRISE_PAID_USAGE_ENABLED = true;
+
+// A ULB is ALWAYS a hard stop in BOTH phases (CLAUDE.md §5) -- it never
+// meters past its ceiling, unlike the enterprise/cost-center pool. Named
+// (rather than an inline `false`) so every user-scope forecast call site
+// documents *why* it's always false, not just that it is.
+const USER_ULB_NEVER_METERS = false;
+
 // discount_amount is the $ portion of a usage row covered by the shared pool
 // (vs. net_amount, the metered portion) -- dividing by $0.01/credit converts
 // it back to the pool-phase credit count the Overview burn-down needs, so a
@@ -125,6 +162,20 @@ function poolCreditsForItem(item: Pick<UsageItem, 'discount_amount'>): number {
 // the same $0.01/credit conversion poolCreditsForItem applies above.
 function usdToCredits(amountUsd: number): number {
   return Math.round(amountUsd * 100);
+}
+
+// Shared between listHeavyUsers and syncNow's Task 5.4 forecast computation
+// (both need to resolve each user's effective ULB) -- factored out so there's
+// exactly one place that turns raw budget rows into core's UlbCandidate[],
+// rather than two independently-maintained projections of the same wire data.
+function buildUlbCandidates(budgetsRaw: readonly BudgetItem[]): UlbCandidate[] {
+  return budgetsRaw
+    .filter((b) => ULB_BUDGET_SCOPES.has(b.budget_scope))
+    .map((b) => ({
+      scope: b.budget_scope as UlbCandidate['scope'],
+      entityName: b.budget_entity_name,
+      amountCredits: usdToCredits(b.budget_amount),
+    }));
 }
 
 // One point per calendar day from the cycle start through the as-of anchor
@@ -148,6 +199,111 @@ function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: numbe
     points.push({ date, cumulativePoolCredits: cumulative });
   }
   return points;
+}
+
+interface ComputeSyncForecastsParams {
+  asOfDate: Date;
+  historicalUsageItems: UsageItem[];
+  historicalCreditsUsedItems: CreditsUsedItem[];
+  costCentersRaw: CostCenter[];
+  resourcesByCostCenter: Array<{ costCenterId: string; resources: CostCenterResource[] }>;
+  seats: Seat[];
+  budgetsRaw: BudgetItem[];
+  loginToCostCenterName: Map<string, string>;
+}
+
+// Task 5.4: computes + shapes one forecast per (scope, entity) for syncNow to
+// persist -- enterprise, every ACTIVE cost center, and every licensed user
+// (the same roster listHeavyUsers seeds from, not just a "top N heavy"
+// subset). Pure aside from its inputs already being fetched (no I/O of its
+// own); kept in github-impl.ts rather than packages/data/src/forecast/
+// compute.ts because it wires wire-shaped types (UsageItem/CostCenter/
+// BudgetItem/Seat) and business rules (which allowance line, which
+// paid-usage flag applies) that compute.ts deliberately stays agnostic of --
+// compute.ts only folds rows into DailyBurn[] and glues forecast()/
+// backtest() together, the same division of labour github-impl.ts already
+// keeps for e.g. listHeavyUsers' ULB resolution.
+function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecastItem[] {
+  const computedAt = SIM_CURRENT_DATE;
+  const usageRows: AssembleUsageRow[] = params.historicalUsageItems.map((i) => ({
+    date: i.date,
+    costCenterId: i.cost_center_id,
+    quantity: i.quantity,
+  }));
+  const creditRows: AssembleCreditsUsedRow[] = params.historicalCreditsUsedItems.map((i) => ({
+    date: i.date,
+    userId: i.user_id,
+    creditsUsed: i.ai_credits_used,
+  }));
+
+  const forecasts: IngestForecastItem[] = [];
+
+  // Enterprise scope: allowance is the pool line (steps at the 1 Sep 2026
+  // cliff), sized off the full licensed seat count -- the SAME basis
+  // Overview.tsx's burn-down uses (ALLOWANCE_BASIS, above).
+  {
+    const series = assembleEnterpriseSeries(usageRows, params.asOfDate);
+    const { result, mape } = computeScopeForecast({
+      history: series,
+      asOfDate: params.asOfDate,
+      allowance: poolAllowanceLine(params.seats.length, ALLOWANCE_BASIS),
+      paidUsageEnabled: ENTERPRISE_PAID_USAGE_ENABLED,
+    });
+    forecasts.push({ scope: 'enterprise', entityId: null, computedAt, result, mape });
+  }
+
+  // Cost-center scope: every ACTIVE cost center. Cap-ON CCs forecast against
+  // their license-derived cap (poolAllowanceLine sized off THIS cc's own
+  // member count -- it steps at the cliff too; see forecast.ts's own doc
+  // comment: "a cost-center's computed included-usage cap ... is licenses x
+  // per-seat, so it steps too"); paidUsageEnabled mirrors the cap's OWN
+  // overflow choice ('metered' bills past the cap, 'block' hard-stops --
+  // CLAUDE.md §5), not the enterprise-wide paid-usage flag. Cap-OFF CCs get
+  // a permanently-zero allowance line (fixedAllowanceLine(0)) --
+  // forecast()'s exhaustion check requires `allowanceLine > 0`, so this
+  // deterministically yields exhaustionDate: null / runwayDays: null /
+  // projectedMeteredCredits: 0, i.e. "no CC-level exhaustion to report"
+  // (there's no cap to exhaust against; the enterprise-scope forecast above
+  // is where a cap-off CC's draw shows up). No CC in the DEWR fixture world
+  // is cap-off, but every branch here is exercised directly by
+  // compute.test.ts's synthetic scenarios.
+  const resourcesById = new Map(params.resourcesByCostCenter.map((r) => [r.costCenterId, r.resources] as const));
+  for (const cc of params.costCentersRaw.filter((c) => c.state === 'active')) {
+    const memberCount = (resourcesById.get(cc.id) ?? []).filter((r) => r.type === 'User').length;
+    const allowance = cc.included_usage_cap.enabled ? poolAllowanceLine(memberCount, ALLOWANCE_BASIS) : fixedAllowanceLine(0);
+    const paidUsageEnabled = cc.included_usage_cap.enabled && cc.included_usage_cap.overflow === 'metered';
+    const series = assembleCostCenterSeries(usageRows, cc.id, params.asOfDate);
+    const { result, mape } = computeScopeForecast({ history: series, asOfDate: params.asOfDate, allowance, paidUsageEnabled });
+    forecasts.push({ scope: 'cost_center', entityId: cc.id, computedAt, result, mape });
+  }
+
+  // User scope: every licensed seat. Allowance is the user's effective ULB
+  // (most-specific wins, resolveEffectiveUlb); paidUsageEnabled is ALWAYS
+  // false (USER_ULB_NEVER_METERS) since a ULB hard-stops in BOTH phases
+  // (CLAUDE.md §5) -- exhaustionDate here is really a BLOCK date, not a
+  // metered-spend trigger. A user with no ULB at any scope (null
+  // effectiveUlb -- not reachable in the DEWR fixture world, which always has
+  // a universal ULB as the floor, but handled generically) gets the same
+  // permanently-zero allowance line as a cap-off cost center: no exhaustion
+  // to report.
+  const ulbCandidates = buildUlbCandidates(params.budgetsRaw);
+  for (const seat of params.seats) {
+    const userId = String(seat.assignee.id);
+    const login = seat.assignee.login;
+    const costCenterName = params.loginToCostCenterName.get(login) ?? null;
+    const effectiveUlb = resolveEffectiveUlb(login, costCenterName, ulbCandidates);
+    const allowance = effectiveUlb ? fixedAllowanceLine(effectiveUlb.amountCredits) : fixedAllowanceLine(0);
+    const series = assembleUserSeries(creditRows, userId, params.asOfDate);
+    const { result, mape } = computeScopeForecast({
+      history: series,
+      asOfDate: params.asOfDate,
+      allowance,
+      paidUsageEnabled: USER_ULB_NEVER_METERS,
+    });
+    forecasts.push({ scope: 'user', entityId: userId, computedAt, result, mape });
+  }
+
+  return forecasts;
 }
 
 export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient {
@@ -185,6 +341,47 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       octokit,
       '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
       { enterprise },
+      (data) => data as CreditsUsedItem[],
+    );
+  }
+
+  // Task 5.4: `year` (real GitHub's documented enhanced-billing usage-report
+  // query parameter -- docs/api-surface-validation.md's R5 row + its Task 5.1
+  // note) fetches the WHOLE current year, which the MSW handler resolves as
+  // USAGE_ITEMS (the open cycle) UNIONED with HISTORICAL_USAGE_ITEMS (the 3
+  // prior closed cycles) -- i.e. this ALREADY IS the current-cycle + history
+  // superset (github-impl's plain fetchUsageItems() above must NOT also be
+  // concatenated with this -- it would double-count the current cycle's
+  // rows). Derives the year from SIM_CURRENT_DATE rather than hardcoding
+  // '2026' so this keeps working if the fixture's as-of date ever moves to a
+  // different year.
+  async function fetchHistoricalUsageItems(): Promise<UsageItem[]> {
+    return paginateAll<UsageItem>(
+      octokit,
+      '/enterprises/{enterprise}/settings/billing/usage',
+      { enterprise, year: SIM_CURRENT_DATE.slice(0, 4) },
+      (data) => (data as { usageItems: UsageItem[] }).usageItems,
+    );
+  }
+
+  // Task 5.4: `since` (real GitHub's documented metrics-report query
+  // parameter -- R6's Task 5.1 note) fetches from 3 calendar months before
+  // the current cycle's start, which the MSW handler resolves as the SAME
+  // current-cycle + history superset fetchHistoricalUsageItems() gets above
+  // (CREDITS_USED_ITEMS unioned with HISTORICAL_CREDITS_USED_ITEMS) -- do not
+  // additionally concatenate the plain fetchCreditsUsedItems() call for the
+  // same reason. Computed from cycleBounds (not hardcoded to the fixture's
+  // exact March date) so this keeps working if the fixture's as-of date ever
+  // moves.
+  async function fetchHistoricalCreditsUsedItems(): Promise<CreditsUsedItem[]> {
+    const { cycleStart } = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    const since = new Date(Date.UTC(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth() - 3, 1))
+      .toISOString()
+      .slice(0, 10);
+    return paginateAll<CreditsUsedItem>(
+      octokit,
+      '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
+      { enterprise, since },
       (data) => data as CreditsUsedItem[],
     );
   }
@@ -315,13 +512,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       }
     }
 
-    const ulbCandidates: UlbCandidate[] = budgetsRaw
-      .filter((b) => ULB_BUDGET_SCOPES.has(b.budget_scope))
-      .map((b) => ({
-        scope: b.budget_scope as UlbCandidate['scope'],
-        entityName: b.budget_entity_name,
-        amountCredits: usdToCredits(b.budget_amount),
-      }));
+    const ulbCandidates = buildUlbCandidates(budgetsRaw);
 
     interface Accumulator {
       userId: string;
@@ -410,13 +601,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // paginated reads); acceptable against MSW/a handful of live cost
     // centers, and keeps the controls-ingestion path structurally identical
     // to every other getControls() caller.
-    const [usageItems, creditsUsedItems, costCentersRaw, seats, live] = await Promise.all([
-      fetchUsageItems(),
-      fetchCreditsUsedItems(),
-      fetchCostCentersRaw(),
-      fetchSeats(),
-      fetchLiveControls(octokit, enterprise),
-    ]);
+    // Task 5.4: the two historical fetches (year/since-parameterised) run
+    // alongside the existing current-cycle-only reads -- see
+    // fetchHistoricalUsageItems/fetchHistoricalCreditsUsedItems's doc
+    // comments for why these are NOT concatenated with usageItems/
+    // creditsUsedItems below (they're already supersets of them).
+    const [usageItems, creditsUsedItems, costCentersRaw, seats, live, historicalUsageItems, historicalCreditsUsedItems, budgetsRaw] =
+      await Promise.all([
+        fetchUsageItems(),
+        fetchCreditsUsedItems(),
+        fetchCostCentersRaw(),
+        fetchSeats(),
+        fetchLiveControls(octokit, enterprise),
+        fetchHistoricalUsageItems(),
+        fetchHistoricalCreditsUsedItems(),
+        fetchBudgetsRaw(),
+      ]);
 
     const resourcesByCostCenter = await Promise.all(
       costCentersRaw.map(async (cc) => ({ costCenterId: cc.id, resources: await fetchCostCenterResources(cc.id) })),
@@ -427,11 +627,28 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     );
 
     const loginToCostCenter = new Map<string, string>();
+    const costCenterNameById = new Map(costCentersRaw.map((cc) => [cc.id, cc.name] as const));
+    const loginToCostCenterName = new Map<string, string>();
     for (const { costCenterId, resources } of resourcesByCostCenter) {
       for (const r of resources) {
-        if (r.type === 'User') loginToCostCenter.set(r.name, costCenterId);
+        if (r.type === 'User') {
+          loginToCostCenter.set(r.name, costCenterId);
+          const ccName = costCenterNameById.get(costCenterId);
+          if (ccName) loginToCostCenterName.set(r.name, ccName);
+        }
       }
     }
+
+    const forecasts = computeSyncForecasts({
+      asOfDate: new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`),
+      historicalUsageItems,
+      historicalCreditsUsedItems,
+      costCentersRaw,
+      resourcesByCostCenter,
+      seats,
+      budgetsRaw,
+      loginToCostCenterName,
+    });
 
     const data: IngestData = {
       entity: enterprise,
@@ -460,6 +677,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
         assignedAt: new Date(seat.created_at),
       })),
       controls: live.controls,
+      forecasts,
     };
 
     ingestSnapshot(config.db, config.source, data);
@@ -475,6 +693,13 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   async function getLastSyncedControls(): Promise<LastSyncedControls | null> {
     const result = readLastSyncedControls(config.db);
     return result ? { capturedAt: result.capturedAt.toISOString(), controls: result.controls } : null;
+  }
+
+  // Task 5.4: a thin read-through to the sync package's latest-forecast
+  // lookup (packages/data/src/sync/sync-now.ts's getLatestForecast) -- the
+  // Forecast screen's (and Overview/Users' forecast overlays') read surface.
+  async function getForecast(scope: ForecastScope, entityId?: string): Promise<StoredForecast | null> {
+    return readLatestForecast(config.db, scope, entityId);
   }
 
   // Task 4.8's write engine. getControls IS the write engine's own re-read
@@ -520,6 +745,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     syncNow,
     getControls,
     getLastSyncedControls,
+    getForecast,
     dryRunPlan,
     applyPlan,
   };

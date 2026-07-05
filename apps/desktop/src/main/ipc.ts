@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 import { createGitHubApiClient } from '@copilot-budget/data/api-client';
-import type { ApiClient, ApplyPlanInput, ControlState, Plan, UsageSummaryParams } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, ForecastScope, Plan, UsageSummaryParams } from '@copilot-budget/data';
 import { getDb } from './db';
 
 // TODO: enterprise slug + baseUrl (the GHE.com host swap) should come from real
@@ -32,6 +32,9 @@ export function registerApiClientIpcHandlers(source: 'msw' | 'github'): void {
   ipcMain.handle('apiClient:syncNow', () => client.syncNow());
   ipcMain.handle('apiClient:getControls', () => client.getControls());
   ipcMain.handle('apiClient:getLastSyncedControls', () => client.getLastSyncedControls());
+  ipcMain.handle('apiClient:getForecast', (_event, scope: ForecastScope, entityId?: string) =>
+    client.getForecast(scope, entityId),
+  );
   ipcMain.handle('apiClient:dryRunPlan', (_event, desiredControls: readonly ControlState[], justification?: string | null) =>
     client.dryRunPlan(desiredControls, justification),
   );

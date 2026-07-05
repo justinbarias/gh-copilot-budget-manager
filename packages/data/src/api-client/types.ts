@@ -1,5 +1,6 @@
-import type { ControlState, EffectiveUlb, ModelMix, Plan } from '@copilot-budget/core';
+import type { ControlState, EffectiveUlb, ForecastResult, ModelMix, Plan } from '@copilot-budget/core';
 import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
+import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
 
 // Re-exported so a consumer that only depends on '@copilot-budget/data' (per
 // CLAUDE.md's portability boundary -- apps/desktop's package.json depends on
@@ -7,7 +8,7 @@ import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
 // All type-only (isolatedModules erases these imports at compile time), so
 // this adds no runtime footprint to the pure barrel despite write/engine.ts
 // itself importing Octokit/drizzle/node:util.
-export type { ApplyPlanResult, ControlState, DryRunResult, Plan };
+export type { ApplyPlanResult, ControlState, DryRunResult, ForecastResult, ForecastScope, Plan, StoredForecast };
 
 export interface UsageSummaryParams {
   costCenterId?: string;
@@ -143,7 +144,6 @@ export interface ApplyPlanInput {
 //
 // Reserved (documented now, NOT implemented by this task -- naming ratified
 // at Checkpoint 4a; see that review packet for the full Phase 4-8 proposal):
-//   Phase 5: getForecast(...): Promise<ForecastResult> (read-only)
 //   Phase 7: applyGrants(envelope): Promise<GrantResult>; revertGrant(grantId): Promise<void>;
 //            listGrants(): Promise<Grant[]>; getRebalancerPolicy()/setRebalancerPolicy(policy)
 //   Phase 8: getAuditChain(): Promise<StoredAuditEvent[]>; verifyAuditChain(): Promise<AuditChainVerification>
@@ -165,6 +165,16 @@ export interface ApiClient {
    * getControls() into core's driftedControlIds. Null if no sync has ever run.
    */
   getLastSyncedControls(): Promise<LastSyncedControls | null>;
+  /**
+   * Task 5.4: the latest forecast persisted for this scope (+entity),
+   * computed at the end of the most recent `syncNow` that produced one
+   * (packages/data/src/forecast/compute.ts, wired into
+   * packages/data/src/sync/sync-now.ts's append-only `forecast` table).
+   * `entityId` is required for 'cost_center'/'user' (a cost-center id / user
+   * id respectively) and omitted for 'enterprise' (the enterprise scope has
+   * no entity). Null if no sync has ever run.
+   */
+  getForecast(scope: ForecastScope, entityId?: string): Promise<StoredForecast | null>;
   /** Simulate-before-apply preview (CLAUDE.md §6.1): re-reads live, diffs against `desiredControls`, validates, and simulates who newly blocks/unblocks. Never mutates. */
   dryRunPlan(desiredControls: readonly ControlState[], justification?: string | null): Promise<DryRunResult>;
   /**

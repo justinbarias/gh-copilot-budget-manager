@@ -2,11 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { driftedControlIds } from '@copilot-budget/core';
+import { desc } from 'drizzle-orm';
+import { driftedControlIds, poolAllowanceLine } from '@copilot-budget/core';
+import { assembleEnterpriseSeries, computeScopeForecast } from '../forecast/compute.js';
 import { server } from '../msw/server.js';
-import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG } from '../msw/fixtures/index.js';
+import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, HISTORICAL_USAGE_ITEMS, SIM_CURRENT_DATE, USAGE_ITEMS } from '../msw/fixtures/index.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
-import { costCenter, costCenterMember, license } from '../db/schema.js';
+import { costCenter, costCenterMember, forecast as forecastTable, license, snapshot } from '../db/schema.js';
 import { createGitHubApiClient, type GitHubApiClientConfig } from './github-impl.js';
 
 // One mock, three consumers (CLAUDE.md §7): this test drives the same MSW
@@ -258,6 +260,103 @@ describe('createGitHubApiClient', () => {
     const lastSynced = await client.getLastSyncedControls();
     expect(lastSynced).not.toBeNull();
     expect(lastSynced!.capturedAt).toBe(second.lastSyncedAt);
+  });
+
+  // --- Task 5.4: forecast persistence + compute-on-sync + getForecast, wired
+  // through the real ApiClient surface against the full DEWR fixture world
+  // (81 seats, 6 cost centers) -- the pure fold/glue logic itself
+  // (toDailyBurn/assemble*Series/computeScopeForecast's window-picking) is
+  // covered exhaustively by forecast/compute.test.ts; these confirm
+  // createGitHubApiClient's syncNow wires the RIGHT rosters/allowances/flags
+  // into it end to end. ---------------------------------------------------
+
+  describe('Task 5.4: forecast-on-sync + getForecast', () => {
+    it('getForecast is null for every scope before any sync has run', async () => {
+      expect(await client.getForecast('enterprise')).toBeNull();
+      expect(await client.getForecast('cost_center', COST_CENTER_IDS.workforce)).toBeNull();
+      expect(await client.getForecast('user', '5182')).toBeNull();
+    });
+
+    it('syncNow persists exactly one forecast row per (enterprise, every active cost center, every licensed user)', async () => {
+      await client.syncNow();
+
+      const rows = db.select().from(forecastTable).all();
+      // 1 enterprise + 6 DEWR cost centers + 81 licensed seats.
+      expect(rows).toHaveLength(1 + 6 + 81);
+      expect(rows.filter((r) => r.scope === 'enterprise')).toHaveLength(1);
+      expect(rows.filter((r) => r.scope === 'cost_center')).toHaveLength(6);
+      expect(rows.filter((r) => r.scope === 'user')).toHaveLength(81);
+
+      // Every cost-center forecast row is keyed to a real DEWR cost-center id.
+      const ccEntityRefs = new Set(rows.filter((r) => r.scope === 'cost_center').map((r) => r.entityRef));
+      expect(ccEntityRefs).toEqual(new Set(Object.values(COST_CENTER_IDS)));
+
+      // The enterprise row carries no entity ref.
+      expect(rows.find((r) => r.scope === 'enterprise')!.entityRef).toBeNull();
+
+      // Every row references the SAME (only) snapshot generation this one
+      // sync produced -- the FR18 "forecast basis".
+      const latestSnapshot = db.select().from(snapshot).orderBy(desc(snapshot.id)).limit(1).all()[0]!;
+      expect(new Set(rows.map((r) => r.snapshotId))).toEqual(new Set([latestSnapshot.id]));
+
+      // computedAt is the SIM_CURRENT_DATE as-of anchor, never wall-clock.
+      expect(rows.every((r) => r.computedAt === SIM_CURRENT_DATE)).toBe(true);
+    });
+
+    it("the persisted enterprise forecast matches core's forecast() run directly on the same assembled series (byte-equal)", async () => {
+      await client.syncNow();
+
+      const stored = await client.getForecast('enterprise');
+      expect(stored).not.toBeNull();
+      expect(stored!.entityId).toBeNull();
+      expect(stored!.computedAt).toBe(SIM_CURRENT_DATE);
+
+      // Independently re-derive the SAME series from the raw fixtures (not
+      // from any github-impl internals) and re-run compute.ts's own
+      // forecast+backtest glue on it -- github-impl's persisted row must
+      // match this byte-for-byte, proving the ONLY thing github-impl adds is
+      // correct wiring (roster size, allowance basis, paid-usage flag), not a
+      // second, independently-computed answer.
+      const asOfDate = new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`);
+      const usageRows = [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS].map((i) => ({
+        date: i.date,
+        costCenterId: i.cost_center_id,
+        quantity: i.quantity,
+      }));
+      const series = assembleEnterpriseSeries(usageRows, asOfDate);
+      const expected = computeScopeForecast({
+        history: series,
+        asOfDate,
+        allowance: poolAllowanceLine(81, { edition: 'enterprise', existingCustomer: true }),
+        paidUsageEnabled: true,
+      });
+
+      expect(stored!.result).toEqual(expected.result);
+      expect(stored!.mape).toBe(expected.mape);
+
+      // Hand-checkable pin (DEWR world: 189,800 of 567,000 burned by day 13
+      // of 30 -- run-rate blends a ramping trailing-7 average against that
+      // cycle-to-date pace): the pool projects to exhaust 15 days after the
+      // 2026-06-14 as-of date.
+      expect(stored!.result.exhaustionDate).toBe('2026-06-29');
+      expect(stored!.result.runwayDays).toBe(15);
+    });
+
+    it('a cap-bound cost center (Payments Integrity) forecasts against its own license-derived cap, not the enterprise pool', async () => {
+      await client.syncNow();
+
+      const capBound = await client.getForecast('cost_center', COST_CENTER_IDS.capBound);
+      expect(capBound).not.toBeNull();
+      // 8 seats x 7,000 promo credits/seat (the fixture's own "8 x 7,000"
+      // comment in costCenters.ts) -- the FIRST day's allowanceLine, before
+      // any cliff step-down.
+      expect(capBound!.result.dailySeries[0]?.allowanceLine).toBe(56_000);
+    });
+
+    it('getForecast returns null for a scope/entity that was never computed (unknown cost center)', async () => {
+      await client.syncNow();
+      expect(await client.getForecast('cost_center', 'cc-does-not-exist')).toBeNull();
+    });
   });
 
   // --- Task 4.8: write engine wiring through the real ApiClient surface ---
