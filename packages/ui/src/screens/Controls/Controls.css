@@ -105,15 +105,21 @@
   font-weight: 500;
 }
 
+/* Maintainer ruling (screenshot review): the plan rail does NOT sit
+   side-by-side with the table -- that layout squeezed the table's grid
+   columns down to ~560px, clipping the utilization meter and
+   alert-recipients fields mid-text on both the ULB and spending-limits
+   tabs. The rail is its own full-width row below the table/family
+   content instead (the design prototype's dc.html shows a sticky side
+   rail here -- this ruling deliberately overrides that prototype). */
 .controls__body {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 18px;
-  align-items: flex-start;
 }
 
 .controls__main {
-  flex: 1 1 560px;
+  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;

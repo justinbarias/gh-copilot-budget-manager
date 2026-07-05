@@ -1,10 +1,11 @@
-/* Sticky right rail (design/README.md: "right rails sticky at top:76px").
-   Sticks within .app-shell__content, the app's one scroll container. */
+/* Full-width row below the controls table/family content (Controls.css
+   ".controls__body" -- maintainer ruling overriding the design
+   prototype's sticky side rail, see Controls.css note). No longer
+   sticky: as a row beneath the table rather than beside it, sticking it
+   to the top of .app-shell__content would overlay the table on scroll
+   instead of following it down the page. */
 .plan-rail {
-  flex: 1 1 330px;
-  min-width: 300px;
-  position: sticky;
-  top: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 16px;
