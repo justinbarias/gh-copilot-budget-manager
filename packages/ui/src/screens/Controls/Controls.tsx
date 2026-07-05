@@ -15,11 +15,20 @@ import {
 import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { parseCredits, parseRecipients } from '../../lib/creditsInput';
-import { ControlsTable, type RowUtilization, type SpendingLimitRowModel } from './ControlsTable';
+import { ControlsTable, type RowUtilization, type SpendingEnforcementFilter, type SpendingLimitRowModel, type SpendingScopeFilter } from './ControlsTable';
 import { IncludedCapsGrid, type IncludedCapRowModel } from './IncludedCapsGrid';
 import { NewUlbModal } from './NewUlbModal';
 import { PlanRail } from './PlanRail';
-import { UlbTable, type UlbRowModel } from './UlbTable';
+import {
+  DEFAULT_SCALE_SORT,
+  matchesScaleSearch,
+  paginateScaleRows,
+  sortScaleRows,
+  toggleScaleSort,
+  type ScaleSortField,
+  type ScaleSortState,
+} from './tableScale';
+import { UlbTable, type UlbRowModel, type UlbScopeFilter } from './UlbTable';
 import './Controls.css';
 
 // Controls screen (Task 4.9 spending limits, Task 4.10 user-level budgets,
@@ -221,6 +230,62 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
   const [overrideAcknowledged, setOverrideAcknowledged] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // "Controls scale features": individual ULBs are unbounded (one per user),
+  // so both the ULB and Spending-limits family tables get free-text search, a
+  // column-appropriate scope (+ enforcement, Spending-only) filter, sortable
+  // columns, and 10/page pagination. State lives here (not in the table
+  // components) so this screen can compute, per tab, which staged rows the
+  // CURRENT search/filter/page is hiding -- the honesty note below is
+  // rendered in THIS component's layout, never inside PlanRail (its internals
+  // stay frozen). View-only state (search/filter/sort/page) is deliberately
+  // NOT reset by onDiscard -- discarding clears staged EDITS, not the admin's
+  // current view.
+  const [ulbSearch, setUlbSearch] = useState('');
+  const [ulbScopeFilter, setUlbScopeFilter] = useState<UlbScopeFilter>('all');
+  const [ulbSort, setUlbSort] = useState<ScaleSortState>(DEFAULT_SCALE_SORT);
+  const [ulbPage, setUlbPage] = useState(0);
+
+  const [spendingSearch, setSpendingSearch] = useState('');
+  const [spendingScopeFilter, setSpendingScopeFilter] = useState<SpendingScopeFilter>('all');
+  const [spendingEnforcementFilter, setSpendingEnforcementFilter] = useState<SpendingEnforcementFilter>('all');
+  const [spendingSort, setSpendingSort] = useState<ScaleSortState>(DEFAULT_SCALE_SORT);
+  const [spendingPage, setSpendingPage] = useState(0);
+
+  // Caps: free-text name filter only (design brief -- no sort/pagination at
+  // 6 cards, CLAUDE.md §5's cap is never dial-able so there's no cap column
+  // to sort by anyway).
+  const [capsSearch, setCapsSearch] = useState('');
+
+  const onUlbSearchChange = useCallback((value: string) => {
+    setUlbSearch(value);
+    setUlbPage(0);
+  }, []);
+  const onUlbScopeFilterChange = useCallback((value: UlbScopeFilter) => {
+    setUlbScopeFilter(value);
+    setUlbPage(0);
+  }, []);
+  const onUlbSortToggle = useCallback((field: ScaleSortField) => {
+    setUlbSort((current) => toggleScaleSort(current, field));
+    setUlbPage(0);
+  }, []);
+
+  const onSpendingSearchChange = useCallback((value: string) => {
+    setSpendingSearch(value);
+    setSpendingPage(0);
+  }, []);
+  const onSpendingScopeFilterChange = useCallback((value: SpendingScopeFilter) => {
+    setSpendingScopeFilter(value);
+    setSpendingPage(0);
+  }, []);
+  const onSpendingEnforcementFilterChange = useCallback((value: SpendingEnforcementFilter) => {
+    setSpendingEnforcementFilter(value);
+    setSpendingPage(0);
+  }, []);
+  const onSpendingSortToggle = useCallback((field: ScaleSortField) => {
+    setSpendingSort((current) => toggleScaleSort(current, field));
+    setSpendingPage(0);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -488,6 +553,7 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
 
       return {
         id,
+        scope: control.scope,
         title: rowTitle(control),
         capsCopy: rowCapsCopy(control),
         amountRaw: edit.amountRaw ?? String(control.amountCredits),
@@ -498,6 +564,25 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         utilization,
       };
     });
+
+  // "Controls scale features" -- Spending tab: search/scope/enforcement
+  // filter -> sort -> paginate. Unsorted (spendingSort.field === null)
+  // preserves `rows`' own scope-then-name fixture order above.
+  const spendingFiltered = rows.filter(
+    (row) =>
+      matchesScaleSearch(row.title, spendingSearch) &&
+      (spendingScopeFilter === 'all' || row.scope === spendingScopeFilter) &&
+      (spendingEnforcementFilter === 'all' || (spendingEnforcementFilter === 'hard' ? row.hardStop : !row.hardStop)),
+  );
+  const spendingSorted = sortScaleRows(spendingFiltered, spendingSort.field, spendingSort.dir);
+  const { pageRows: spendingPageRows, pageCount: spendingPageCount, clampedPage: spendingClampedPage } = paginateScaleRows(
+    spendingSorted,
+    spendingPage,
+  );
+  const spendingVisibleIds = new Set(spendingPageRows.map((row) => row.id));
+  // Honesty note (rendered in this screen's own layout, near the rail --
+  // never inside PlanRail): staged rows the CURRENT search/filter/page hides.
+  const spendingHiddenStagedCount = rows.filter((row) => row.staged && !spendingVisibleIds.has(row.id)).length;
 
   // Task 4.10: ULB family rows. Utilization is derived honestly from
   // listHeavyUsers() (the same precomputed, precedence-resolved
@@ -571,6 +656,27 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
     })),
   ].sort((a, b) => ULB_SCOPE_ORDER[a.scope] - ULB_SCOPE_ORDER[b.scope] || a.entityName.localeCompare(b.entityName));
 
+  // "Controls scale features" -- ULB tab: staged-NEW rows (from the create
+  // modal) are not yet real, so they bypass search/scope-filter/sort/page
+  // entirely and render PINNED above the paginated body (UlbTable.tsx) --
+  // the simplest honest treatment: a freshly-created row can never
+  // disappear because of an unrelated filter/page change, which would read
+  // as data loss. Only `ulbExisting` (live rows) goes through
+  // search -> scope filter -> sort -> paginate; unsorted (ulbSort.field ===
+  // null) preserves ulbRows' own scope-then-name fixture order above.
+  const ulbPinnedNew = ulbRows.filter((row) => row.isNew);
+  const ulbExisting = ulbRows.filter((row) => !row.isNew);
+  const ulbFiltered = ulbExisting.filter(
+    (row) => matchesScaleSearch(row.title, ulbSearch) && (ulbScopeFilter === 'all' || row.scope === ulbScopeFilter),
+  );
+  const ulbSorted = sortScaleRows(ulbFiltered, ulbSort.field, ulbSort.dir);
+  const { pageRows: ulbPageRows, pageCount: ulbPageCount, clampedPage: ulbClampedPage } = paginateScaleRows(ulbSorted, ulbPage);
+  const ulbVisibleIds = new Set([...ulbPinnedNew, ...ulbPageRows].map((row) => row.id));
+  // Pinned-new rows are always visible, so they can never be "hidden" --
+  // this only ever counts EXISTING staged edits/deletes the current
+  // search/filter/page is hiding.
+  const ulbHiddenStagedCount = ulbExisting.filter((row) => row.staged && !ulbVisibleIds.has(row.id)).length;
+
   // Task 4.12: included-usage cap family rows. Natural order (the order
   // getControls() returns included_cap entries in, which mirrors the fixture
   // declaration order in msw/fixtures/costCenters.ts) -- no re-sort, since
@@ -605,6 +711,17 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
       staged: stagedIds.has(id),
     };
   });
+
+  // "Controls scale features" -- Caps tab: free-text name filter only (no
+  // sort/pagination at 6 cards, per the build brief).
+  const capsFiltered = capRows.filter((row) => matchesScaleSearch(row.costCenterName, capsSearch));
+  const capsVisibleIds = new Set(capsFiltered.map((row) => row.id));
+  const capsHiddenStagedCount = capRows.filter((row) => row.staged && !capsVisibleIds.has(row.id)).length;
+
+  // The active family tab's count of staged rows the current search/filter/
+  // page is hiding -- drives the honesty note rendered near the rail below.
+  const hiddenStagedCount =
+    family === 'userlevel' ? ulbHiddenStagedCount : family === 'spending' ? spendingHiddenStagedCount : capsHiddenStagedCount;
 
   // NewUlbModal's entity pickers, narrowed to genuinely-new targets (CLAUDE.md
   // build brief: "filtered to exclude existing overrides") -- a scope/entity
@@ -672,11 +789,22 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
         <div className="controls__main">
           {family === 'spending' && (
             <ControlsTable
-              rows={rows}
+              pageRows={spendingPageRows}
               onAmountChange={onAmountChange}
               onHardStopToggle={onHardStopToggle}
               onWillAlertChange={onWillAlertChange}
               onRecipientsChange={onRecipientsChange}
+              search={spendingSearch}
+              onSearchChange={onSpendingSearchChange}
+              scopeFilter={spendingScopeFilter}
+              onScopeFilterChange={onSpendingScopeFilterChange}
+              enforcementFilter={spendingEnforcementFilter}
+              onEnforcementFilterChange={onSpendingEnforcementFilterChange}
+              sort={spendingSort}
+              onSortToggle={onSpendingSortToggle}
+              page={spendingClampedPage}
+              pageCount={spendingPageCount}
+              onPageChange={setSpendingPage}
             />
           )}
           {family === 'userlevel' && (
@@ -687,17 +815,43 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
                 </button>
               </div>
               <UlbTable
-                rows={ulbRows}
+                pageRows={ulbPageRows}
+                pinnedNewRows={ulbPinnedNew}
                 onAmountChange={onAmountChange}
                 onWillAlertChange={onWillAlertChange}
                 onRecipientsChange={onRecipientsChange}
                 onDeleteToggle={onDeleteToggle}
                 onDiscardNew={onDiscardNewUlb}
+                search={ulbSearch}
+                onSearchChange={onUlbSearchChange}
+                scopeFilter={ulbScopeFilter}
+                onScopeFilterChange={onUlbScopeFilterChange}
+                sort={ulbSort}
+                onSortToggle={onUlbSortToggle}
+                page={ulbClampedPage}
+                pageCount={ulbPageCount}
+                onPageChange={setUlbPage}
               />
             </>
           )}
-          {family === 'included' && <IncludedCapsGrid rows={capRows} onToggle={onCapToggle} onOverflowChange={onCapOverflowChange} />}
+          {family === 'included' && (
+            <IncludedCapsGrid
+              rows={capsFiltered}
+              onToggle={onCapToggle}
+              onOverflowChange={onCapOverflowChange}
+              search={capsSearch}
+              onSearchChange={setCapsSearch}
+            />
+          )}
         </div>
+
+        {hiddenStagedCount > 0 && (
+          <p className="controls__hidden-staged-note" role="status">
+            <span aria-hidden="true">◐ </span>
+            {hiddenStagedCount} staged change{hiddenStagedCount === 1 ? '' : 's'} not shown by the current search/filter/page — clear
+            them to review it before applying.
+          </p>
+        )}
 
         <PlanRail
           plan={plan}

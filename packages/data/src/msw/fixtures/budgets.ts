@@ -119,6 +119,66 @@ export const BUDGETS: Budget[] = [
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['cyber-leads@dewr.gov.au'] },
   },
+  // "Controls scale features" pagination fixtures: 5 more individual ULBs
+  // (12 ULB rows total) so the Controls screen's ULB tab has enough rows to
+  // exercise 10/page pagination end to end. Every target is a zero-usage seat
+  // in a CCULB-free cost center (Employer & Provider Portals / Cyber &
+  // Identity Services / Corporate Systems) -- previously universal-ULB-
+  // governed, never individually or CCULB overridden, and not referenced by
+  // any other spec/data test (see fixtures/README.md's non-interference
+  // derivation). Amounts are distinct from every other ULB's (0/1,900/4,600/
+  // 5,200/5,400/5,800/6,000) so a cap sort never ties. Alerting off/empty --
+  // these carry no narrative, unlike the story fixtures above.
+  {
+    id: BUDGET_IDS.individualDeclanRyan,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: 'declan-ryan',
+    budget_amount: 25, // 2,500 credits
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
+  {
+    id: BUDGET_IDS.individualDeviAnand,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: 'devi-anand',
+    budget_amount: 33, // 3,300 credits
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
+  {
+    id: BUDGET_IDS.individualJomoMburu,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: 'jomo-mburu',
+    budget_amount: 29, // 2,900 credits
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
+  {
+    id: BUDGET_IDS.individualNinaPopov,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: 'nina-popov',
+    budget_amount: 48, // 4,800 credits
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
+  {
+    id: BUDGET_IDS.individualTeganEllis,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: 'tegan-ellis',
+    budget_amount: 37, // 3,700 credits
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
   // ---- Family B: spending limits (metered charges only, hard-stop off by default) ----
   {
     id: BUDGET_IDS.enterpriseMetered,

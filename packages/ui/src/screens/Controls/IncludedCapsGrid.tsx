@@ -47,9 +47,13 @@ export interface IncludedCapRowModel {
 }
 
 interface IncludedCapsGridProps {
+  /** Already name-filtered by Controls.tsx -- this component only renders (matches ULB/Spending's "parent owns state" contract). */
   rows: IncludedCapRowModel[];
   onToggle: (id: string) => void;
   onOverflowChange: (id: string, overflow: CapOverflow) => void;
+  /** "Controls scale features": free-text cost-center-name filter only -- no sort/pagination at 6 cards. */
+  search: string;
+  onSearchChange: (value: string) => void;
 }
 
 const TONE_TO_BAR_CLASS: Record<HeadroomTone, string> = {
@@ -58,9 +62,21 @@ const TONE_TO_BAR_CLASS: Record<HeadroomTone, string> = {
   negative: 'included-caps__bar-fill--red',
 };
 
-export function IncludedCapsGrid({ rows, onToggle, onOverflowChange }: IncludedCapsGridProps) {
+export function IncludedCapsGrid({ rows, onToggle, onOverflowChange, search, onSearchChange }: IncludedCapsGridProps) {
   return (
-    <div className="included-caps__grid">
+    <div className="included-caps">
+      <div className="included-caps__toolbar">
+        <input
+          className="included-caps__search"
+          type="text"
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="Search cost center…"
+          aria-label="Search included-usage caps"
+        />
+      </div>
+      {rows.length === 0 && <p className="included-caps__empty">No cost centers match this search.</p>}
+      <div className="included-caps__grid">
       {rows.map((row) => {
         const headroom = includedCapHeadroom(row.computedLimitCredits, row.drawnCredits);
         const tone = classifyHeadroom(headroom, LOW_HEADROOM_THRESHOLD_CREDITS);
@@ -143,6 +159,7 @@ export function IncludedCapsGrid({ rows, onToggle, onOverflowChange }: IncludedC
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

@@ -43,6 +43,20 @@ export const BUDGET_IDS = {
   // Individual overrides beyond the two edge fixtures above.
   individualContractor: 'budget-ulb-contractor-pshah',
   individualPowerUser: 'budget-ulb-sam-kelly',
+  // "Controls scale features" pagination fixtures (5 more individual ULBs, so
+  // the ULB tab has 12 rows total -- enough to exercise 10/page pagination).
+  // All five targets are zero-usage seats (no CREDITS_USED_ITEMS rows) drawn
+  // from Employer & Provider Portals / Cyber & Identity Services / Corporate
+  // Systems -- cost centers with no CCULB, so these were previously
+  // universal-ULB-governed -- and are not named in any other spec/data test
+  // (grepped clean across apps/desktop/e2e + packages/data/src +
+  // packages/core/src before picking). See fixtures/README.md's "Controls
+  // scale fixtures" note for the full non-interference derivation.
+  individualDeclanRyan: 'budget-ulb-declan-ryan',
+  individualDeviAnand: 'budget-ulb-devi-anand',
+  individualJomoMburu: 'budget-ulb-jomo-mburu',
+  individualNinaPopov: 'budget-ulb-nina-popov',
+  individualTeganEllis: 'budget-ulb-tegan-ellis',
   // Family B -- spending limits (metered charges only, hard-stop off by default).
   enterpriseMetered: 'budget-enterprise-metered',
   organizationMetered: 'budget-organization-metered',

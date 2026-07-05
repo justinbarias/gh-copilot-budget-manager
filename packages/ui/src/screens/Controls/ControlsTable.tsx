@@ -1,4 +1,7 @@
+import type { SpendingLimitScope } from '@copilot-budget/core';
 import { Meter, type RowUtilization } from './Meter';
+import { ScalePager, SortHeaderCell } from './ScaleControls';
+import type { ScaleSortField, ScaleSortState } from './tableScale';
 import './ControlsTable.css';
 
 // Spending-limits family table (Family B -- design/README.md §3). Purely
@@ -9,12 +12,20 @@ import './ControlsTable.css';
 // Task 4.10: Meter/RowUtilization/formatCredits moved to Meter.tsx (a pure
 // extraction, no behavior change) so UlbTable.tsx can reuse the exact same
 // meter math/markup instead of forking it.
+//
+// "Controls scale features": free-text search, a scope filter, an
+// enforcement filter, sortable columns (name/cap/utilization), and 10/page
+// pagination -- all state owned by Controls.tsx (matching this component's
+// existing "parent owns state, this renders" contract), which hands down the
+// already filtered/sorted/paginated `pageRows`.
 
 export type { RowUtilization };
 
 export interface SpendingLimitRowModel {
   /** core controlIdentity, e.g. `budget:cost_center:Workforce Australia Platform` -- also the row's data-control-id hook. */
   id: string;
+  /** Needed for the scope filter (All/Enterprise/Organization/Cost center). */
+  scope: SpendingLimitScope;
   title: string;
   capsCopy: string;
   /** Editable cap value (raw digits string): the staged edit when present, else the live amount. */
@@ -33,26 +44,90 @@ export interface SpendingLimitRowModel {
   utilization: RowUtilization | null;
 }
 
+export type SpendingScopeFilter = 'all' | SpendingLimitScope;
+export type SpendingEnforcementFilter = 'all' | 'hard' | 'alert';
+
 interface ControlsTableProps {
-  rows: SpendingLimitRowModel[];
+  /** Already filtered/sorted/paginated by Controls.tsx -- this component only renders. */
+  pageRows: SpendingLimitRowModel[];
   onAmountChange: (id: string, raw: string) => void;
   onHardStopToggle: (id: string) => void;
   onWillAlertChange: (id: string, next: boolean) => void;
   onRecipientsChange: (id: string, raw: string) => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  scopeFilter: SpendingScopeFilter;
+  onScopeFilterChange: (value: SpendingScopeFilter) => void;
+  enforcementFilter: SpendingEnforcementFilter;
+  onEnforcementFilterChange: (value: SpendingEnforcementFilter) => void;
+  sort: ScaleSortState;
+  onSortToggle: (field: ScaleSortField) => void;
+  page: number;
+  pageCount: number;
+  onPageChange: (page: number) => void;
 }
 
-export function ControlsTable({ rows, onAmountChange, onHardStopToggle, onWillAlertChange, onRecipientsChange }: ControlsTableProps) {
+export function ControlsTable({
+  pageRows,
+  onAmountChange,
+  onHardStopToggle,
+  onWillAlertChange,
+  onRecipientsChange,
+  search,
+  onSearchChange,
+  scopeFilter,
+  onScopeFilterChange,
+  enforcementFilter,
+  onEnforcementFilterChange,
+  sort,
+  onSortToggle,
+  page,
+  pageCount,
+  onPageChange,
+}: ControlsTableProps) {
   return (
     <div className="controls-table">
-      <div className="controls-table__head">
-        <span>Control · what it caps</span>
-        <span>Phase</span>
-        <span>Cap (credits)</span>
-        <span>Enforcement</span>
-        <span>Utilization · alerts</span>
+      <div className="controls-table__toolbar">
+        <input
+          className="controls-table__search"
+          type="text"
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="Search control or entity…"
+          aria-label="Search spending limits"
+        />
+        <select
+          className="controls-table__scope-filter"
+          value={scopeFilter}
+          onChange={(event) => onScopeFilterChange(event.target.value as SpendingScopeFilter)}
+          aria-label="Filter by scope"
+        >
+          <option value="all">All scopes</option>
+          <option value="enterprise">Enterprise</option>
+          <option value="organization">Organization</option>
+          <option value="cost_center">Cost center</option>
+        </select>
+        <select
+          className="controls-table__scope-filter"
+          value={enforcementFilter}
+          onChange={(event) => onEnforcementFilterChange(event.target.value as SpendingEnforcementFilter)}
+          aria-label="Filter by enforcement"
+        >
+          <option value="all">All enforcement</option>
+          <option value="hard">Hard stop</option>
+          <option value="alert">Alert-only</option>
+        </select>
       </div>
 
-      {rows.map((row) => (
+      <div className="controls-table__head">
+        <SortHeaderCell label="Control · what it caps" field="name" sort={sort} onSortToggle={onSortToggle} />
+        <span>Phase</span>
+        <SortHeaderCell label="Cap (credits)" field="cap" sort={sort} onSortToggle={onSortToggle} />
+        <span>Enforcement</span>
+        <SortHeaderCell label="Utilization · alerts" field="utilization" sort={sort} onSortToggle={onSortToggle} />
+      </div>
+
+      {pageRows.map((row) => (
         <div key={row.id} className={`controls-table__row ${row.staged ? 'controls-table__row--staged' : ''}`} data-control-id={row.id}>
           <div className="controls-table__grid">
             <div className="controls-table__control">
@@ -128,6 +203,9 @@ export function ControlsTable({ rows, onAmountChange, onHardStopToggle, onWillAl
           )}
         </div>
       ))}
+      {pageRows.length === 0 && <p className="controls-table__empty">No spending limits match these filters.</p>}
+
+      <ScalePager page={page} pageCount={pageCount} onPageChange={onPageChange} />
     </div>
   );
 }

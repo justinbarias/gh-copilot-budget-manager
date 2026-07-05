@@ -5,6 +5,112 @@
   overflow: hidden;
 }
 
+/* "Controls scale features": free-text search + scope/enforcement filters
+   above the table -- same visual language as UsersTable.css's own
+   `.users__controls`/`.users__search`/`.users__cc-filter` (reused here under
+   controls-table__* names since this component doesn't import UsersTable.css). */
+.controls-table__toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--surface-2);
+}
+
+.controls-table__search {
+  width: 220px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 9px 12px;
+  color: var(--text-default);
+  font-size: 13px;
+}
+
+.controls-table__search:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.controls-table__scope-filter {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 9px 12px;
+  color: var(--text-default);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.controls-table__scope-filter:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+/* Sortable column headers (name/cap/utilization) -- a borderless button
+   inside the existing uppercase head cell, so unsortable columns (Phase,
+   Enforcement) stay plain <span>s alongside these. */
+.controls-table__sort-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.controls-table__sort-btn:hover {
+  color: var(--text-default);
+}
+
+.controls-table__empty {
+  padding: 32px 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-neutral);
+}
+
+/* Pager -- the exact UsersTable.css `.users__pagination`/`.users__pager`
+   convention, reused under controls-table__* names. */
+.controls-table__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 18px;
+  border-top: 1px solid var(--surface-2);
+}
+
+.controls-table__pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.controls-table__pager button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-default);
+  border-radius: var(--radius-input);
+  padding: 6px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.controls-table__pager button:disabled {
+  color: var(--text-neutral);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.controls-table__page-label {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
 .controls-table__head,
 .controls-table__grid {
   display: grid;

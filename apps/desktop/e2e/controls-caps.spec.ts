@@ -103,10 +103,12 @@ test('caps grid renders 6 fixture-derived cards (API-ONLY pills, cap-bound over/
     await expect(grid.locator('.included-caps__apionly-pill').first()).toHaveText('API-ONLY');
 
     // The defining acceptance check (CLAUDE.md §5 / plan Task 4.12): no
-    // dial-able amount anywhere on this tab -- zero <input> elements of any
-    // kind, and specifically zero number inputs.
-    await expect(window.locator('.controls__main input')).toHaveCount(0);
+    // dial-able amount anywhere on this tab -- zero number inputs, and the
+    // ONLY <input> at all is "Controls scale features"'s free-text name
+    // filter (a text search box, never an amount).
+    await expect(window.locator('.controls__main input')).toHaveCount(1);
     await expect(window.locator('.controls__main input[type="number"]')).toHaveCount(0);
+    await expect(window.getByLabel('Search included-usage caps')).toHaveAttribute('type', 'text');
 
     const workforce = grid.locator('[data-control-id="included_cap:Workforce Australia Platform"]');
     await expect(workforce.getByText('≈168,000')).toBeVisible();

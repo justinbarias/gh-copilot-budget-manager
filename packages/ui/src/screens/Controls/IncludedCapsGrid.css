@@ -4,6 +4,35 @@
    34x20 toggle pill), matching UlbTable.css's own "additive, don't assume
    sibling files loaded first" convention. */
 
+/* "Controls scale features": free-text name filter toolbar (no sort/
+   pagination at 6 cards -- see IncludedCapsGrid.tsx's build note). */
+.included-caps__toolbar {
+  display: flex;
+  margin-bottom: 14px;
+}
+
+.included-caps__search {
+  width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 9px 12px;
+  color: var(--text-default);
+  font-size: 13px;
+}
+
+.included-caps__search:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.included-caps__empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-neutral);
+}
+
 .included-caps__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));

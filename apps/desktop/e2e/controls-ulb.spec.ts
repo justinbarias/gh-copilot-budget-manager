@@ -63,6 +63,22 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 // roster-wide 0/0 -- not because nobody is tracked, but because nobody in the
 // affected population actually crosses either boundary (see each test's own
 // comment for the derivation).
+//
+// "Controls scale features": 5 more individual ULBs were added (12 ULB rows
+// total: universal + 2 CCULBs + 9 individuals) so the ULB tab has enough rows
+// to exercise 10/page pagination (see fixtures/README.md's "Controls-scale
+// fixtures" note) -- declan-ryan (2,500), devi-anand (3,300), jomo-mburu
+// (2,900), nina-popov (4,800), tegan-ellis (3,700), all zero-usage seats. The
+// default view (no search/scope-filter/sort, page 1) therefore now shows the
+// first 10 rows in ULB_SCOPE_ORDER-then-name order: universal, CCULB Data &
+// Evaluation, CCULB Workforce, then individuals alphabetically -- declan-ryan,
+// devi-anand, ext-dmorrow, ext-pshah, jomo-mburu, liam-obrien, nina-popov
+// (page 1 of 2; sam-kelly and tegan-ellis land on page 2). Every row this
+// file's tests drill into (universal, both CCULBs, liam-obrien, ext-dmorrow)
+// stays on page 1 by construction -- the 5 new logins were deliberately
+// chosen to sort into positions 4-5 and 8, 10 (never bumping an existing
+// tested row past the page-1/page-2 boundary). See controls-scale.spec.ts for
+// the new search/filter/sort/pagination/staging-integrity coverage.
 
 async function launchApp(dbLabel: string) {
   const appDir = path.join(__dirname, '..');
@@ -90,20 +106,25 @@ test('ULB rows render: green "both phases" badge, API-ONLY pill on CCULB rows on
     await openControlsUlb(window);
 
     const table = window.locator('.controls-table');
-    // universal + 2 CCULBs (Workforce, Data & Evaluation) + 4 individual
-    // overrides (liam-obrien, ext-dmorrow, ext-pshah, sam-kelly) = 7.
-    await expect(table.locator('.controls-table__row')).toHaveCount(7);
+    // "Controls scale features": 12 ULB rows total now paginate 10/page --
+    // page 1 (default, no search/filter/sort) shows universal + 2 CCULBs
+    // (Workforce, Data & Evaluation) + 7 individuals (declan-ryan, devi-anand,
+    // ext-dmorrow, ext-pshah, jomo-mburu, liam-obrien, nina-popov) = 10; the
+    // remaining 2 individuals (sam-kelly, tegan-ellis) sit on page 2 (see
+    // controls-scale.spec.ts's pagination test for that page).
+    await expect(table.locator('.controls-table__row')).toHaveCount(10);
     // Scoped to the phase-badge class itself (not a bare text match): the
     // universal row's OWN caps copy also contains the substring "both
     // phases" ("Every licensed user's total · both phases"), which would
     // otherwise double-count that row.
-    await expect(table.locator('.controls-ulb__phase-badge--green')).toHaveCount(7);
+    await expect(table.locator('.controls-ulb__phase-badge--green')).toHaveCount(10);
     await expect(table.locator('.controls-ulb__phase-badge--green').first()).toContainText('both phases');
-    await expect(table.getByText('Hard stop · always')).toHaveCount(7);
+    await expect(table.getByText('Hard stop · always')).toHaveCount(10);
     // ULBs never expose the spending-limits hard-stop toggle (CLAUDE.md §5/§6.3).
     await expect(table.getByRole('switch')).toHaveCount(0);
     // API-ONLY pill appears on exactly the 2 CCULB rows, never the universal
-    // or the 4 individual rows.
+    // or the individual rows -- unaffected by the fixture addition (no new
+    // CCULBs were added), and both CCULB rows are on page 1.
     await expect(table.locator('.controls-ulb__apionly-pill')).toHaveCount(2);
 
     const universalRow = table.locator('[data-control-id="budget:universal:dewr"]');
@@ -210,7 +231,7 @@ test('CREATE a CCULB for Employer & Provider Portals: the POST payload matches t
   try {
     const window = await app.firstWindow();
 
-    // The 8-row post-create state (a freshly-appended list item) is exactly
+    // The 11-row post-create state (a freshly-appended list item) is exactly
     // where a React key/warning would surface, and nothing else in this file
     // asserts on it -- mirror nav.spec.ts's pageerror guard so a console
     // regression here fails loudly instead of passing silently.
@@ -220,7 +241,8 @@ test('CREATE a CCULB for Employer & Provider Portals: the POST payload matches t
     await openControlsUlb(window);
 
     const table = window.locator('.controls-table');
-    await expect(table.locator('.controls-table__row')).toHaveCount(7);
+    // Page 1 of the 12 live ULB rows (see this file's header note).
+    await expect(table.locator('.controls-table__row')).toHaveCount(10);
 
     await window.getByRole('button', { name: '+ New user-level budget' }).click();
     const modal = window.locator('.new-ulb-modal');
@@ -244,10 +266,11 @@ test('CREATE a CCULB for Employer & Provider Portals: the POST payload matches t
 
     await expect(modal).toHaveCount(0);
 
-    // 'Employer & Provider Portals' sorts ahead of 'Data & Evaluation
-    // Platform' and 'Workforce Australia Platform' alphabetically, so the new
-    // CCULB row sorts first within the CCULB group.
-    await expect(table.locator('.controls-table__row')).toHaveCount(8);
+    // "Controls scale features": staged-NEW rows bypass search/filter/sort/
+    // pagination entirely and pin above the (unaffected) page-1 body -- so the
+    // total goes from 10 to 11 (1 pinned + the SAME 10 page-1 live rows),
+    // rather than folding into the sorted CCULB group.
+    await expect(table.locator('.controls-table__row')).toHaveCount(11);
     const newRow = table.locator('[data-control-id="budget:multi_user_cost_center:Employer & Provider Portals"]');
     await expect(newRow.getByText('CCULB · Employer & Provider Portals')).toBeVisible();
     await expect(newRow.locator('.controls-ulb__apionly-pill')).toHaveText('API-ONLY');
@@ -319,7 +342,8 @@ test('CREATE an individual ULB (rpatel2): the POST carries budget_scope:"individ
     await openControlsUlb(window);
 
     const table = window.locator('.controls-table');
-    await expect(table.locator('.controls-table__row')).toHaveCount(7);
+    // Page 1 of the 12 live ULB rows (see this file's header note).
+    await expect(table.locator('.controls-table__row')).toHaveCount(10);
 
     await window.getByRole('button', { name: '+ New user-level budget' }).click();
     const modal = window.locator('.new-ulb-modal');
@@ -334,7 +358,9 @@ test('CREATE an individual ULB (rpatel2): the POST carries budget_scope:"individ
 
     await expect(modal).toHaveCount(0);
 
-    await expect(table.locator('.controls-table__row')).toHaveCount(8);
+    // Staged-new rows pin above the (unaffected) page-1 body -- 1 pinned + the
+    // same 10 page-1 live rows = 11 (see "Controls scale features" note above).
+    await expect(table.locator('.controls-table__row')).toHaveCount(11);
     const newRow = table.locator('[data-control-id="budget:individual:rpatel2"]');
     await expect(newRow.getByText('Individual · rpatel2')).toBeVisible();
     // Individual rows never carry the CCULB-only API-ONLY pill.

@@ -61,6 +61,21 @@ Family A — ULBs, always hard-stop, most-specific wins
 - Individual overrides: liam-obrien **5,800** (the display-bug fixture),
   sam-kelly **5,400**, ext-pshah **1,900** (throttled contractor),
   ext-dmorrow **$0** (blocked).
+- **Controls-scale fixtures** (5 more individual ULBs, 12 ULB rows total —
+  enough to exercise the Controls screen's 10/page pagination): declan-ryan
+  **2,500**, tegan-ellis **3,700** (both Employer & Provider Portals);
+  jomo-mburu **2,900**, nina-popov **4,800** (both Cyber & Identity
+  Services); devi-anand **3,300** (Corporate Systems). All five are
+  zero-usage seats (no CREDITS_USED_ITEMS rows) in CCULB-free cost centers —
+  previously universal-ULB-governed, never referenced by any other spec/data
+  test. Non-interference (hand-verified): the no-usage filter count stays 44
+  and at-risk stays 7 (0 MTD against a non-zero, non-near-zero cap is never
+  at-risk); the universal-raise (4,600→5,100) and Employer CCULB-create
+  dry-runs stay 0/0 (removing a zero-usage user from the governed population
+  never moves who's blocked — the binding max is still hannah-webb's 4,360);
+  none are among the 8 Payments Integrity Engineering members; Overview/
+  Cost-Centers burn figures are untouched (ULBs don't affect burn). Amounts
+  are distinct from every other ULB's so a cap sort never ties.
 
 Family B — spending limits, metered-only, hard-stop OFF by default:
 
@@ -121,6 +136,6 @@ cap (800,000).
   cumulative **189,800**.
 - `listCostCenters()`: 6 CCs, member counts 24/16/8/9/11/13.
 - `listHeavyUsers()`: 81 rows; top emily-zhao **5,480**; at-risk cohort of 7.
-- Live controls: 11 budgets + 6 caps; write-engine canonical target
+- Live controls: 16 budgets (11 + 5 controls-scale ULBs) + 6 caps; write-engine canonical target
   `budget:cost_center:Workforce Australia Platform` (60,000 credits, id
   `budget-cost-center-workforce-metered`).
