@@ -5,6 +5,7 @@ import { useApiClient } from '../../lib/api-client-context';
 import { BurndownChart, type BurndownForecastLayer, type BurndownPoint } from '../../components/BurndownChart';
 import { MeteredBudgetBar } from '../../components/MeteredBudgetBar';
 import { BacktestChart } from '../../components/BacktestChart';
+import { CostCenterScope } from './CostCenterScope';
 import { crossingDay, cycleForecastView, formatCredits, formatUsd, isoForCycleDay } from '../../lib/forecastDerive';
 import './Forecast.css';
 
@@ -37,7 +38,12 @@ function findEnterpriseBudget(controls: readonly ControlState[]): BudgetControl 
   return controls.find((c): c is BudgetControl => c.kind === 'budget' && c.scope === 'enterprise') ?? null;
 }
 
-export function Forecast() {
+export interface ForecastProps {
+  /** Task 5.6: the cost-center scope's cap-off explainer CTA -- deep-links into Controls' Included-usage caps family (App.tsx wires this to a real family-tab switch, not a dead link). */
+  onNavigateToControlsCaps: () => void;
+}
+
+export function Forecast({ onNavigateToControlsCaps }: ForecastProps) {
   const api = useApiClient();
 
   // Null-initial loading, same pattern as Controls/CostCenters/Users.
@@ -48,6 +54,10 @@ export function Forecast() {
 
   const [scope, setScope] = useState<Scope>('enterprise');
   const [userEntityId, setUserEntityId] = useState<string | null>(null);
+  // Task 5.6: the cost-center scope's own entity picker, same "null until the
+  // admin picks one, defaulting to the first roster entry" shape as
+  // userEntityId above (see effectiveCcId below).
+  const [ccEntityId, setCcEntityId] = useState<string | null>(null);
   const [basis, setBasis] = useState<Basis>('promo');
 
   // forecastLoaded distinguishes "still fetching" from "fetched, and it's
@@ -81,23 +91,32 @@ export function Forecast() {
   const effectiveUserEntityId = userEntityId ?? rankedUsers[0]?.userId ?? null;
   const selectedUser = rankedUsers.find((u) => u.userId === effectiveUserEntityId) ?? null;
 
+  // Task 5.6: cost-center scope's entity resolution -- same "explicit pick,
+  // else the first roster entry" shape as the user scope above. No ranking
+  // (listCostCenters' own natural order, matching Controls'/CostCenters'
+  // entity-select conventions -- neither re-sorts its roster either).
+  const effectiveCcId = ccEntityId ?? costCenters?.[0]?.id ?? null;
+  const selectedCc = costCenters?.find((cc) => cc.id === effectiveCcId) ?? null;
+
   useEffect(() => {
     let cancelled = false;
-    // Task 5.6 owns the cost-center scope's real forecast; this screen only
-    // renders a labeled placeholder for it (see the build brief), so no
-    // getForecast call is made for it at all.
-    if (scope === 'cost_center') {
-      setForecast(null);
-      setForecastLoaded(true);
-      return;
-    }
     if (scope === 'user' && effectiveUserEntityId === null) {
       setForecast(null);
       setForecastLoaded(true);
       return;
     }
+    if (scope === 'cost_center' && effectiveCcId === null) {
+      setForecast(null);
+      setForecastLoaded(true);
+      return;
+    }
     setForecastLoaded(false);
-    const request = scope === 'user' ? api.getForecast('user', effectiveUserEntityId ?? undefined) : api.getForecast('enterprise');
+    const request =
+      scope === 'user'
+        ? api.getForecast('user', effectiveUserEntityId ?? undefined)
+        : scope === 'cost_center'
+          ? api.getForecast('cost_center', effectiveCcId ?? undefined)
+          : api.getForecast('enterprise');
     request.then((result) => {
       if (cancelled) return;
       setForecast(result);
@@ -106,7 +125,7 @@ export function Forecast() {
     return () => {
       cancelled = true;
     };
-  }, [api, scope, effectiveUserEntityId]);
+  }, [api, scope, effectiveUserEntityId, effectiveCcId]);
 
   if (summary === null || heavyUsers === null || costCenters === null || controls === null) {
     return (
@@ -206,6 +225,22 @@ export function Forecast() {
               ))}
             </select>
           )}
+
+          {scope === 'cost_center' && (
+            <select
+              className="forecast__entity-select"
+              aria-label="Cost center"
+              data-testid="forecast-cc-select"
+              value={effectiveCcId ?? ''}
+              onChange={(e) => setCcEntityId(e.target.value)}
+            >
+              {costCenters.map((cc) => (
+                <option key={cc.id} value={cc.id}>
+                  {cc.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {scope === 'enterprise' && (
@@ -231,27 +266,26 @@ export function Forecast() {
         )}
       </div>
 
-      {scope === 'cost_center' && (
-        <div className="forecast__placeholder-card" data-testid="forecast-cc-placeholder">
-          <div className="forecast__placeholder-title">Cost-center forecasts — coming in Task 5.6</div>
-          <p className="forecast__placeholder-body">
-            A cost center with its included-usage cap ON will get its own burn-down against that cap (labeled "Cap
-            block date" or "Overflow-to-metered date" per its overflow choice); a cap-off cost center will show an
-            explainer with an "Enable included-usage cap in Controls →" cross-link. {costCenters.length} cost
-            center{costCenters.length === 1 ? '' : 's'} are ready once that lands.
-          </p>
-        </div>
-      )}
-
-      {scope !== 'cost_center' && forecastLoaded && forecast === null && (
+      {forecastLoaded && forecast === null && (
         <div className="forecast__empty-card" data-testid="forecast-empty-state">
           <div className="forecast__empty-title">No forecast yet</div>
           <p className="forecast__empty-body">
             Forecasts are computed during Sync Now. Head to Settings and run Sync Now to compute{' '}
-            {scope === 'enterprise' ? 'the enterprise' : "this user's"} pool burn-down, projected{' '}
-            {scope === 'enterprise' ? 'exhaustion date' : 'block date'}, and backtest accuracy.
+            {scope === 'enterprise' ? 'the enterprise' : scope === 'cost_center' ? "this cost center's" : "this user's"}{' '}
+            pool burn-down, projected{' '}
+            {scope === 'enterprise' ? 'exhaustion date' : scope === 'cost_center' ? 'cap block/overflow date' : 'block date'}, and
+            backtest accuracy.
           </p>
         </div>
+      )}
+
+      {scope === 'cost_center' && forecast && selectedCc && (
+        <CostCenterScope
+          costCenter={selectedCc}
+          controls={controls}
+          forecast={forecast}
+          onNavigateToControlsCaps={onNavigateToControlsCaps}
+        />
       )}
 
       {scope !== 'cost_center' && view && forecast && (

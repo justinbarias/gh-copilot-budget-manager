@@ -3,7 +3,7 @@ import { cycleBounds } from '@copilot-budget/core';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
 import { SimBanner } from './components/SimBanner';
 import { Nav, type ScreenId } from './components/Nav';
-import { Controls } from './screens/Controls/Controls';
+import { Controls, type FamilyId } from './screens/Controls/Controls';
 import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
 import { Forecast } from './screens/Forecast/Forecast';
 import { Overview } from './screens/Overview/Overview';
@@ -33,21 +33,44 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   help: 'Help',
 };
 
-function renderScreen(screen: ScreenId, navigate: (screen: ScreenId) => void) {
+// Task 5.6: `navigate`'s second, optional argument carries a deep-link
+// target one level below the screen itself -- today, only Controls' family
+// tab (the Forecast screen's cap-off explainer CTA needs to land the admin
+// directly on "Included-usage caps", not merely the Controls screen's own
+// default tab). Additive to the plain `(screen) => void` shape every other
+// call site already uses (Overview's/Controls' own cross-links never pass a
+// second argument), so this widens rather than breaks them.
+interface NavigateOptions {
+  controlsFamily?: FamilyId;
+}
+
+function renderScreen(
+  screen: ScreenId,
+  navigate: (screen: ScreenId, options?: NavigateOptions) => void,
+  controlsInitialFamily: FamilyId | undefined,
+) {
   switch (screen) {
     case 'overview':
-      return <Overview />;
+      // Task 5.7: the cliff banner's "Visualise the cliff ->" link -- same
+      // navigate-callback mechanism the Controls screen's Auto-balance
+      // cross-link already uses below.
+      return <Overview onNavigateToForecast={() => navigate('forecast')} />;
     case 'forecast':
-      // Real since Task 5.5: scope tabs (enterprise/cost-center/user), the
-      // signature burn-down chart's forecast layers, the metered-phase spend
-      // bar, and the backtest/percentile bottom grid. Cost-center scope
-      // stays a labeled placeholder pending Task 5.6.
-      return <Forecast />;
+      // Real since Task 5.5 (scope tabs, the signature burn-down chart's
+      // forecast layers, the metered-phase spend bar, the backtest/
+      // percentile bottom grid) and Task 5.6 (cost-center scope: cap-on
+      // burn-down-vs-cap, cap-off explainer + this CTA). The CTA deep-links
+      // straight to Controls' Included-usage caps family tab (Task 4.12),
+      // rather than landing on Controls' own default tab and making the
+      // admin click again.
+      return <Forecast onNavigateToControlsCaps={() => navigate('controls', { controlsFamily: 'included' })} />;
     case 'controls':
       // Real since Task 4.9 (Spending-limits family + the plan/simulate/apply
       // rail); its "⇄ Auto-balance headroom" cross-link targets the (still
       // stubbed) Auto-balance screen per the design's navigation cross-links.
-      return <Controls onNavigateToAutoBalance={() => navigate('autobalance')} />;
+      // `initialFamily` is undefined (Controls' own 'userlevel' default) on
+      // every entry EXCEPT the Forecast cap-off CTA above.
+      return <Controls onNavigateToAutoBalance={() => navigate('autobalance')} initialFamily={controlsInitialFamily} />;
     case 'costcenters':
       return <CostCentersTable />;
     case 'users':
@@ -67,6 +90,17 @@ function AppShell() {
   const api = useApiClient();
   const [screen, setScreen] = useState<ScreenId>('overview');
   const [cycleLabel, setCycleLabel] = useState<string | null>(null);
+  // Task 5.6: the pending Controls family deep-link, if the in-flight
+  // navigation carried one (see NavigateOptions/navigate below) -- reset to
+  // undefined on every navigation that DOESN'T explicitly request one, so a
+  // stale deep-link never leaks into a later, ordinary Nav-sidebar click into
+  // Controls.
+  const [controlsInitialFamily, setControlsInitialFamily] = useState<FamilyId | undefined>(undefined);
+
+  function navigate(next: ScreenId, options?: NavigateOptions) {
+    setControlsInitialFamily(options?.controlsFamily);
+    setScreen(next);
+  }
 
   // The topbar's cycle label is real, fixture-derived data -- the same
   // getUsageSummary()/cycleBounds() math Overview.tsx already uses to render
@@ -97,13 +131,13 @@ function AppShell() {
           screen can ever mount without it in view. */}
       <SimBanner />
       <div className="app-shell__body">
-        <Nav screen={screen} onNavigate={setScreen} />
+        <Nav screen={screen} onNavigate={navigate} />
         <main className="app-shell__main">
           <header className="app-shell__topbar">
             <h1 className="app-shell__title">{SCREEN_TITLES[screen]}</h1>
             {cycleLabel && <span className="app-shell__cycle">{cycleLabel}</span>}
           </header>
-          <div className="app-shell__content">{renderScreen(screen, setScreen)}</div>
+          <div className="app-shell__content">{renderScreen(screen, navigate, controlsInitialFamily)}</div>
         </main>
       </div>
     </div>

@@ -1,0 +1,83 @@
+/* Task 5.6: Forecast screen, cost-center scope. Reuses Forecast.css's card,
+   eyebrow, headline, block-label/date, caption, gap-note and metered-*
+   classes wherever the shape matches exactly (see CostCenterScope.tsx) --
+   these are only the bits genuinely new to this scope. */
+
+.cc-scope__chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cc-scope__apionly-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--violet-light);
+  background: rgba(147, 80, 255, 0.14);
+  border: 1px solid rgba(147, 80, 255, 0.4);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.cc-scope__cap-state {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+}
+
+.cc-scope__off-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.cc-scope__off-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  background: var(--text-neutral);
+  margin-top: 6px;
+  flex: none;
+}
+
+.cc-scope__off-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-scope__off-title {
+  font-size: 15px;
+  color: var(--text-default);
+  font-weight: 500;
+  margin-bottom: 5px;
+}
+
+.cc-scope__off-copy {
+  font-size: 13px;
+  color: var(--text-subtle);
+  line-height: 1.6;
+  max-width: 84ch;
+  margin-bottom: 10px;
+}
+
+.cc-scope__cta {
+  font-size: 12.5px;
+  color: var(--blue);
+  background: rgba(141, 214, 255, 0.08);
+  border: 1px solid var(--blue);
+  border-radius: 8px;
+  padding: 9px 15px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.cc-scope__cta:hover {
+  background: rgba(141, 214, 255, 0.14);
+}
+
+.forecast__metered-inactive-card--nested {
+  margin-bottom: 0;
+  padding: 24px 20px;
+}

@@ -106,10 +106,11 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
     // No allowance-basis toggle for the user scope (design gap, see the Task 5.5 build report).
     await expect(screen.getByTestId('forecast-basis-toggle')).toHaveCount(0);
 
-    // --- Cost centers scope: a labeled placeholder, not a broken tab. ---
+    // --- Cost centers scope: real since Task 5.6 (forecast-cc.spec.ts owns
+    // its full coverage) -- just prove the tab is no longer a placeholder. ---
     await screen.getByRole('tab', { name: 'Cost centers' }).click();
-    await expect(screen.getByTestId('forecast-cc-placeholder')).toBeVisible();
-    await expect(screen.getByTestId('forecast-runway')).toHaveCount(0);
+    await expect(screen.getByTestId('forecast-cc-placeholder')).toHaveCount(0);
+    await expect(screen.getByTestId('forecast-cc-select')).toBeVisible();
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

@@ -84,7 +84,7 @@ export function IncludedCapsGrid({
   onCancelDriftCollision,
 }: IncludedCapsGridProps) {
   return (
-    <div className="included-caps">
+    <div className="included-caps" data-testid="controls-caps-family">
       <div className="included-caps__toolbar">
         <input
           className="included-caps__search"

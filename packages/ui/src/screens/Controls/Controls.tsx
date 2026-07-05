@@ -48,7 +48,11 @@ import './Controls.css';
 // (stale dry-run => Apply disabled until re-run). Nothing writes until the
 // rail's Apply (CLAUDE.md §6.1).
 
-type FamilyId = 'userlevel' | 'spending' | 'included';
+// Exported so App.tsx can deep-link into a specific family tab (Task 5.6:
+// the Forecast screen's cap-off explainer CTA targets 'included' directly,
+// rather than landing the admin on Controls' default tab and making them
+// click again).
+export type FamilyId = 'userlevel' | 'spending' | 'included';
 
 const FAMILY_TABS: ReadonlyArray<{ id: FamilyId; label: string }> = [
   { id: 'userlevel', label: 'User-level budgets' },
@@ -189,9 +193,17 @@ function ulbRowCapsCopy(control: BudgetControl): string {
 
 export interface ControlsProps {
   onNavigateToAutoBalance: () => void;
+  /** Task 5.6: which family tab to land on when this screen mounts -- App.tsx
+   * passes 'included' when navigating here from the Forecast screen's cap-off
+   * CTA, and undefined (this screen's own default) for every other entry
+   * point (the Nav sidebar). Only read as this state's INITIAL value (below)
+   * -- Controls unmounts/remounts on every screen switch (App.tsx's
+   * renderScreen swaps component types), so there's no stale-prop case to
+   * handle after mount. */
+  initialFamily?: FamilyId;
 }
 
-export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
+export function Controls({ onNavigateToAutoBalance, initialFamily }: ControlsProps) {
   const api = useApiClient();
 
   // Null-initial loading (screen pattern shared with CostCenters/Users):
@@ -243,7 +255,9 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
 
   // Design's ULB-first tab order (design/*.dc.html's FAMILY_TABS order) --
   // 'spending' was a Task 4.9 stopgap default until this slice existed.
-  const [family, setFamily] = useState<FamilyId>('userlevel');
+  // Task 5.6: `initialFamily` (App.tsx's deep-link) overrides that default
+  // for exactly the mount that followed the Forecast screen's cap-off CTA.
+  const [family, setFamily] = useState<FamilyId>(initialFamily ?? 'userlevel');
   const [desired, setDesired] = useState<Record<string, StagedBudgetEdit>>({});
   // Task 4.12's included_cap edit overlay -- keyed by controlIdentity, the
   // same "desired overlays live" pattern `desired` already uses for budgets.
