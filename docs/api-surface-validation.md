@@ -222,6 +222,17 @@ re-confirm the gap still exists (or note if GitHub ever adds a real signal).
 - **budget_amount type.** Real docs say integer whole USD; MSW accepts any finite
   `>= 0` (incl. `$0` — correct, the documented trap — and, more permissively,
   floats). Harmless (more permissive); optionally tighten at 9.2.
+- **Task 5.1 — usage/users-28-day query-param filtering.** Added `year`/`month`
+  /`day` support to the R5 usage handler and `since`/`until` to the R6
+  users-28-day handler, so historical fixtures (`fixtures/usage-history.ts`)
+  can be surfaced on request without changing either endpoint's default
+  (no-param) response or its response wire shape. These param names match
+  real GitHub's documented enhanced-billing usage-report query parameters
+  (`year`/`month`/`day`/`hour`); `github-impl.ts` does not send them yet (no
+  Phase-5 forecasting consumer wired up in this task) — request-side only,
+  no new response field, so this doesn't change either row's read-shape
+  verdict above. Confirm the exact parameter set against the OpenAPI schema
+  at 9.2 alongside R5/R6's existing "pin at 9.2" items.
 
 ---
 

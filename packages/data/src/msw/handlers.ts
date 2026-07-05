@@ -8,6 +8,8 @@ import {
   DEFAULT_ENTERPRISE_TEAM_SEATS,
   ENTERPRISE_TEAM_SEAT_COUNTS,
   GITHUB_API_BASE,
+  HISTORICAL_CREDITS_USED_ITEMS,
+  HISTORICAL_USAGE_ITEMS,
   SEATS,
   USAGE_ITEMS,
   type Budget,
@@ -630,22 +632,60 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 });
   }),
 
+  // Task 5.1: `year`/`month`/`day` (real GitHub's enhanced-billing usage
+  // report query params -- docs/api-surface-validation.md R5) additionally
+  // search the historical closed-cycle rows (fixtures/usage-history.ts). The
+  // DEFAULT response (no `year` given) is UNCHANGED from before Task 5.1:
+  // exactly USAGE_ITEMS, optionally cost-center-filtered -- every current-
+  // cycle pin (189,800 burn, 193,036 totalQuantity, etc.) is computed from a
+  // no-param fetch and never touches this branch.
   http.get(`${ENTERPRISE_BASE}/settings/billing/usage`, ({ request }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
     const costCenterId = url.searchParams.get('cost_center_id');
-    const filtered = costCenterId ? USAGE_ITEMS.filter((item) => item.cost_center_id === costCenterId) : USAGE_ITEMS;
+    const year = url.searchParams.get('year');
+    const month = url.searchParams.get('month');
+    const day = url.searchParams.get('day');
+
+    const source = year ? [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS] : USAGE_ITEMS;
+    let filtered = costCenterId ? source.filter((item) => item.cost_center_id === costCenterId) : source;
+    if (year) {
+      const paddedMonth = month ? month.padStart(2, '0') : null;
+      const paddedDay = day ? day.padStart(2, '0') : null;
+      filtered = filtered.filter((item) => {
+        const [itemYear, itemMonth, itemDay] = item.date.split('-');
+        if (itemYear !== year) return false;
+        if (paddedMonth && itemMonth !== paddedMonth) return false;
+        if (paddedDay && itemDay !== paddedDay) return false;
+        return true;
+      });
+    }
+
     return HttpResponse.json(
       { usageItems: paginate(filtered, page, perPage) },
       { headers: linkHeaders(request.url, page, perPage, filtered.length) },
     );
   }),
 
+  // Task 5.1: `since`/`until` (YYYY-MM-DD, inclusive) additionally search the
+  // historical per-user rows (fixtures/usage-history.ts). The DEFAULT
+  // response (neither param given) is UNCHANGED from before Task 5.1: exactly
+  // CREDITS_USED_ITEMS -- every existing consumer (listHeavyUsers,
+  // listCostCenters' member burn) fetches with no params and applies its own
+  // cycleBounds filter downstream, so this default is what every current pin
+  // is still computed from.
   http.get(`${ENTERPRISE_BASE}/copilot/metrics/reports/users-28-day`, ({ request }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
-    return HttpResponse.json(paginate(CREDITS_USED_ITEMS, page, perPage), {
-      headers: linkHeaders(request.url, page, perPage, CREDITS_USED_ITEMS.length),
+    const since = url.searchParams.get('since');
+    const until = url.searchParams.get('until');
+
+    const source = since || until ? [...CREDITS_USED_ITEMS, ...HISTORICAL_CREDITS_USED_ITEMS] : CREDITS_USED_ITEMS;
+    const filtered =
+      since || until ? source.filter((item) => (!since || item.date >= since) && (!until || item.date <= until)) : source;
+
+    return HttpResponse.json(paginate(filtered, page, perPage), {
+      headers: linkHeaders(request.url, page, perPage, filtered.length),
     });
   }),
 ];
