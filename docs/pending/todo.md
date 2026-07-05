@@ -89,7 +89,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 
 **Entry gate:** CLAUDE.md §9's five answers recorded in README + classic PAT (`manage_billing:enterprise`) + maintainer go-ahead.
 
-- [ ] 9.1 Tenant config, GHE host swap, API-version header everywhere, real PAT scope validation [M]
+- [x] 9.1 Tenant config, GHE host swap, API-version header everywhere, real PAT scope validation [M] (brought forward 2026-07-05; validated vs MSW, live confirmation lands with 9.2)
 - [ ] 9.2 Live read smoke — shape reconciliation, §6.9 rows upgraded to "confirmed against live", MSW corrected [M]
 - [ ] 9.3 Read/write token separation, live-write arming flow, RBAC-lite roles [M]
 - [ ] 9.4 First guarded live write + drift reconcile + revert; runbook (`docs/live-write-runbook.md`) [S/M]

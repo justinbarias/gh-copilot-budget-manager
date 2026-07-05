@@ -22,7 +22,7 @@ import {
 } from '../forecast/compute.js';
 import { readAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { ALERTS } from '../msw/fixtures/alerts.js';
-import { API_VERSION, SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
+import { API_VERSION } from '../msw/fixtures/constants.js';
 import {
   getLastSyncedControls as readLastSyncedControls,
   getLatestForecast as readLatestForecast,
@@ -35,7 +35,11 @@ import {
 } from '../sync/sync-now.js';
 import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
 import { fetchLiveControls } from '../write/live-state.js';
+import { runReadSmoke } from '../smoke/read-smoke.js';
+import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
+import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
+import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
 import type {
   Alert,
@@ -52,6 +56,8 @@ import type {
   HeavyUser,
   HeavyUserDailyPoint,
   LastSyncedControls,
+  PatValidation,
+  ReadSmokeResult,
   StoredForecast,
   SyncStatus,
   UsageSummary,
@@ -64,6 +70,27 @@ export interface GitHubApiClientConfig {
   source: 'msw' | 'github';
   auth?: string;
   baseUrl?: string;
+  /**
+   * Task 9.1: the persisted tenant pointer store (getTenantConfig/
+   * setTenantConfig read/write through it). Optional so existing test call
+   * sites that don't exercise tenant config need no change; a null-store
+   * client reports no tenant config and refuses to persist one.
+   */
+  tenantConfig?: TenantConfigStore;
+  /**
+   * Task 9.1: reads the CURRENT stored PAT for validatePat's probe. Injected
+   * (not the construction-time `auth`) because the admin can enter/clear the
+   * PAT after the client is built -- the closure lets validatePat classify the
+   * live token, while the plaintext never crosses into the renderer (§6.6:
+   * only the classification result does).
+   */
+  getPat?: () => Promise<string | null>;
+  /**
+   * Test-only override for the clock seam's as-of date (YYYY-MM-DD). Production
+   * derives it from `source` via resolveClockDate; a test can pin the live
+   * (wall-clock) branch deterministically without mocking Date.
+   */
+  nowDate?: string;
 }
 
 interface UsageItem {
@@ -206,6 +233,8 @@ function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: numbe
 
 interface ComputeSyncForecastsParams {
   asOfDate: Date;
+  /** The clock-seam "now" (api-client/clock.ts) recorded as each forecast's computedAt -- the fixture date in sim, wall clock in live. */
+  computedAt: string;
   historicalUsageItems: UsageItem[];
   historicalCreditsUsedItems: CreditsUsedItem[];
   costCentersRaw: CostCenter[];
@@ -227,7 +256,7 @@ interface ComputeSyncForecastsParams {
 // backtest() together, the same division of labour github-impl.ts already
 // keeps for e.g. listHeavyUsers' ULB resolution.
 function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecastItem[] {
-  const computedAt = SIM_CURRENT_DATE;
+  const computedAt = params.computedAt;
   const usageRows: AssembleUsageRow[] = params.historicalUsageItems.map((i) => ({
     date: i.date,
     costCenterId: i.cost_center_id,
@@ -313,6 +342,15 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   const octokit = new Octokit({ auth: config.auth, baseUrl: config.baseUrl });
   const enterprise = config.enterprise;
 
+  // Clock seam (api-client/clock.ts): the ONE place SIM_CURRENT_DATE vs the
+  // real wall clock is chosen, keyed off the data source. Every cycle-relative
+  // derivation below reads `currentDate()` instead of SIM_CURRENT_DATE
+  // directly, so simulation stays byte-identical (source 'msw' -> the fixture
+  // date) while live mode anchors to today. Computed per-call (not once at
+  // construction) so a long-lived live client doesn't freeze "now" at boot.
+  const currentDate = (): string => config.nowDate ?? resolveClockDate(config.source);
+  const currentDateObj = (): Date => new Date(`${currentDate()}T00:00:00.000Z`);
+
   // CLAUDE.md §2's API-version pin (`X-GitHub-Api-Version: 2026-03-10`), set
   // ONCE at client construction so every request -- reads (already shipped)
   // and the Task 4.8 write engine's mutations alike -- carries it, with no
@@ -355,14 +393,14 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // prior closed cycles) -- i.e. this ALREADY IS the current-cycle + history
   // superset (github-impl's plain fetchUsageItems() above must NOT also be
   // concatenated with this -- it would double-count the current cycle's
-  // rows). Derives the year from SIM_CURRENT_DATE rather than hardcoding
-  // '2026' so this keeps working if the fixture's as-of date ever moves to a
-  // different year.
+  // rows). Derives the year from the clock seam's currentDate() (the fixture
+  // date in sim, wall clock in live) rather than hardcoding '2026' so this
+  // keeps working if the fixture's as-of date ever moves to a different year.
   async function fetchHistoricalUsageItems(): Promise<UsageItem[]> {
     return paginateAll<UsageItem>(
       octokit,
       '/enterprises/{enterprise}/settings/billing/usage',
-      { enterprise, year: SIM_CURRENT_DATE.slice(0, 4) },
+      { enterprise, year: currentDate().slice(0, 4) },
       (data) => (data as { usageItems: UsageItem[] }).usageItems,
     );
   }
@@ -377,7 +415,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // exact March date) so this keeps working if the fixture's as-of date ever
   // moves.
   async function fetchHistoricalCreditsUsedItems(): Promise<CreditsUsedItem[]> {
-    const { cycleStart } = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    const { cycleStart } = cycleBounds(currentDateObj());
     const since = new Date(Date.UTC(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth() - 3, 1))
       .toISOString()
       .slice(0, 10);
@@ -435,8 +473,8 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       null,
     );
 
-    const cycleAsOfDate = SIM_CURRENT_DATE;
-    const bounds = cycleBounds(new Date(`${cycleAsOfDate}T00:00:00.000Z`));
+    const cycleAsOfDate = currentDate();
+    const bounds = cycleBounds(currentDateObj());
     const dailyBurn = buildDailyBurn(items, bounds.cycleStart, bounds.daysElapsed);
 
     return {
@@ -457,7 +495,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // Per-member cycle-to-date burn: same cycle window as getUsageSummary
     // (anchored to the deterministic fixture date, never wall-clock), so a
     // member whose only credits rows fall outside the current cycle burns 0.
-    const bounds = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    const bounds = cycleBounds(currentDateObj());
     const burnByLogin = new Map<string, number>();
     for (const item of creditsUsedItems) {
       const dayIndex = Math.floor((Date.parse(`${item.date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
@@ -544,7 +582,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // whose only credits rows fall outside the current cycle (e.g. user-05's
     // Aug/Sep cliff-edge rows) legitimately shows 0 MTD this cycle, not a
     // lifetime total.
-    const bounds = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+    const bounds = cycleBounds(currentDateObj());
     for (const item of creditsUsedItems) {
       const dayIndex = Math.floor((Date.parse(`${item.date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
       if (dayIndex < 0 || dayIndex > bounds.daysElapsed) continue;
@@ -615,7 +653,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
         fetchCreditsUsedItems(),
         fetchCostCentersRaw(),
         fetchSeats(),
-        fetchLiveControls(octokit, enterprise),
+        fetchLiveControls(octokit, enterprise, currentDateObj()),
         fetchHistoricalUsageItems(),
         fetchHistoricalCreditsUsedItems(),
         fetchBudgetsRaw(),
@@ -643,7 +681,8 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     }
 
     const forecasts = computeSyncForecasts({
-      asOfDate: new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`),
+      asOfDate: currentDateObj(),
+      computedAt: currentDate(),
       historicalUsageItems,
       historicalCreditsUsedItems,
       costCentersRaw,
@@ -710,7 +749,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // written projection -- so "did live move since the plan was staged"
   // (dryRunPlan/applyPlan's drift check) compares like with like.
   async function getControls(): Promise<ControlState[]> {
-    const live = await fetchLiveControls(octokit, enterprise);
+    const live = await fetchLiveControls(octokit, enterprise, currentDateObj());
     return live.controls;
   }
 
@@ -718,7 +757,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return dryRunPlanEngine(desiredControls, {
       enterprise,
       octokit,
-      asOfDate: new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`),
+      asOfDate: currentDateObj(),
       justification,
     });
   }
@@ -736,6 +775,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       desiredControls,
       justification: input.justification,
       trigger: 'manual',
+      asOfDate: currentDateObj(),
     });
   }
 
@@ -771,6 +811,98 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return verifyStoredChain(config.db);
   }
 
+  // Task 9.1: the non-secret tenant pointer, read/written through the injected
+  // store (plain JSON via the main process; NOT safeStorage -- it carries no
+  // secret). A client built without a store (older test call sites) reports no
+  // config and cannot persist one.
+  async function getTenantConfig(): Promise<TenantConfig | null> {
+    return config.tenantConfig ? config.tenantConfig.get() : null;
+  }
+
+  async function setTenantConfig(tenant: TenantConfig): Promise<void> {
+    const error = validateTenantConfig(tenant);
+    if (error) throw new Error(error);
+    if (!config.tenantConfig) {
+      throw new Error('Tenant configuration persistence is not available in this context.');
+    }
+    await config.tenantConfig.set(tenant);
+  }
+
+  // Task 9.1: classify the CURRENT stored PAT against GitHub's documented auth
+  // surface. GET /rate_limit is the probe (it does not consume rate-limit
+  // budget and, per GitHub's docs, returns the `X-OAuth-Scopes` response
+  // header for OAuth/classic tokens; fine-grained `github_pat_` tokens do NOT
+  // carry it -- that presence/absence is the documented classic-vs-fine-grained
+  // discriminator). §6.9: this is hand-wrapped interpretation of a response
+  // header, recorded in docs/api-surface-validation.md (row A1) for live
+  // confirmation at 9.2. Runs in BOTH modes -- the probe hits MSW in
+  // simulation (so an admin can sanity-check a token before going live), which
+  // is also how the e2e drives every classification branch.
+  async function validatePat(): Promise<PatValidation> {
+    const pat = config.getPat ? await config.getPat() : (config.auth ?? null);
+    if (!pat) {
+      return { ok: false, tokenKind: 'invalid', scopes: [], hasManageBillingEnterprise: false, message: 'No token is stored.' };
+    }
+
+    // A dedicated probe client authenticated with the CURRENT token (not the
+    // construction-time `auth`), pinned to the same API version + baseUrl.
+    const probe = new Octokit({ auth: pat, baseUrl: config.baseUrl });
+    probe.hook.before('request', (options) => {
+      options.headers['x-github-api-version'] = API_VERSION;
+    });
+
+    try {
+      const response = await probe.request('GET /rate_limit');
+      const scopesHeader = response.headers['x-oauth-scopes'];
+      if (scopesHeader === undefined || scopesHeader === null) {
+        // No X-OAuth-Scopes header -> fine-grained token. It cannot reach the
+        // enterprise billing endpoints regardless of its own permissions
+        // (CLAUDE.md §4: enterprise endpoints require a CLASSIC PAT).
+        return {
+          ok: false,
+          tokenKind: 'fine_grained',
+          scopes: [],
+          hasManageBillingEnterprise: false,
+          message: 'Fine-grained token: enterprise billing endpoints require a classic PAT with manage_billing:enterprise.',
+        };
+      }
+      const scopes = String(scopesHeader)
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const hasScope = scopes.includes('manage_billing:enterprise');
+      return {
+        ok: hasScope,
+        tokenKind: 'classic',
+        scopes,
+        hasManageBillingEnterprise: hasScope,
+        message: hasScope
+          ? 'Classic PAT with manage_billing:enterprise — ready for live enterprise reads.'
+          : 'Classic PAT is missing the manage_billing:enterprise scope required for enterprise billing endpoints.',
+      };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 401) {
+        return { ok: false, tokenKind: 'invalid', scopes: [], hasManageBillingEnterprise: false, message: 'Token was rejected by GitHub (401 Bad credentials).' };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, tokenKind: 'invalid', scopes: [], hasManageBillingEnterprise: false, message: `Token validation failed: ${message}` };
+    }
+  }
+
+  // Task 9.2-prep: the live read-surface smoke. The refusal-in-sim-mode gate
+  // lives HERE, on the bridge (CLAUDE.md §6.8/§8: a money-adjacent action must
+  // be unmistakably refused in simulation and NEVER contact real GitHub). The
+  // runner itself (runReadSmoke) is mode-agnostic and unit-tested against MSW;
+  // this method never invokes it in sim.
+  async function runLiveReadSmoke(): Promise<ReadSmokeResult> {
+    if (config.source === 'msw') {
+      return { refused: true, reason: 'simulation mode' };
+    }
+    const results = await runReadSmoke(octokit, enterprise);
+    return { refused: false, ranAt: new Date().toISOString(), results };
+  }
+
   return {
     getUsageSummary,
     listCostCenters,
@@ -785,5 +917,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     applyPlan,
     getAuditChain,
     verifyAuditChain,
+    getTenantConfig,
+    setTenantConfig,
+    validatePat,
+    runLiveReadSmoke,
   };
 }

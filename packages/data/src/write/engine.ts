@@ -67,7 +67,7 @@ function buildAlertOnlyOverrides(plan: Plan, justification: string | null | unde
 // re-diff -- so a dry run can never go stale relative to what apply will
 // actually compare against.
 export async function dryRunPlan(desiredControls: readonly ControlState[], options: DryRunPlanOptions): Promise<DryRunResult> {
-  const live = await fetchLiveControls(options.octokit, options.enterprise);
+  const live = await fetchLiveControls(options.octokit, options.enterprise, options.asOfDate);
   const plan = diffControls(live.controls, desiredControls);
 
   const validation = validatePlan(plan, {
@@ -80,7 +80,7 @@ export async function dryRunPlan(desiredControls: readonly ControlState[], optio
   // Usage assembly is dryRunPlan-only (see live-state.ts's assembleUsageState
   // doc comment) -- applyPlan below never calls this, keeping the
   // money-critical apply path independent of usage-aggregation correctness.
-  const usageState = await assembleUsageState(options.octokit, options.enterprise, live.costCenterIdByName);
+  const usageState = await assembleUsageState(options.octokit, options.enterprise, live.costCenterIdByName, options.asOfDate);
   const simulation = simulatePlan(plan, usageState, live.controls, options.asOfDate);
 
   return { plan, validation, simulation };
@@ -111,6 +111,16 @@ export interface ApplyPlanOptions {
   justification?: string | null;
   /** 'manual' for every Phase-4 apply (this task); Phase 6/7 rebalancer applies pass their own trigger. */
   trigger?: string;
+  /**
+   * The clock-seam as-of date (api-client/clock.ts): the deterministic fixture
+   * "now" in simulation, the real wall clock in live mode. Threaded through for
+   * signature symmetry with DryRunPlanOptions (apply is dry-run's counterpart)
+   * and forward-compat -- applyPlan's live re-read (fetchLiveControls) is a
+   * point-in-time control read, not cycle-windowed, so it does not consume this
+   * today (unlike dryRunPlan, whose usage assembly + simulation genuinely
+   * anchor to it).
+   */
+  asOfDate: Date;
   users?: readonly UserLicenseContext[];
   nearZeroUlbThresholdCredits?: number;
 }
@@ -552,7 +562,7 @@ function toAppliedAuditEvent(row: AuditEventRow): AppliedAuditEvent {
 // 'partial_failure' with exactly that progress, rather than attempting to
 // undo already-accepted upstream mutations.
 export async function applyPlan(stagedPlan: Plan, options: ApplyPlanOptions): Promise<ApplyPlanResult> {
-  const live = await fetchLiveControls(options.octokit, options.enterprise);
+  const live = await fetchLiveControls(options.octokit, options.enterprise, options.asOfDate);
   const currentPlan = diffControls(live.controls, options.desiredControls);
 
   if (!isDeepStrictEqual(stagedPlan.entries, currentPlan.entries)) {

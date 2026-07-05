@@ -21,6 +21,10 @@ const apiClientBridge: ApiClient = {
     ipcRenderer.invoke('apiClient:applyPlan', stagedPlan, desiredControls, input),
   getAuditChain: () => ipcRenderer.invoke('apiClient:getAuditChain'),
   verifyAuditChain: () => ipcRenderer.invoke('apiClient:verifyAuditChain'),
+  getTenantConfig: () => ipcRenderer.invoke('apiClient:getTenantConfig'),
+  setTenantConfig: (config) => ipcRenderer.invoke('apiClient:setTenantConfig', config),
+  validatePat: () => ipcRenderer.invoke('apiClient:validatePat'),
+  runLiveReadSmoke: () => ipcRenderer.invoke('apiClient:runLiveReadSmoke'),
 };
 
 // The PAT itself never crosses this bridge: only set/clear/hasPat are exposed,

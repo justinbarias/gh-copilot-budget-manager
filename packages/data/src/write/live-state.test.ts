@@ -22,8 +22,8 @@ afterAll(() => server.close());
 describe('assembleUsageState', () => {
   it('folds the billing (metered-attribution) report into the per-user metrics (total-burn) report, seeded from the full 81-seat roster', async () => {
     const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
-    const usage = await assembleUsageState(octokit, ENTERPRISE_SLUG, live.costCenterIdByName);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+    const usage = await assembleUsageState(octokit, ENTERPRISE_SLUG, live.costCenterIdByName, new Date('2026-06-14T00:00:00.000Z'));
 
     // Seat-seeding proof (subtlety 4): every licensed seat gets a row, not
     // just the two logins the billing report itemises -- 81 total (README.md

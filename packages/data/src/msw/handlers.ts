@@ -409,7 +409,44 @@ function includedUsageCapLimitForSeats(seatCount: number): number {
   return seatCount * PROMO_CREDITS_PER_SEAT_ENTERPRISE;
 }
 
+// Task 9.1 validatePat twin: GET /rate_limit is the cheap probe validatePat
+// reads the X-OAuth-Scopes response header off (it does not consume rate-limit
+// budget -- see github-impl.ts validatePat's doc comment / the §6.9
+// "X-OAuth-Scopes" row). This mock reproduces GitHub's DOCUMENTED auth-surface
+// behavior deterministically, branching on the bearer token so every
+// validatePat classification path is drivable from a fixed token string:
+//   - classic PAT with the scope       -> 200 + `X-OAuth-Scopes: repo, manage_billing:enterprise`
+//   - classic PAT without the scope     -> 200 + `X-OAuth-Scopes: repo, read:org`  (token contains "noscope")
+//   - fine-grained PAT (github_pat_...) -> 200, NO X-OAuth-Scopes header at all
+//   - missing / invalid token           -> 401
+// The exact scopes strings are simulation values; the *mechanism* (classic
+// tokens carry X-OAuth-Scopes, fine-grained don't) is the documented invariant
+// validatePat keys off, pinned for live confirmation at Task 9.2 (§6.9 row).
+function bearerToken(request: Request): string | null {
+  const auth = request.headers.get('authorization');
+  if (!auth) return null;
+  const match = /^(?:token|bearer)\s+(.+)$/i.exec(auth.trim());
+  return match?.[1] ?? auth.trim();
+}
+
+function rateLimitBody() {
+  return { resources: {}, rate: { limit: 5000, remaining: 4999, reset: 0, used: 1 } };
+}
+
 export const handlers = [
+  http.get(`${GITHUB_API_BASE}/rate_limit`, ({ request }) => {
+    const token = bearerToken(request);
+    if (!token || token.includes('invalid')) {
+      return githubError(401, 'Bad credentials');
+    }
+    if (token.startsWith('github_pat_')) {
+      // Fine-grained PAT: no X-OAuth-Scopes header (the documented discriminator).
+      return HttpResponse.json(rateLimitBody());
+    }
+    const scopes = token.includes('noscope') ? 'repo, read:org' : 'repo, manage_billing:enterprise';
+    return HttpResponse.json(rateLimitBody(), { headers: { 'X-OAuth-Scopes': scopes } });
+  }),
+
   http.get(`${ENTERPRISE_BASE}/copilot/billing/seats`, ({ request }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);

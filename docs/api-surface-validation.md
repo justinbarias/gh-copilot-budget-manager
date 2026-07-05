@@ -93,6 +93,24 @@ endpoints do **not** publish an exact 422 schema in the docs, so this is
 `convention-based` — pin the real 422 body against a live failure at 9.2
 (inference #6).
 
+### Auth surface (new — Task 9.1 `validatePat`)
+
+| # | Method + path | Consumer | Doc source | Verdict | Deviation / note |
+|---|---|---|---|---|---|
+| A1 | `GET /rate_limit` (read `X-OAuth-Scopes` response header) | `github-impl` `validatePat` | GitHub REST auth docs: "OAuth/classic tokens return the `X-OAuth-Scopes` header on authenticated requests"; `/rate_limit` "does not count against your rate limit" | `docs-indicated (summarizer)` | **Hand-wrapped header interpretation (§6.9).** `validatePat` classifies the stored PAT by presence/absence of the `X-OAuth-Scopes` response header: **present → classic PAT** (scopes = the comma-split list; `hasManageBillingEnterprise` = list includes `manage_billing:enterprise`); **absent → fine-grained** (`github_pat_` tokens don't carry it); **`401` → invalid**. `/rate_limit` is the probe because the docs state it does not consume rate-limit budget and it returns the scopes header for classic tokens. The MSW `/rate_limit` twin (`handlers.ts`) reproduces this branching deterministically off the bearer token. **Pin at 9.2:** confirm against a live classic PAT that (a) `X-OAuth-Scopes` is actually returned on `/rate_limit`, (b) fine-grained tokens omit it, and (c) the exact scope string is `manage_billing:enterprise`. The scope *string* the enterprise billing endpoints require is CLAUDE.md §4's standing fact; the header *mechanism* is the summarizer-grade part.
+
+### Read smoke runner (new — Task 9.2-prep)
+
+`packages/data/src/smoke/read-smoke.ts` (`runReadSmoke`) issues one read against
+each of the **existing** §6.9 read rows **R1–R6** above (no new endpoints — it is
+the shape-reconciliation harness the 9.2 checklist is executed *through*) and
+structurally checks each response against the shapes `github-impl.ts` parses. It
+is refused in simulation mode at the `ApiClient.runLiveReadSmoke()` bridge
+(never contacts GitHub); its per-endpoint `{status, details}` report is the
+concrete Task 9.2 work order. The endpoint list lives in one place
+(`INDEPENDENT_ENDPOINTS` + the R3 dependent read) with the `docRef` on each row
+pointing back at this table.
+
 ---
 
 ## Resolution of the 7 builder-flagged inferences
@@ -271,6 +289,11 @@ sim truthfulness needs it) for:
 9. **OpenAPI pass** — parse `github/rest-api-description` for the `2026-03-10`
    billing schemas to replace every `docs-indicated (summarizer)` grade above with
    machine-verified shapes.
+10. **Auth surface (A1)** — confirm against a live classic PAT that `/rate_limit`
+    returns `X-OAuth-Scopes`, that fine-grained tokens omit it, and that the
+    required scope string is exactly `manage_billing:enterprise`. Then run
+    `runLiveReadSmoke()` for real and upgrade R1–R6 from `docs-indicated
+    (summarizer)` to "confirmed against live" using its report.
 
 ## Sources consulted (2026-07-05)
 

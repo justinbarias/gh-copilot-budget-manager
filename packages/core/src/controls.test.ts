@@ -197,6 +197,15 @@ describe('diffControls', () => {
     expect(diffControls(live, desired).isNoOp).toBe(true);
   });
 
+  it('does not flag alerting as changed when the same recipients arrive in a different order', () => {
+    // Recipient order is not semantically meaningful and GitHub does not
+    // guarantee a stable order across reads -- a reorder must NOT manufacture
+    // drift (the live-mode-hardening alertingEqual order fix).
+    const live = [budget({ alerting: { willAlert: true, alertRecipients: ['a@acme.example', 'b@acme.example', 'c@acme.example'] } })];
+    const desired = [budget({ alerting: { willAlert: true, alertRecipients: ['c@acme.example', 'a@acme.example', 'b@acme.example'] } })];
+    expect(diffControls(live, desired).isNoOp).toBe(true);
+  });
+
   it('bundles multiple simultaneous field changes into one change entry', () => {
     const live = [budget({ amountCredits: 6000, preventFurtherUsage: true })];
     const desired = [budget({ amountCredits: 7000, preventFurtherUsage: false })];

@@ -60,11 +60,17 @@ async function bootstrap(): Promise<void> {
     // One mock, three consumers (CLAUDE.md §7): this is the runtime
     // simulation consumer. The ApiClient's Octokit-issued requests are
     // intercepted here once this listener is attached.
-    const { server } = await import('@copilot-budget/data/msw');
-    server.listen({ onUnhandledRequest: 'bypass' });
+    //
+    // Fail loud for GitHub API hosts (§6.8/§8): an UNMOCKED api.github.com /
+    // *.ghe.com request in simulation mode is a real bug -- either a missing
+    // handler or a genuine network leak to real GitHub -- so it must throw,
+    // not silently pass through (the old 'bypass' would leak it to the
+    // network). Non-GitHub traffic (dev-server assets, etc.) still bypasses.
+    const { server, failLoudForGitHub } = await import('@copilot-budget/data/msw');
+    server.listen({ onUnhandledRequest: failLoudForGitHub });
   }
 
-  registerApiClientIpcHandlers(mode === 'simulation' ? 'msw' : 'github');
+  await registerApiClientIpcHandlers(mode === 'simulation' ? 'msw' : 'github');
   createWindow();
 }
 

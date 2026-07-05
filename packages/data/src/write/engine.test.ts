@@ -41,7 +41,7 @@ afterEach(() => {
 const WORKFORCE_CC = 'Workforce Australia Platform';
 
 async function stageWorkforceAmountChangePlan() {
-  const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+  const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
   const desiredControls: ControlState[] = live.controls.map((c) =>
     c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 65_000 } : c,
   );
@@ -50,12 +50,12 @@ async function stageWorkforceAmountChangePlan() {
 }
 
 function baseOptions(desiredControls: readonly ControlState[]): ApplyPlanOptions {
-  return { enterprise: ENTERPRISE_SLUG, octokit, db, actor: 'admin@example.com', desiredControls };
+  return { enterprise: ENTERPRISE_SLUG, octokit, db, actor: 'admin@example.com', desiredControls, asOfDate: new Date('2026-06-14T00:00:00.000Z') };
 }
 
 describe('fetchLiveControls', () => {
   it('projects budgets and cost-center caps into ControlState, keyed by controlIdentity, excluding repository scope', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
 
     const platformBudget = live.controls.find(
       (c): c is Extract<ControlState, { kind: 'budget' }> => c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC,
@@ -112,7 +112,7 @@ describe('applyPlan', () => {
   });
 
   it('is a no-op (applies nothing, audits nothing) when desiredControls already matches live', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const stagedPlan = diffControls(live.controls, live.controls);
     expect(stagedPlan.isNoOp).toBe(true);
 
@@ -131,7 +131,7 @@ describe('applyPlan', () => {
   // is production-safe: the exact same code path fires for a genuine
   // between-stage-and-apply GitHub-side edit.
   it('aborts as drift when the staged plan no longer matches a fresh live re-read, mutating and auditing nothing', async () => {
-    const trueLive = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const trueLive = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const { desiredControls } = await stageWorkforceAmountChangePlan();
 
     const staleLiveBaseline: ControlState[] = trueLive.controls.map((c) =>
@@ -151,7 +151,7 @@ describe('applyPlan', () => {
   });
 
   it('aborts as blocked when the post-plan state trips a validation blocker, mutating and auditing nothing', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     // A 900,000-credit ($9,000) Workforce cost-center spending limit + the
     // Data & Evaluation limit (25,000) sums to 925,000 > the enterprise's
     // 800,000 cap -> enterprise_cap_below_cost_center_sum.
@@ -188,7 +188,7 @@ describe('applyPlan', () => {
       }),
     );
 
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls: ControlState[] = live.controls.map((c) => {
       if (c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC) return { ...c, amountCredits: 65_000 };
       if (c.kind === 'budget' && c.scope === 'enterprise') return { ...c, amountCredits: 850_000 };
@@ -223,7 +223,7 @@ describe('applyPlan', () => {
   // and audit action are verified by execution rather than by reading engine.ts.
 
   it('creates a new individual ULB: POSTs the M1 body (USD budget_amount, scope-inferred BundlePricing) and audits budget.create', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const newUlb: ControlState = {
       kind: 'budget',
       scope: 'individual',
@@ -264,7 +264,7 @@ describe('applyPlan', () => {
   });
 
   it('deletes a budget: issues DELETE on the correct wire id (M4, no body, 204) and audits budget.delete', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     // Full end-state minus the organization spending limit -> exactly one delete.
     const desiredControls: ControlState[] = live.controls.filter(
       (c) => !(c.kind === 'budget' && c.scope === 'organization' && c.entityName === 'dewr-digital'),
@@ -291,7 +291,7 @@ describe('applyPlan', () => {
   });
 
   it('toggles an included-usage cap: PATCHes cost-centers/{id} with the nested included_usage_cap body (M7) and audits included_cap.update', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls: ControlState[] = live.controls.map((c) =>
       c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC ? { ...c, overflow: 'metered' as const } : c,
     );
@@ -333,7 +333,7 @@ describe('applyPlan', () => {
 
 describe('dryRunPlan', () => {
   it('recomputes the plan fresh against live, validates, and simulates -- never mutates or audits', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls: ControlState[] = live.controls.map((c) =>
       c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 65_000 } : c,
     );
@@ -352,7 +352,7 @@ describe('dryRunPlan', () => {
   });
 
   it('surfaces the alert-only-without-hard-stop warning as required, then acknowledged once a justification is supplied', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     // Turns OFF the universal ULB's hard stop (true -> false) -- ULBs are
     // always-hard-stop by domain definition (CLAUDE.md §5), so this always
     // trips the warning regardless of amount.
@@ -397,7 +397,7 @@ describe('dryRunPlan', () => {
   // staging an individual $0 override outranks the CCULB (individual >
   // CCULB > universal, CLAUDE.md §5) and 0 - 5,480 <= 0 -> blocked.
   it('previews emily-zhao newly blocked when staging a $0 individual ULB -- the exact preview-fidelity gap this task fixes', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls: ControlState[] = [
       ...live.controls,
       {
@@ -442,7 +442,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   const CYBER_ID = COST_CENTER_IDS.cyber;
 
   it('fetchLiveControls now exposes cost centers with DEWR, exclude flag, and full membership', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const workforce = live.controls.find(
       (c): c is Extract<ControlState, { kind: 'cost_center' }> => c.kind === 'cost_center' && c.name === WORKFORCE_CC,
     );
@@ -459,7 +459,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   });
 
   it('create: POST /cost-centers with the exact create payload (name, DEWR, excluded, cap prefs, resources) + audit', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const newCC: ControlState = {
       kind: 'cost_center',
       name: 'New Delivery Team',
@@ -505,7 +505,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   });
 
   it('membership: a single-CC add+remove issues DELETE then POST /resource (removal first) with recomputed limit in evidence + one membership audit', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls = live.controls.map((c) => {
       if (c.kind === 'cost_center' && c.name === WORKFORCE_CC) {
         const members = c.members.filter((m) => m.name !== 'rpatel2').concat([{ type: 'User' as const, name: 'new-hire' }]);
@@ -540,7 +540,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   });
 
   it('reassign: a 1:1 move across cost centers issues DELETE(old)/resource then POST(new)/resource in that sequence + two membership audits', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls = live.controls.map((c) => {
       if (c.kind === 'cost_center' && c.name === WORKFORCE_CC) return { ...c, members: c.members.filter((m) => m.name !== 'rpatel2') };
       if (c.kind === 'cost_center' && c.name === CYBER_CC) return { ...c, members: [...c.members, { type: 'User' as const, name: 'rpatel2' }] };
@@ -573,7 +573,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   });
 
   it('exclude-from-enterprise-budget toggle issues a PATCH with only that field + a cost_center.update audit', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls = live.controls.map((c) =>
       c.kind === 'cost_center' && c.name === WORKFORCE_CC ? { ...c, excludedFromEnterpriseBudget: true } : c,
     );
@@ -590,7 +590,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   });
 
   it('archive/delete issues DELETE /cost-centers/:id + a cost_center.delete audit', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     // Remove only the Cyber cost-center entity (its cap stays, producing no cap diff).
     const desiredControls = live.controls.filter((c) => !(c.kind === 'cost_center' && c.name === CYBER_CC));
     const stagedPlan = diffControls(live.controls, desiredControls);
@@ -615,7 +615,7 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
   // create is never hoisted ahead of the move's removal and never wedged
   // between a removal and its paired addition in a way that double-attributes.
   it('a move + an unrelated create in one plan still issues the removal first, create not misordered', async () => {
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const newCC: ControlState = {
       kind: 'cost_center',
       name: 'New Delivery Team',

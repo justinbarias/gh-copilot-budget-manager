@@ -265,11 +265,17 @@ export interface Plan {
 }
 
 function alertingEqual(a: AlertingState, b: AlertingState): boolean {
-  return (
-    a.willAlert === b.willAlert &&
-    a.alertRecipients.length === b.alertRecipients.length &&
-    a.alertRecipients.every((r, i) => r === b.alertRecipients[i])
-  );
+  if (a.willAlert !== b.willAlert) return false;
+  if (a.alertRecipients.length !== b.alertRecipients.length) return false;
+  // Recipient order is not semantically meaningful (it's a set of notify
+  // addresses, not an ordered list), and GitHub does not guarantee a stable
+  // order across reads -- comparing position-by-position would manufacture
+  // phantom drift ("⤺ drift — reconcile") whenever live and desired hold the
+  // same recipients in a different order. Sort both copies before comparing so
+  // equality is set-equality over the (already length-checked) arrays.
+  const sortedA = [...a.alertRecipients].sort();
+  const sortedB = [...b.alertRecipients].sort();
+  return sortedA.every((r, i) => r === sortedB[i]);
 }
 
 function diffBudget(live: BudgetControl, desired: BudgetControl): BudgetFieldChange[] {

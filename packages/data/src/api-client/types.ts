@@ -1,6 +1,8 @@
 import type { AuditChainVerification, ControlState, EffectiveUlb, ForecastResult, ModelMix, Plan } from '@copilot-budget/core';
 import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
 import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
+import type { TenantConfig } from '../tenant/types.js';
+import type { ReadSmokeEndpointResult } from '../smoke/read-smoke.js';
 
 // Re-exported so a consumer that only depends on '@copilot-budget/data' (per
 // CLAUDE.md's portability boundary -- apps/desktop's package.json depends on
@@ -9,6 +11,40 @@ import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
 // this adds no runtime footprint to the pure barrel despite write/engine.ts
 // itself importing Octokit/drizzle/node:util.
 export type { ApplyPlanResult, AuditChainVerification, ControlState, DryRunResult, ForecastResult, ForecastScope, Plan, StoredForecast };
+// Task 9.1: the tenant pointer type crosses the ApiClient boundary
+// (getTenantConfig/setTenantConfig), so re-export it here the same way the
+// forecast/plan types above are -- a UI consumer depending only on
+// '@copilot-budget/data' can then name it without importing the './tenant'
+// subpath (which pulls node:fs) directly.
+export type { TenantConfig };
+export type { ReadSmokeEndpointResult, ReadSmokeStatus } from '../smoke/read-smoke.js';
+
+/**
+ * Task 9.1: the result of classifying the stored PAT against GitHub's
+ * documented auth surface (validatePat). Classic PATs return an
+ * `X-OAuth-Scopes` response header listing granted scopes; fine-grained tokens
+ * (`github_pat_` prefix) do not carry it. `hasManageBillingEnterprise` gates
+ * every enterprise billing endpoint (CLAUDE.md §4/§5 -- classic PAT with
+ * `manage_billing:enterprise` is required; App/fine-grained tokens can't reach
+ * them). `ok` is true only for a classic token that carries the scope.
+ */
+export interface PatValidation {
+  ok: boolean;
+  tokenKind: 'classic' | 'fine_grained' | 'invalid';
+  scopes: string[];
+  hasManageBillingEnterprise: boolean;
+  message: string;
+}
+
+/**
+ * Task 9.2-prep: the live read-surface smoke report. In simulation mode the
+ * bridge REFUSES (never contacts GitHub) -> `{ refused: true, reason }`; in
+ * live mode it runs and returns the per-endpoint reconciliation `results`
+ * (docs/api-surface-validation.md rows R1-R6). `ranAt` is an ISO timestamp.
+ */
+export type ReadSmokeResult =
+  | { refused: true; reason: string }
+  | { refused: false; ranAt: string; results: ReadSmokeEndpointResult[] };
 
 export interface UsageSummaryParams {
   costCenterId?: string;
@@ -244,4 +280,29 @@ export interface ApiClient {
    * `getAuditChain()`'s order).
    */
   verifyAuditChain(): Promise<AuditChainVerification>;
+  /**
+   * Task 9.1: the persisted, non-secret tenant pointer (host + enterprise
+   * slug) the GitHub client derives its baseUrl and enterprise paths from in
+   * live mode. Null when never configured. Not a secret (unlike the PAT), so
+   * it is stored as plain JSON via the main process, NOT safeStorage.
+   */
+  getTenantConfig(): Promise<TenantConfig | null>;
+  /** Task 9.1: persist the tenant pointer (validated -- rejects an empty slug or a ghe.com host with no subdomain). */
+  setTenantConfig(config: TenantConfig): Promise<void>;
+  /**
+   * Task 9.1: classify the stored PAT against GitHub's documented auth surface
+   * (classic vs fine-grained, and whether `manage_billing:enterprise` is
+   * granted) by reading the X-OAuth-Scopes header off a cheap probe. Runs in
+   * BOTH modes (the probe hits MSW in simulation), so an admin can sanity-check
+   * a token before switching to live.
+   */
+  validatePat(): Promise<PatValidation>;
+  /**
+   * Task 9.2-prep: run the live read-surface smoke (per-endpoint shape
+   * reconciliation, §6.9 rows R1-R6). REFUSES in simulation mode
+   * (`{ refused: true, reason: 'simulation mode' }`) -- it never contacts
+   * GitHub there (CLAUDE.md §6.8/§8). In live mode it returns the report that
+   * becomes the Task 9.2 work order.
+   */
+  runLiveReadSmoke(): Promise<ReadSmokeResult>;
 }

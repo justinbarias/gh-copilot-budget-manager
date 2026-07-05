@@ -26,6 +26,10 @@
       "types": "./dist/pat/index.d.ts",
       "default": "./dist/pat/index.js"
     },
+    "./tenant": {
+      "types": "./dist/tenant/index.d.ts",
+      "default": "./dist/tenant/index.js"
+    },
     "./api-client": {
       "types": "./dist/api-client/index.d.ts",
       "default": "./dist/api-client/index.js"

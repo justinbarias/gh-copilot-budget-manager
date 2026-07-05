@@ -12,12 +12,6 @@ import {
   type UserUsage,
 } from '@copilot-budget/core';
 import { paginateAll } from '../api-client/paginate.js';
-// Same cycle-anchoring convention api-client/github-impl.ts's listHeavyUsers/
-// listCostCenters already use (SIM_CURRENT_DATE, not a live wall clock -- no
-// PAT exists yet, CLAUDE.md §9). Not a layering violation: github-impl.ts
-// already imports this same constant from the same fixtures module for the
-// identical purpose, so this module does too rather than forking the value.
-import { SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -148,7 +142,15 @@ export interface LiveControlsResult {
 // against) and the engine's re-read produced even slightly different
 // ControlState shapes for identical live data, a legitimate no-drift apply
 // would false-positive as drift.
-export async function fetchLiveControls(octokit: Octokit, enterprise: string): Promise<LiveControlsResult> {
+// `_asOfDate` is threaded for signature symmetry with assembleUsageState below
+// (both are the write engine's live re-reads, called side by side) and as
+// forward-compat for a future cycle-anchored live control read. It is
+// deliberately UNUSED here today: the budgets / cost-centers / resource reads
+// below are point-in-time (GitHub returns the current control set), not
+// cycle-windowed, so there is no date-relative derivation for it to anchor --
+// and, importantly, NO stale SIM_CURRENT_DATE read hides in this path either.
+// Prefixed `_` to mark that "intentionally unused", not "forgotten to wire".
+export async function fetchLiveControls(octokit: Octokit, enterprise: string, _asOfDate: Date): Promise<LiveControlsResult> {
   const [rawBudgetsAll, rawCostCenters] = await Promise.all([
     paginateAll<WireBudget>(
       octokit,
@@ -257,6 +259,7 @@ export async function assembleUsageState(
   octokit: Octokit,
   enterprise: string,
   costCenterIdByName: ReadonlyMap<string, string>,
+  asOfDate: Date,
 ): Promise<UsageState> {
   interface WireUsageItem {
     date: string;
@@ -328,14 +331,15 @@ export async function assembleUsageState(
   const toCredits = (amountUsd: number): number => Math.round(amountUsd * 100);
 
   // Same cycle window as listHeavyUsers/listCostCenters (api-client/
-  // github-impl.ts) -- anchored to the deterministic fixture "now", never
-  // wall-clock. Applied uniformly to BOTH reports and every rollup below
+  // github-impl.ts) -- anchored to the caller-supplied `asOfDate` clock seam
+  // (the deterministic fixture "now" in simulation, the real wall clock in
+  // live mode -- api-client/clock.ts). Applied uniformly to BOTH reports and every rollup below
   // (per-user, per-cost-center, enterprise): the latent bug this task fixes
   // is that v1 applied NO cycle filter at all, so noah-tanaka's Aug 31/Sep 1
   // allowance-cliff rows (both outside the June cycle, attributed to the
   // Workforce Australia Platform cost center) leaked into every sum that
   // touched them.
-  const bounds = cycleBounds(new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`));
+  const bounds = cycleBounds(asOfDate);
   const inCycle = (date: string): boolean => {
     const dayIndex = Math.floor((Date.parse(`${date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
     return dayIndex >= 0 && dayIndex <= bounds.daysElapsed;
