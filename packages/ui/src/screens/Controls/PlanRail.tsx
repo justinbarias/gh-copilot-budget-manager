@@ -114,6 +114,12 @@ export function planDiffLines(plan: Plan): DiffLine[] {
 
     // included_cap entries -- rendered now so Task 4.12's cards reuse this
     // rail verbatim (design's own example: included_cap["ML Research"].enabled).
+    // Task 4.13 widened core's PlanEntry union with cost_center variants; those
+    // never reach THIS rail (the Controls screen passes cost_center controls
+    // through unchanged, so its plan has none -- they're staged + rendered by
+    // CostCenterPlanRail instead). This guard makes that explicit so the
+    // remainder narrows to included_cap; it changes no budget/cap rendering.
+    if (entry.controlKind !== 'included_cap') continue;
     const capLabel = `included_cap["${entry.costCenterName}"]`;
     if (entry.action === 'add') {
       lines.push({ key: `${entry.id}:add`, marker: '+', text: `+ ${capLabel}` });

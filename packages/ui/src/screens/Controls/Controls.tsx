@@ -290,8 +290,16 @@ export function Controls({ onNavigateToAutoBalance }: ControlsProps) {
           const edit = desired[budgetIdentity(control)];
           return edit ? applyEdit(control, edit) : control;
         }
-        const capEdit = desiredCaps[controlIdentity(control)];
-        return capEdit ? applyCapEdit(control, capEdit) : control;
+        if (control.kind === 'included_cap') {
+          const capEdit = desiredCaps[controlIdentity(control)];
+          return capEdit ? applyCapEdit(control, capEdit) : control;
+        }
+        // Task 4.13: cost_center controls now flow through getControls() too.
+        // This screen never stages them (the Cost Centers screen's modals
+        // own cost-center lifecycle writes), so they pass straight through
+        // unchanged -- diffControls then emits no entry for them, and the
+        // rail never sees a cost_center plan entry from here.
+        return control;
       });
     return [...edited, ...stagedNewUlbs];
   }, [live, desired, desiredCaps, stagedDeletes, stagedNewUlbs]);

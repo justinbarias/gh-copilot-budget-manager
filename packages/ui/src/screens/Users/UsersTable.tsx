@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isUserAtRiskOfUlbBlock, type EffectiveUlb } from '@copilot-budget/core';
-import type { HeavyUser } from '@copilot-budget/data';
+import type { CostCenterSummary, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { ModelMixBar } from '../../components/ModelMixBar';
 import { Sparkline } from '../../components/Sparkline';
 import { BulkUlbModal } from './BulkUlbModal';
+import { ReassignCostCenterModal } from './ReassignCostCenterModal';
 import { SetUlbModal } from './SetUlbModal';
 import './UsersTable.css';
 
@@ -86,6 +87,11 @@ export function UsersTable() {
   // (mutation log + audit events) the admin needs to see. Closing the modal
   // clears this snapshot explicitly.
   const [bulkUsers, setBulkUsers] = useState<HeavyUser[] | null>(null);
+  // Task 4.13: 1:1 cost-center reassignment. The row's cost-center <select>
+  // opens this modal (a scoped remove+add plan) rather than mutating on change
+  // -- simulate-before-apply (CLAUDE.md §6.1) still gates the write.
+  const [allCostCenters, setAllCostCenters] = useState<CostCenterSummary[] | null>(null);
+  const [reassignTarget, setReassignTarget] = useState<{ user: HeavyUser; toCostCenterName: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -98,8 +104,10 @@ export function UsersTable() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await api.listHeavyUsers();
-      if (!cancelled) setUsers(result);
+      const [userResult, ccResult] = await Promise.all([api.listHeavyUsers(), api.listCostCenters()]);
+      if (cancelled) return;
+      setUsers(userResult);
+      setAllCostCenters(ccResult);
     })();
     return () => {
       cancelled = true;
@@ -144,6 +152,24 @@ export function UsersTable() {
     },
     [showToast, refreshUsers],
   );
+
+  const onReassignApplied = useCallback(
+    (message: string) => {
+      showToast(message);
+      // Refresh both the roster (each user's costCenterName join) and the CC
+      // list (member counts moved) so the reopened select reflects the move.
+      void refreshUsers();
+      void api.listCostCenters().then(setAllCostCenters);
+    },
+    [showToast, refreshUsers, api],
+  );
+
+  // Every cost center's name (not just ones with users) -- an empty, freshly
+  // created CC is still a valid reassignment destination.
+  const ccNames = useMemo(() => {
+    if (!allCostCenters) return [];
+    return allCostCenters.map((cc) => cc.name).sort((a, b) => a.localeCompare(b));
+  }, [allCostCenters]);
 
   const ccOptions = useMemo(() => {
     if (!users) return [];
@@ -313,7 +339,28 @@ export function UsersTable() {
                     {loginSublabel(user) && <span className="users-table__sublabel">{loginSublabel(user)}</span>}
                   </div>
                 </td>
-                <td className="users-table__cc">{user.costCenterName ?? '—'}</td>
+                <td className="users-table__cc">
+                  <select
+                    className="users-table__cc-select"
+                    aria-label={`Cost center for ${user.userLogin}`}
+                    value={user.costCenterName ?? ''}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      // Never a no-op or a move-to-unassigned: only a change to
+                      // a different, real cost center opens the reassign plan.
+                      if (next !== '' && next !== user.costCenterName) {
+                        setReassignTarget({ user, toCostCenterName: next });
+                      }
+                    }}
+                  >
+                    {user.costCenterName === null && <option value="">— unassigned —</option>}
+                    {ccNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="users-table__mtd">{formatCredits(user.creditsUsed)}</td>
                 <td>
                   <Sparkline points={user.dailySeries} />
@@ -376,6 +423,15 @@ export function UsersTable() {
 
       {bulkUsers && bulkUsers.length > 0 && (
         <BulkUlbModal users={bulkUsers} onClose={() => setBulkUsers(null)} onApplied={onBulkUlbApplied} />
+      )}
+
+      {reassignTarget && (
+        <ReassignCostCenterModal
+          user={reassignTarget.user}
+          toCostCenterName={reassignTarget.toCostCenterName}
+          onClose={() => setReassignTarget(null)}
+          onApplied={onReassignApplied}
+        />
       )}
     </section>
   );

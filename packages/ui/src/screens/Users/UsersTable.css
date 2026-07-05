@@ -193,6 +193,26 @@
   color: var(--text-muted);
 }
 
+/* Task 4.13: the reassignment select -- a quiet, borderless control until
+   hovered/focused, so the column still reads like a table cell at rest. */
+.users-table__cc-select {
+  font-size: 12.5px;
+  color: var(--text-default);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-input);
+  padding: 4px 6px;
+  max-width: 160px;
+  cursor: pointer;
+}
+
+.users-table__cc-select:hover,
+.users-table__cc-select:focus {
+  outline: none;
+  border-color: var(--border);
+  background: var(--canvas);
+}
+
 .users-table__mtd {
   font-size: 14px;
   color: var(--text-default);

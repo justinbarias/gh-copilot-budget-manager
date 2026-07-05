@@ -1,0 +1,206 @@
+/* Task 4.13: shared styling for the cost-center lifecycle modals (New cost
+   center, drill-in membership editor, Users reassignment). Deltas over the
+   reused NewUlbModal.css (form fields) + DrillModal.css (dialog shell). */
+
+.cc-lifecycle-modal {
+  max-width: 600px;
+}
+
+.cc-lifecycle-modal__loading {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.cc-lifecycle-modal__hint {
+  font-size: 11.5px;
+  color: var(--text-neutral);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.cc-lifecycle-modal__hint--warn {
+  color: var(--amber, #d29922);
+}
+
+.cc-lifecycle-modal__dewr-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.cc-lifecycle-modal__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-default);
+  cursor: pointer;
+}
+
+.cc-lifecycle-modal__check input {
+  margin-top: 2px;
+}
+
+.cc-lifecycle-modal__check-note {
+  display: block;
+  font-size: 11px;
+  color: var(--text-neutral);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* --- Membership editor (drill-in + reassignment) ------------------------- */
+
+.cc-members-editor__list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.cc-members-editor__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-row);
+}
+
+.cc-members-editor__row:last-child {
+  border-bottom: none;
+}
+
+.cc-members-editor__row--removed .cc-members-editor__name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.cc-members-editor__name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cc-members-editor__name {
+  font-size: 13px;
+  color: var(--text-default);
+}
+
+.cc-members-editor__type-badge {
+  font-size: 10.5px;
+  color: var(--blue);
+  background: rgba(141, 214, 255, 0.1);
+  border: 1px solid rgba(141, 214, 255, 0.3);
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.cc-members-editor__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cc-members-editor__burn {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-members-editor__remove,
+.cc-members-editor__undo {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.cc-members-editor__remove:hover {
+  color: var(--red, #f85149);
+  border-color: var(--red, #f85149);
+}
+
+.cc-members-editor__undo:hover {
+  color: var(--text-default);
+}
+
+.cc-members-editor__add {
+  margin-bottom: 6px;
+}
+
+/* --- Searchable add-member combobox (maintainer UX addition) ------------- */
+/* Hand-rolled (no dependency): a filter input + an absolutely-positioned,
+   height-capped listbox. 81 seats make a plain <select> unusable. */
+.cc-combobox {
+  position: relative;
+  width: 100%;
+}
+
+.cc-combobox__input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 8px 10px;
+  color: var(--text-default);
+  font-size: 13px;
+}
+
+.cc-combobox__input:focus {
+  outline: none;
+  border-color: var(--blue, #8dd6ff);
+}
+
+.cc-combobox__list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface-1, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.cc-combobox__option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--radius-input);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.cc-combobox__option:hover {
+  background: var(--surface-2, rgba(141, 214, 255, 0.08));
+}
+
+.cc-combobox__option-login {
+  color: var(--text-default);
+}
+
+.cc-combobox__option-cc {
+  font-size: 11px;
+  color: var(--text-neutral);
+}
+
+.cc-combobox__empty {
+  padding: 8px 9px;
+  font-size: 12px;
+  color: var(--text-muted);
+}

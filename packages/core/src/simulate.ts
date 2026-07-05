@@ -312,6 +312,30 @@ function sumDeltaCredits(deltas: readonly ScopeDelta[], kind: CreditDeltaKind): 
   return deltas.filter((d) => d.kind === kind).reduce((sum, d) => sum + d.deltaCredits, 0);
 }
 
+// Task 4.13 -- membership-move depth (the honest subset, boundary documented
+// on simulatePlan below). Folds every cost_center membership change in the
+// plan into a login -> new-cost-center map: an added `User` resource re-homes
+// that login to the entry's cost center; a removed one tentatively unassigns
+// (null) unless a later addition re-homes them (a 1:1 reassignment is exactly
+// remove-from-A + add-to-B, so the login lands on B). The guard on removals
+// makes the result order-independent, matching diffControls' stable ordering.
+function membershipMovesByLogin(plan: Plan): Map<string, string | null> {
+  const moves = new Map<string, string | null>();
+  for (const entry of plan.entries) {
+    if (entry.controlKind !== 'cost_center' || entry.action !== 'change') continue;
+    for (const change of entry.changes) {
+      if (change.field !== 'membership') continue;
+      for (const r of change.removed) {
+        if (r.type === 'User' && !moves.has(r.name)) moves.set(r.name, null);
+      }
+      for (const r of change.added) {
+        if (r.type === 'User') moves.set(r.name, entry.name);
+      }
+    }
+  }
+  return moves;
+}
+
 export function simulatePlan(
   plan: Plan,
   usageState: UsageState,
@@ -325,12 +349,29 @@ export function simulatePlan(
   void asOfDate;
   void forecast;
 
+  // applyPlanToControls already folds cost_center membership moves into the
+  // post-plan control set -- notably recomputing an affected cost center's
+  // included-usage cap limit by ±7,000/seat moved (see controls.ts). Task
+  // 4.13 membership-move depth (the honest subset): a mover is re-homed to
+  // their NEW cost center for the AFTER block/unblock resolution, so a move
+  // that changes which CCULB governs them (or which cap applies) is reflected.
+  //
+  // Documented boundary (kept surgical -- simulate.ts is shared with Task
+  // 6.4): a mover's own cycle-to-date POOL DRAW is NOT re-attributed between
+  // the two cost centers' aggregates (usageState.costCenters stays as read),
+  // so a cap's *headroom* uses the recomputed limit against the pre-move CC
+  // aggregate draw. Full pool-draw re-attribution needs per-user-per-CC draw
+  // the UsageState doesn't carry; that fidelity is left for a later pass.
   const postPlanControls = applyPlanToControls(controlsState, plan);
+  const moves = membershipMovesByLogin(plan);
 
   const userBlockStatus: UserBlockStatus[] = usageState.users
     .map((user) => {
       const before = resolveUserBlockStatus(user, usageState, controlsState);
-      const after = resolveUserBlockStatus(user, usageState, postPlanControls);
+      const afterUser = moves.has(user.userLogin)
+        ? { ...user, costCenterName: moves.get(user.userLogin) ?? null }
+        : user;
+      const after = resolveUserBlockStatus(afterUser, usageState, postPlanControls);
       return {
         userLogin: user.userLogin,
         blockedBefore: before.blocked,

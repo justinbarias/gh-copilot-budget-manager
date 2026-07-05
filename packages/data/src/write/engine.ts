@@ -13,6 +13,7 @@ import {
   type BudgetFieldChange,
   type CapFieldChange,
   type ControlState,
+  type CostCenterFieldChange,
   type Plan,
   type PlanEntry,
   type SimulationResult,
@@ -276,13 +277,15 @@ async function executeBudgetMutation(
   return { method: 'PATCH', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data };
 }
 
-// Cost-center lifecycle (creating/removing a cost center) is Task 4.13's
-// scope, not this task's -- an 'add'/'delete' included_cap plan entry would
-// only arise from a desiredControls list that invents or omits a cost center
-// entirely, which the Phase-4 Controls screen never does (it always maps
-// enabled/overflow onto the existing live cost-center set). Thrown, not
-// silently no-op'd, so a future caller that DOES try this gets a clear signal
-// rather than a mysteriously-skipped entry.
+// An 'add'/'delete' included_cap plan entry is unreachable by construction and
+// stays a guarded throw. Task 4.13 subsumes cost-center lifecycle into the
+// cost_center control (below): a NEW cost center's cap arrives inside the POST
+// /cost-centers create payload (executeCostCenterMutation's 'add'), and a
+// deleted cost center's cap is removed by DELETE /cost-centers -- never as a
+// standalone included_cap add/delete. The Controls caps grid (Task 4.12) only
+// ever maps enabled/overflow onto the existing live cap set, so it too never
+// produces an included_cap add/delete. Thrown, not silently skipped, so any
+// future caller that tries this gets a clear signal.
 async function executeCapMutation(
   octokit: Octokit,
   enterprise: string,
@@ -310,15 +313,146 @@ async function executeCapMutation(
   return { method: 'PATCH', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data };
 }
 
+// Task 4.13 cost-center lifecycle executor. Unlike budgets/caps (exactly one
+// request per plan entry), a membership 'change' can issue up to three
+// requests -- so it returns an ORDERED list: removals (DELETE) first, then the
+// DEWR/exclude PATCH, then additions (POST). Removals-before-additions means a
+// drill-modal edit that swaps a member never briefly double-attributes a
+// resource; the cross-entry case (a 1:1 reassignment = remove-from-A entry +
+// add-to-B entry) is ordered by orderEntriesForApply below.
+async function executeCostCenterMutation(
+  octokit: Octokit,
+  enterprise: string,
+  entry: Extract<PlanEntry, { controlKind: 'cost_center' }>,
+  live: LiveControlsResult,
+): Promise<ExecutedMutation[]> {
+  if (entry.action === 'add') {
+    const desired = entry.desired;
+    // The cap arrives IN the create payload (§6.9 M5 / Task 4.2 handler): a
+    // new cost center's included-usage cap is not a separate mutation. Only
+    // enabled/overflow travel -- the limit is GitHub-computed from the
+    // attributed resources (never client-supplied).
+    const requestBody = {
+      name: desired.name,
+      dewr_division: desired.dewrDivision,
+      dewr_branch: desired.dewrBranch,
+      dewr_project: desired.dewrProject,
+      excluded_from_enterprise_budget: desired.excludedFromEnterpriseBudget,
+      included_usage_cap: { enabled: desired.includedUsageCap.enabled, overflow: desired.includedUsageCap.overflow },
+      resources: desired.members.map((m) => ({ type: m.type, name: m.name })),
+    };
+    const response = await octokit.request('POST /enterprises/{enterprise}/settings/billing/cost-centers', {
+      enterprise,
+      ...requestBody,
+    });
+    return [{ method: 'POST', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data }];
+  }
+
+  const costCenterId = live.costCenterIdByName.get(entry.name);
+  if (!costCenterId) {
+    throw new Error(`applyPlan: no live cost center found named "${entry.name}" -- the drift check should have caught this`);
+  }
+
+  if (entry.action === 'delete') {
+    const response = await octokit.request('DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}', {
+      enterprise,
+      cost_center_id: costCenterId,
+    });
+    return [{ method: 'DELETE', path: response.url, requestBody: undefined, responseStatus: response.status, responseBody: response.data }];
+  }
+
+  // action === 'change': removals -> DEWR/exclude PATCH -> additions.
+  //
+  // Phase 9 (§9.2 live reconciliation) constraint: a 1:1 move currently stages
+  // as a removal entry on the source cost center + an addition entry on the
+  // target, executed here as two HTTP ops (DELETE then POST /resource). The
+  // Task 4.3 §6.9 investigation found GitHub's REAL resource-mutation response
+  // is `{ message, reassigned_resources }` -- i.e. the live API may reattribute
+  // a resource server-side in a SINGLE call, collapsing the two-op sequence.
+  // When 9.2 wires the live client, revisit whether a cross-CC move should be
+  // one reassignment request rather than DELETE+POST (MSW can't reproduce the
+  // reattribution, so the two-op path stays correct against the mock).
+  const mutations: ExecutedMutation[] = [];
+  const membership = entry.changes.find(
+    (c): c is Extract<CostCenterFieldChange, { field: 'membership' }> => c.field === 'membership',
+  );
+  const scalarChanges = entry.changes.filter(
+    (c): c is Exclude<CostCenterFieldChange, { field: 'membership' }> => c.field !== 'membership',
+  );
+
+  if (membership && membership.removed.length > 0) {
+    const requestBody = { resources: membership.removed.map((r) => ({ type: r.type, name: r.name })) };
+    const response = await octokit.request('DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource', {
+      enterprise,
+      cost_center_id: costCenterId,
+      ...requestBody,
+    });
+    mutations.push({ method: 'DELETE', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data });
+  }
+
+  if (scalarChanges.length > 0) {
+    const requestBody = costCenterPatchBody(scalarChanges);
+    const response = await octokit.request('PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}', {
+      enterprise,
+      cost_center_id: costCenterId,
+      ...requestBody,
+    });
+    mutations.push({ method: 'PATCH', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data });
+  }
+
+  if (membership && membership.added.length > 0) {
+    const requestBody = { resources: membership.added.map((r) => ({ type: r.type, name: r.name })) };
+    const response = await octokit.request('POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource', {
+      enterprise,
+      cost_center_id: costCenterId,
+      ...requestBody,
+    });
+    mutations.push({ method: 'POST', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data });
+  }
+
+  return mutations;
+}
+
+function costCenterPatchBody(changes: readonly Exclude<CostCenterFieldChange, { field: 'membership' }>[]): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const change of changes) {
+    if (change.field === 'dewrDivision') body.dewr_division = change.new;
+    else if (change.field === 'dewrBranch') body.dewr_branch = change.new;
+    else if (change.field === 'dewrProject') body.dewr_project = change.new;
+    else body.excluded_from_enterprise_budget = change.new;
+  }
+  return body;
+}
+
 async function executeMutation(
   octokit: Octokit,
   enterprise: string,
   entry: PlanEntry,
   live: LiveControlsResult,
-): Promise<ExecutedMutation> {
-  return entry.controlKind === 'budget'
-    ? executeBudgetMutation(octokit, enterprise, entry, live)
-    : executeCapMutation(octokit, enterprise, entry, live);
+): Promise<ExecutedMutation[]> {
+  if (entry.controlKind === 'budget') return [await executeBudgetMutation(octokit, enterprise, entry, live)];
+  if (entry.controlKind === 'included_cap') return [await executeCapMutation(octokit, enterprise, entry, live)];
+  return executeCostCenterMutation(octokit, enterprise, entry, live);
+}
+
+// Removals-before-additions across plan entries: a 1:1 reassignment stages a
+// remove-from-A entry and an add-to-B entry; this stable sort hoists any
+// cost_center change that removes members ahead of the rest, so the mover
+// leaves its old cost center before joining the new one (never briefly in
+// two). Stable within each group (preserves diffControls' id-sorted order),
+// and only reorders when a membership removal is present -- every existing
+// budget/cap-only plan is untouched.
+function orderEntriesForApply(entries: readonly PlanEntry[]): PlanEntry[] {
+  const removalRank = (entry: PlanEntry): number =>
+    entry.controlKind === 'cost_center' &&
+    entry.action === 'change' &&
+    entry.changes.some((c) => c.field === 'membership' && c.removed.length > 0)
+      ? 0
+      : 1;
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => removalRank(a.entry) - removalRank(b.entry) || a.index - b.index)
+    .map(({ entry }) => entry);
 }
 
 function budgetActionName(action: PlanEntry['action']): string {
@@ -329,6 +463,16 @@ function capActionName(action: PlanEntry['action']): string {
   return action === 'add' ? 'included_cap.create' : action === 'delete' ? 'included_cap.delete' : 'included_cap.update';
 }
 
+// Audit action for a cost-center entry: a membership 'change' is
+// 'cost_center.membership'; a DEWR/exclude-only 'change' is
+// 'cost_center.update' (CLAUDE.md §6.5's actor/before/after are captured
+// per-entry regardless of how many HTTP requests the entry issued).
+function costCenterActionName(entry: Extract<PlanEntry, { controlKind: 'cost_center' }>): string {
+  if (entry.action === 'add') return 'cost_center.create';
+  if (entry.action === 'delete') return 'cost_center.delete';
+  return entry.changes.some((c) => c.field === 'membership') ? 'cost_center.membership' : 'cost_center.update';
+}
+
 function buildAuditInput(
   entry: PlanEntry,
   liveById: Map<string, ControlState>,
@@ -336,7 +480,12 @@ function buildAuditInput(
   options: ApplyPlanOptions,
   dataSnapshotId: number | null,
 ): AppendAuditEventInput {
-  const action = entry.controlKind === 'budget' ? budgetActionName(entry.action) : capActionName(entry.action);
+  const action =
+    entry.controlKind === 'budget'
+      ? budgetActionName(entry.action)
+      : entry.controlKind === 'included_cap'
+        ? capActionName(entry.action)
+        : costCenterActionName(entry);
   return {
     ts: new Date(),
     actor: options.actor,
@@ -434,10 +583,20 @@ export async function applyPlan(stagedPlan: Plan, options: ApplyPlanOptions): Pr
   const mutationLog: MutationLogEntry[] = [];
   const auditEvents: AppliedAuditEvent[] = [];
 
-  for (const entry of currentPlan.entries) {
+  // Removals-first apply order (see orderEntriesForApply) -- the drift check
+  // above already passed against the diff's canonical (id-sorted) order, so
+  // reordering here only affects the sequence requests are issued in, never
+  // what is applied.
+  for (const entry of orderEntriesForApply(currentPlan.entries)) {
     try {
+      // A cost_center membership entry can issue multiple requests (removals,
+      // PATCH, additions) in order; budgets/caps issue exactly one. Each
+      // request is logged (in issue order) under the same plan-entry id; a
+      // single audit event captures the entry's net before -> after.
       const executed = await executeMutation(options.octokit, options.enterprise, entry, live);
-      mutationLog.push({ planEntryId: entry.id, ...executed });
+      for (const mutation of executed) {
+        mutationLog.push({ planEntryId: entry.id, ...mutation });
+      }
 
       const auditInput = buildAuditInput(entry, liveById, postById, options, dataSnapshotId);
       const row = appendAuditEvent(options.db, auditInput);

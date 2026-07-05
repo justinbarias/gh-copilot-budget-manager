@@ -8,7 +8,7 @@ import { diffControls, type ControlState } from '@copilot-budget/core';
 import { readAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { server } from '../msw/server.js';
-import { BUDGET_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
+import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { applyPlan, dryRunPlan, type ApplyPlanOptions } from './engine.js';
 import { fetchLiveControls } from './live-state.js';
 
@@ -429,5 +429,238 @@ describe('dryRunPlan', () => {
       blockedAfter: true,
       bindingConstraintAfter: 'ulb',
     });
+  });
+});
+
+// --- Task 4.13: cost-center lifecycle writes -------------------------------
+// Every request payload / sequence below is fixture-derived (msw/fixtures/
+// costCenters.ts): the six seeded cost centers, Workforce with 24 User
+// resources, promo enterprise 7,000 credits/seat.
+describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
+  const CYBER_CC = 'Cyber & Identity Services';
+  const WORKFORCE_ID = COST_CENTER_IDS.workforce;
+  const CYBER_ID = COST_CENTER_IDS.cyber;
+
+  it('fetchLiveControls now exposes cost centers with DEWR, exclude flag, and full membership', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const workforce = live.controls.find(
+      (c): c is Extract<ControlState, { kind: 'cost_center' }> => c.kind === 'cost_center' && c.name === WORKFORCE_CC,
+    );
+    expect(workforce).toBeDefined();
+    expect(workforce).toMatchObject({
+      dewrDivision: 'Employment Systems Group',
+      dewrBranch: 'Digital Delivery Branch',
+      dewrProject: 'WFA-DIGITAL',
+      excludedFromEnterpriseBudget: false,
+    });
+    expect(workforce!.members).toHaveLength(24);
+    expect(workforce!.members).toContainEqual({ type: 'User', name: 'rpatel2' });
+    expect(live.costCenterIdByName.get(WORKFORCE_CC)).toBe(WORKFORCE_ID);
+  });
+
+  it('create: POST /cost-centers with the exact create payload (name, DEWR, excluded, cap prefs, resources) + audit', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const newCC: ControlState = {
+      kind: 'cost_center',
+      name: 'New Delivery Team',
+      dewrDivision: 'Digital & Technology Group',
+      dewrBranch: 'Platform Enablement Branch',
+      dewrProject: 'NEW-DELIVERY',
+      excludedFromEnterpriseBudget: true,
+      members: [{ type: 'User', name: 'sam-kelly' }],
+      includedUsageCap: { enabled: true, overflow: 'metered' },
+    };
+    const desiredControls = [...live.controls, newCC];
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    expect(stagedPlan.entries).toEqual([
+      { id: 'cost_center:New Delivery Team', controlKind: 'cost_center', action: 'add', name: 'New Delivery Team', desired: newCC },
+    ]);
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+
+    expect(result.mutationLog).toHaveLength(1);
+    const mutation = result.mutationLog[0]!;
+    expect(mutation.method).toBe('POST');
+    expect(mutation.path).toMatch(/\/enterprises\/dewr\/settings\/billing\/cost-centers$/);
+    expect(mutation.requestBody).toEqual({
+      name: 'New Delivery Team',
+      dewr_division: 'Digital & Technology Group',
+      dewr_branch: 'Platform Enablement Branch',
+      dewr_project: 'NEW-DELIVERY',
+      excluded_from_enterprise_budget: true,
+      included_usage_cap: { enabled: true, overflow: 'metered' },
+      resources: [{ type: 'User', name: 'sam-kelly' }],
+    });
+    // MSW create echoes the computed cap limit (1 seat x 7,000).
+    expect((mutation.responseBody as { included_usage_cap: { computed_limit_credits: number } }).included_usage_cap.computed_limit_credits).toBe(7_000);
+
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0]!.action).toBe('cost_center.create');
+    expect(result.auditEvents[0]!.entityRef).toBe('cost_center:New Delivery Team');
+    expect(result.auditEvents[0]!.before).toBeNull();
+    expect(result.auditEvents[0]!.after).toMatchObject({ name: 'New Delivery Team', excludedFromEnterpriseBudget: true });
+    expect(verifyStoredChain(db)).toEqual({ ok: true });
+  });
+
+  it('membership: a single-CC add+remove issues DELETE then POST /resource (removal first) with recomputed limit in evidence + one membership audit', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const desiredControls = live.controls.map((c) => {
+      if (c.kind === 'cost_center' && c.name === WORKFORCE_CC) {
+        const members = c.members.filter((m) => m.name !== 'rpatel2').concat([{ type: 'User' as const, name: 'new-hire' }]);
+        return { ...c, members };
+      }
+      return c;
+    });
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+
+    // Removal (DELETE) precedes addition (POST).
+    expect(result.mutationLog).toHaveLength(2);
+    const [remove, add] = result.mutationLog;
+    expect(remove!.method).toBe('DELETE');
+    expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
+    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(add!.method).toBe('POST');
+    expect(add!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
+    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'new-hire' }] });
+
+    // The recomputed cap limit is observable in the mutation response (24 + 1
+    // seats x 7,000 = 175,000 on add; 24 - 1 = 161,000 on remove).
+    expect((add!.responseBody as { included_usage_cap: { computed_limit_credits: number } }).included_usage_cap.computed_limit_credits).toBe(175_000);
+    expect((remove!.responseBody as { included_usage_cap: { computed_limit_credits: number } }).included_usage_cap.computed_limit_credits).toBe(161_000);
+
+    // One audit event for the entry (net before -> after membership).
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0]!.action).toBe('cost_center.membership');
+    expect(result.auditEvents[0]!.entityRef).toBe(`cost_center:${WORKFORCE_CC}`);
+  });
+
+  it('reassign: a 1:1 move across cost centers issues DELETE(old)/resource then POST(new)/resource in that sequence + two membership audits', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const desiredControls = live.controls.map((c) => {
+      if (c.kind === 'cost_center' && c.name === WORKFORCE_CC) return { ...c, members: c.members.filter((m) => m.name !== 'rpatel2') };
+      if (c.kind === 'cost_center' && c.name === CYBER_CC) return { ...c, members: [...c.members, { type: 'User' as const, name: 'rpatel2' }] };
+      return c;
+    });
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    // diff order is id-sorted (Cyber before Workforce); the executor reorders
+    // to removal-first.
+    expect(stagedPlan.entries.map((e) => e.id)).toEqual([`cost_center:${CYBER_CC}`, `cost_center:${WORKFORCE_CC}`]);
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+
+    expect(result.mutationLog).toHaveLength(2);
+    const [remove, add] = result.mutationLog;
+    // Remove from the OLD cost center first.
+    expect(remove!.method).toBe('DELETE');
+    expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
+    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    // Then add to the NEW cost center.
+    expect(add!.method).toBe('POST');
+    expect(add!.path).toMatch(new RegExp(`/cost-centers/${CYBER_ID}/resource$`));
+    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+
+    // Two audit events, in apply (removal-first) order.
+    expect(result.auditEvents.map((e) => e.entityRef)).toEqual([`cost_center:${WORKFORCE_CC}`, `cost_center:${CYBER_CC}`]);
+    expect(result.auditEvents.every((e) => e.action === 'cost_center.membership')).toBe(true);
+    expect(verifyStoredChain(db)).toEqual({ ok: true });
+  });
+
+  it('exclude-from-enterprise-budget toggle issues a PATCH with only that field + a cost_center.update audit', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const desiredControls = live.controls.map((c) =>
+      c.kind === 'cost_center' && c.name === WORKFORCE_CC ? { ...c, excludedFromEnterpriseBudget: true } : c,
+    );
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+
+    expect(result.mutationLog).toHaveLength(1);
+    expect(result.mutationLog[0]!.method).toBe('PATCH');
+    expect(result.mutationLog[0]!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}$`));
+    expect(result.mutationLog[0]!.requestBody).toEqual({ excluded_from_enterprise_budget: true });
+    expect(result.auditEvents[0]!.action).toBe('cost_center.update');
+  });
+
+  it('archive/delete issues DELETE /cost-centers/:id + a cost_center.delete audit', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    // Remove only the Cyber cost-center entity (its cap stays, producing no cap diff).
+    const desiredControls = live.controls.filter((c) => !(c.kind === 'cost_center' && c.name === CYBER_CC));
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    expect(stagedPlan.entries).toHaveLength(1);
+    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'cost_center', action: 'delete', name: CYBER_CC });
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+    expect(result.mutationLog[0]!.method).toBe('DELETE');
+    expect(result.mutationLog[0]!.path).toMatch(new RegExp(`/cost-centers/${CYBER_ID}$`));
+    expect(result.auditEvents[0]!.action).toBe('cost_center.delete');
+    expect(result.auditEvents[0]!.before).toMatchObject({ name: CYBER_CC });
+    expect(result.auditEvents[0]!.after).toBeNull();
+  });
+
+  // Validator (Task 4.13 §11): orderEntriesForApply must stay coherent when a
+  // move (remove-from-A entry + add-to-B entry) rides alongside an UNRELATED
+  // create in the same plan. The only invariant is removal-before-its-target-
+  // addition, and since ALL membership removals rank ahead of every other
+  // entry, that holds regardless of where a create's POST lands. Proves the
+  // create is never hoisted ahead of the move's removal and never wedged
+  // between a removal and its paired addition in a way that double-attributes.
+  it('a move + an unrelated create in one plan still issues the removal first, create not misordered', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG);
+    const newCC: ControlState = {
+      kind: 'cost_center',
+      name: 'New Delivery Team',
+      dewrDivision: 'Digital & Technology Group',
+      dewrBranch: 'Platform Enablement Branch',
+      dewrProject: 'NEW-DELIVERY',
+      excludedFromEnterpriseBudget: false,
+      members: [{ type: 'User', name: 'sam-kelly' }],
+      includedUsageCap: { enabled: true, overflow: 'block' },
+    };
+    // rpatel2 moves Workforce -> Cyber (remove entry on Workforce + add entry
+    // on Cyber), AND a brand-new cost center is created, all in one plan.
+    const desiredControls = [
+      ...live.controls.map((c) => {
+        if (c.kind === 'cost_center' && c.name === WORKFORCE_CC) return { ...c, members: c.members.filter((m) => m.name !== 'rpatel2') };
+        if (c.kind === 'cost_center' && c.name === CYBER_CC) return { ...c, members: [...c.members, { type: 'User' as const, name: 'rpatel2' }] };
+        return c;
+      }),
+      newCC,
+    ];
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    // Three cost_center entries: Cyber add, New Delivery create, Workforce remove.
+    expect(stagedPlan.entries).toHaveLength(3);
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+
+    expect(result.mutationLog).toHaveLength(3);
+    // The removal (DELETE Workforce/resource) is issued FIRST, ahead of both
+    // the paired addition and the unrelated create.
+    expect(result.mutationLog[0]!.method).toBe('DELETE');
+    expect(result.mutationLog[0]!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
+
+    const removeIdx = result.mutationLog.findIndex((m) => m.method === 'DELETE' && /\/resource$/.test(m.path));
+    const addIdx = result.mutationLog.findIndex((m) => m.method === 'POST' && new RegExp(`/cost-centers/${CYBER_ID}/resource$`).test(m.path));
+    const createIdx = result.mutationLog.findIndex((m) => m.method === 'POST' && /\/cost-centers$/.test(m.path));
+    // The paired addition follows the removal; the create is present and never
+    // ahead of the removal (its exact slot among the rank-1 group is irrelevant).
+    expect(removeIdx).toBe(0);
+    expect(addIdx).toBeGreaterThan(removeIdx);
+    expect(createIdx).toBeGreaterThan(removeIdx);
+
+    // Each entry still gets exactly one audit event (create + two membership).
+    expect(result.auditEvents).toHaveLength(3);
+    expect(verifyStoredChain(db)).toEqual({ ok: true });
   });
 });

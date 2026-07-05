@@ -117,7 +117,9 @@ test('Users table renders the ranked fixture roster with working search, filters
     await expect(screen.locator('.users__result-count')).toHaveText('8 users');
     await expect(rows).toHaveCount(8);
     for (const row of await rows.all()) {
-      await expect(row.locator('.users-table__cc')).toHaveText('Payments Integrity Engineering');
+      // Task 4.13: the cost-center cell is now a reassignment <select> carrying
+      // the current CC as its selected value.
+      await expect(row.locator('.users-table__cc-select')).toHaveValue('Payments Integrity Engineering');
     }
     await screen.getByLabel('Filter by cost center').selectOption('all');
 
@@ -152,20 +154,24 @@ test('Users table renders the ranked fixture roster with working search, filters
     // falls back to the Workforce CCULB ($52 -> 5,200 credits), not the
     // universal ULB.
     await expect(rows.nth(0).locator('.users-table__ulb')).toHaveText('5,200 · cost center');
-    await expect(rows.nth(0).locator('.users-table__cc')).toHaveText('Workforce Australia Platform');
+    // Task 4.13 supersedes: the cost-center cell is now a reassignment <select>
+    // (a 1:1 remove+add plan opens on change), so it carries the current CC as
+    // the selected value rather than plain text.
+    await expect(rows.nth(0).locator('.users-table__cc-select')).toHaveValue('Workforce Australia Platform');
 
-    // Task 4.11 phase-supersedes the "read-only screen" assertion this test
-    // originally made (SPEC.md Assumption 4 was itself phase-scoped to the
-    // MVP tables, not a permanent constraint): the table now carries exactly
-    // two write affordances -- a checkbox per row (+ "Select all on page" in
-    // the header) and a per-row "Set ULB" button, both exercised end-to-end
-    // in users-ulb.spec.ts. Cost-center reassignment stays OUT (Task 4.13's
-    // scope) -- still no <select> in any row, which is what actually matters
-    // for "no OTHER write affordance" per the acceptance criteria.
+    // Task 4.11 + 4.13 phase-supersede the "read-only screen" assertion this
+    // test originally made (SPEC.md Assumption 4 was itself phase-scoped to the
+    // MVP tables, not a permanent constraint): the table now carries the
+    // checkbox per row (+ "Select all on page"), a per-row "Set ULB" button
+    // (Task 4.11), AND a cost-center reassignment <select> (Task 4.13). The
+    // originally-inverted "no <select> in any row" assertion is intentionally
+    // flipped -- reassignment is now in scope and exercised in
+    // cost-centers-lifecycle.spec.ts.
     await expect(screen.getByLabel('Select all on page')).toBeVisible();
     await expect(rows.getByRole('checkbox', { name: 'Select rpatel2' })).toBeVisible();
     await expect(rows.getByRole('button', { name: 'Set ULB' })).toBeVisible();
-    await expect(screen.locator('.users-table__row select')).toHaveCount(0);
+    await expect(screen.locator('.users-table__row select')).toHaveCount(1);
+    await expect(rows.nth(0).getByLabel('Cost center for rpatel2')).toBeVisible();
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

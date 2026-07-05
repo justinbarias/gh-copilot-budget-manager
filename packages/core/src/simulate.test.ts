@@ -420,3 +420,69 @@ describe('simulatePlan -- multi-entry plan re-resolves precedence (delete CCULB 
     ]);
   });
 });
+
+// Task 4.13: membership-move depth. A 1:1 reassignment re-homes the mover to
+// their NEW cost center for the AFTER resolution, so a move that changes which
+// CCULB governs them changes their block status.
+describe('simulatePlan -- cost-center membership moves re-home the mover (Task 4.13)', () => {
+  function costCenter(name: string, members: Array<{ type: 'User'; name: string }>): ControlState {
+    return {
+      kind: 'cost_center',
+      name,
+      dewrDivision: 'D',
+      dewrBranch: 'B',
+      dewrProject: 'P',
+      excludedFromEnterpriseBudget: false,
+      members,
+      includedUsageCap: { enabled: false, overflow: 'block' },
+    };
+  }
+
+  it('newly blocks a mover reassigned from a generous CCULB to a team with only the (lower) universal ULB', () => {
+    // mover: 8,000 used. Generous CCULB = 10,000 (headroom 2,000, not blocked).
+    // Stingy has no CCULB -> universal 5,000 (headroom -3,000, blocked).
+    const live: ControlState[] = [
+      budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 }),
+      budget({ scope: 'multi_user_cost_center', entityName: 'Generous', amountCredits: 10_000 }),
+      costCenter('Generous', [{ type: 'User', name: 'mover' }]),
+      costCenter('Stingy', []),
+    ];
+    const desired: ControlState[] = [
+      budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 }),
+      budget({ scope: 'multi_user_cost_center', entityName: 'Generous', amountCredits: 10_000 }),
+      costCenter('Generous', []),
+      costCenter('Stingy', [{ type: 'User', name: 'mover' }]),
+    ];
+    const plan = diffControls(live, desired);
+    // Sanity: exactly the two membership change entries (remove from Generous, add to Stingy).
+    expect(plan.entries).toHaveLength(2);
+
+    const usage = usageState({
+      users: [user({ userLogin: 'mover', costCenterName: 'Generous', poolCreditsUsed: 8_000 })],
+    });
+    const result = simulatePlan(plan, usage, live, AS_OF_DATE);
+    expect(result.newlyBlockedUserLogins).toEqual(['mover']);
+    expect(result.userBlockStatus).toEqual([
+      { userLogin: 'mover', blockedBefore: false, blockedAfter: true, bindingConstraintAfter: 'ulb' },
+    ]);
+  });
+
+  it('is a no-op (no block change) when the move keeps the mover under a ULB with headroom', () => {
+    // mover: 4,000 used, universal 5,000 everywhere; neither team has a CCULB.
+    const live: ControlState[] = [
+      budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 }),
+      costCenter('A', [{ type: 'User', name: 'mover' }]),
+      costCenter('B', []),
+    ];
+    const desired: ControlState[] = [
+      budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 }),
+      costCenter('A', []),
+      costCenter('B', [{ type: 'User', name: 'mover' }]),
+    ];
+    const plan = diffControls(live, desired);
+    const usage = usageState({ users: [user({ userLogin: 'mover', costCenterName: 'A', poolCreditsUsed: 4_000 })] });
+    const result = simulatePlan(plan, usage, live, AS_OF_DATE);
+    expect(result.newlyBlockedUserLogins).toEqual([]);
+    expect(result.newlyUnblockedUserLogins).toEqual([]);
+  });
+});

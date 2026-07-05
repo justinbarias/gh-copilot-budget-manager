@@ -5,6 +5,8 @@ import {
   type BudgetControl,
   type BudgetScope,
   type ControlState,
+  type CostCenterControl,
+  type CostCenterResourceRef,
   type IncludedCapControl,
   type UsageState,
   type UserUsage,
@@ -46,7 +48,20 @@ interface WireBudget {
 interface WireCostCenter {
   id: string;
   name: string;
+  dewr_division: string;
+  dewr_branch: string;
+  dewr_project: string;
+  excluded_from_enterprise_budget: boolean;
   included_usage_cap: { enabled: boolean; computed_limit_credits: number; overflow: 'block' | 'metered' };
+}
+
+// The cost-center resource endpoint's row shape (Task 4.2 handler). `via_ent_team`
+// is a simulation-only provenance enrichment (msw/fixtures/costCenters.ts); the
+// diff basis only uses type + name, so it is deliberately dropped here.
+interface WireCostCenterResource {
+  type: CostCenterResourceRef['type'];
+  name: string;
+  via_ent_team?: string;
 }
 
 // budget_amount is USD (PRD §2.3); ControlState.amountCredits is credits
@@ -75,6 +90,24 @@ function toCapControl(wire: WireCostCenter): IncludedCapControl {
     enabled: wire.included_usage_cap.enabled,
     overflow: wire.included_usage_cap.overflow,
     computedLimitCredits: wire.included_usage_cap.computed_limit_credits,
+  };
+}
+
+// Task 4.13: the cost center itself as a diffable/executable control. Its
+// membership roster is the diff basis for the add/remove resource mutations,
+// and its DEWR + exclude-flag fields ride the PATCH. The cap prefs mirror the
+// live cap for a faithful round-trip, but diffCostCenter never diffs them (the
+// IncludedCapControl above owns cap edits, Task 4.12).
+function toCostCenterControl(wire: WireCostCenter, resources: readonly WireCostCenterResource[]): CostCenterControl {
+  return {
+    kind: 'cost_center',
+    name: wire.name,
+    dewrDivision: wire.dewr_division,
+    dewrBranch: wire.dewr_branch,
+    dewrProject: wire.dewr_project,
+    excludedFromEnterpriseBudget: wire.excluded_from_enterprise_budget,
+    members: resources.map((r) => ({ type: r.type, name: r.name })),
+    includedUsageCap: { enabled: wire.included_usage_cap.enabled, overflow: wire.included_usage_cap.overflow },
   };
 }
 
@@ -117,6 +150,27 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string): P
     })(),
   ]);
 
+  // Task 4.13: the write engine now diffs/executes cost-center membership too,
+  // so the re-read fetches each cost center's resource roster (the SAME
+  // paginated endpoint listCostCenters/assembleUsageState already read). One
+  // request per cost center; the mock is stateless so this stays deterministic.
+  const resourcesByCostCenterId = new Map<string, WireCostCenterResource[]>(
+    await Promise.all(
+      rawCostCenters.map(
+        async (cc) =>
+          [
+            cc.id,
+            await paginateAll<WireCostCenterResource>(
+              octokit,
+              '/enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource',
+              { enterprise, cost_center_id: cc.id },
+              (data) => (data as { resources: WireCostCenterResource[] }).resources,
+            ),
+          ] as const,
+      ),
+    ),
+  );
+
   // `repository`-scope budgets are excluded from ControlState's BudgetScope
   // union (packages/core/src/controls.ts: "not a scope this tool
   // administers per the Phase 4 task breakdown") -- filtered out here for
@@ -125,6 +179,9 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string): P
 
   const budgetControls: BudgetControl[] = rawBudgets.map(toBudgetControl);
   const capControls: IncludedCapControl[] = rawCostCenters.map(toCapControl);
+  const costCenterControls: CostCenterControl[] = rawCostCenters.map((cc) =>
+    toCostCenterControl(cc, resourcesByCostCenterId.get(cc.id) ?? []),
+  );
 
   const budgetWireByIdentity = new Map<string, BudgetWireRef>(
     rawBudgets.map((wire, i) => [
@@ -135,7 +192,7 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string): P
   const costCenterIdByName = new Map(rawCostCenters.map((cc) => [cc.name, cc.id]));
 
   return {
-    controls: [...budgetControls, ...capControls],
+    controls: [...budgetControls, ...capControls, ...costCenterControls],
     budgetWireByIdentity,
     costCenterIdByName,
   };

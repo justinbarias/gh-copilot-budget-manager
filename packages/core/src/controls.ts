@@ -71,16 +71,77 @@ export interface IncludedCapControl {
   computedLimitCredits: number;
 }
 
-export type ControlState = BudgetControl | IncludedCapControl;
+// Task 4.13: the cost center itself as an administrable control. A cost center
+// has lifecycle (create / archive-delete), a DEWR financial mapping, an
+// exclude-from-enterprise-budget flag, and a membership roster -- all writes,
+// so it rides the SAME staged-plan pipeline (diffControls -> validatePlan ->
+// simulatePlan -> applyPlan) as budgets/caps, no bespoke write seam. Its
+// included-usage cap knobs (enabled/overflow) are carried here ONLY to seed a
+// create's POST payload; ongoing cap edits for an *existing* cost center flow
+// through IncludedCapControl (Task 4.12), and diffCostCenter deliberately
+// never diffs the cap -- so the cap is administered in exactly one place and
+// stays structurally non-dial-able (its computed limit is never a control field).
+export type CostCenterResourceType = 'User' | 'Org' | 'Repo' | 'EnterpriseTeam';
+
+export interface CostCenterResourceRef {
+  type: CostCenterResourceType;
+  name: string;
+}
+
+export interface CostCenterControl {
+  kind: 'cost_center';
+  name: string;
+  dewrDivision: string;
+  dewrBranch: string;
+  dewrProject: string;
+  excludedFromEnterpriseBudget: boolean;
+  /** Every attributed resource (User/Org/Repo/EnterpriseTeam) -- the diff basis for membership add/remove. */
+  members: readonly CostCenterResourceRef[];
+  /**
+   * Initial included-usage-cap prefs, consumed ONLY when this control is
+   * created ('add' -> POST /cost-centers payload). For an existing cost
+   * center the cap is administered via IncludedCapControl (Task 4.12);
+   * diffCostCenter never emits a cap change from here, so these fields are
+   * inert on a live control beyond faithfully round-tripping current state.
+   */
+  includedUsageCap: { enabled: boolean; overflow: CapOverflow };
+}
+
+// Promo-enterprise per-seat included-credit funding (CLAUDE.md §5: ~7,000
+// credits/seat). The included-usage cap is GitHub-computed as seats × this;
+// mirrored here (matching MSW's PROMO_CREDITS_PER_SEAT_ENTERPRISE) so pure
+// simulate math can recompute a cap's limit when membership moves shift its
+// attributed seat count -- see applyPlanToControls' membership branch. Core
+// counts only `User` resources as seats; EnterpriseTeam/Org expansion is an
+// upstream (MSW/live) concern the pure layer can't roster, so a membership
+// delta of those types leaves the cap limit unchanged in simulate (the real
+// recomputed limit still surfaces live via the mutation response).
+export const INCLUDED_CAP_CREDITS_PER_SEAT = 7_000;
+
+export type ControlState = BudgetControl | IncludedCapControl | CostCenterControl;
 
 // Stable identity key used to match live <-> desired controls and as the
-// deterministic Plan sort key. Prefixed by kind so a `budget:` entry and an
-// `included_cap:` entry can never collide even if the human-readable name
-// coincides.
+// deterministic Plan sort key. Prefixed by kind so entries of different kinds
+// can never collide even if the human-readable name coincides.
 export function controlIdentity(control: ControlState): string {
-  return control.kind === 'budget'
-    ? `budget:${control.scope}:${control.entityName}`
-    : `included_cap:${control.costCenterName}`;
+  switch (control.kind) {
+    case 'budget':
+      return `budget:${control.scope}:${control.entityName}`;
+    case 'included_cap':
+      return `included_cap:${control.costCenterName}`;
+    case 'cost_center':
+      return `cost_center:${control.name}`;
+  }
+}
+
+function resourceKey(r: CostCenterResourceRef): string {
+  return `${r.type}:${r.name}`;
+}
+
+// Core counts a `User` resource as one seat; EnterpriseTeam/Org expansion is
+// not modeled in the pure layer (see INCLUDED_CAP_CREDITS_PER_SEAT).
+function userSeatCount(resources: readonly CostCenterResourceRef[]): number {
+  return resources.reduce((n, r) => (r.type === 'User' ? n + 1 : n), 0);
 }
 
 // --- Diff field types ----------------------------------------------------
@@ -97,6 +158,19 @@ export type BudgetFieldChange =
 export type CapFieldChange =
   | { field: 'enabled'; old: boolean; new: boolean }
   | { field: 'overflow'; old: CapOverflow; new: CapOverflow };
+
+// Cost-center 'change' fields. `name` is deliberately absent: the identity
+// key is the name, so a rename would present as delete+add, not a change --
+// and no Task 4.13 flow renames a live cost center. `membership` batches the
+// resource delta (added/removed) in one change; the executor issues removals
+// before additions so a 1:1 reassignment never briefly double-attributes a
+// resource. The included-usage cap is NOT here (see CostCenterControl).
+export type CostCenterFieldChange =
+  | { field: 'dewrDivision'; old: string; new: string }
+  | { field: 'dewrBranch'; old: string; new: string }
+  | { field: 'dewrProject'; old: string; new: string }
+  | { field: 'excludedFromEnterpriseBudget'; old: boolean; new: boolean }
+  | { field: 'membership'; added: readonly CostCenterResourceRef[]; removed: readonly CostCenterResourceRef[] };
 
 // --- Plan ------------------------------------------------------------------
 
@@ -145,6 +219,27 @@ export type PlanEntry =
       action: 'change';
       costCenterName: string;
       changes: readonly CapFieldChange[];
+    }
+  | {
+      id: string;
+      controlKind: 'cost_center';
+      action: 'add';
+      name: string;
+      desired: CostCenterControl;
+    }
+  | {
+      id: string;
+      controlKind: 'cost_center';
+      action: 'delete';
+      name: string;
+      live: CostCenterControl;
+    }
+  | {
+      id: string;
+      controlKind: 'cost_center';
+      action: 'change';
+      name: string;
+      changes: readonly CostCenterFieldChange[];
     };
 
 export interface Plan {
@@ -191,6 +286,59 @@ function diffCap(live: IncludedCapControl, desired: IncludedCapControl): CapFiel
   return changes;
 }
 
+// Membership delta is set-based on (type, name); DEWR/exclude are scalar
+// comparisons. includedUsageCap is intentionally never read here -- see
+// CostCenterControl's doc comment (cap edits are IncludedCapControl's job).
+function diffCostCenter(live: CostCenterControl, desired: CostCenterControl): CostCenterFieldChange[] {
+  const changes: CostCenterFieldChange[] = [];
+  if (live.dewrDivision !== desired.dewrDivision) {
+    changes.push({ field: 'dewrDivision', old: live.dewrDivision, new: desired.dewrDivision });
+  }
+  if (live.dewrBranch !== desired.dewrBranch) {
+    changes.push({ field: 'dewrBranch', old: live.dewrBranch, new: desired.dewrBranch });
+  }
+  if (live.dewrProject !== desired.dewrProject) {
+    changes.push({ field: 'dewrProject', old: live.dewrProject, new: desired.dewrProject });
+  }
+  if (live.excludedFromEnterpriseBudget !== desired.excludedFromEnterpriseBudget) {
+    changes.push({
+      field: 'excludedFromEnterpriseBudget',
+      old: live.excludedFromEnterpriseBudget,
+      new: desired.excludedFromEnterpriseBudget,
+    });
+  }
+  const liveKeys = new Set(live.members.map(resourceKey));
+  const desiredKeys = new Set(desired.members.map(resourceKey));
+  const added = desired.members.filter((r) => !liveKeys.has(resourceKey(r)));
+  const removed = live.members.filter((r) => !desiredKeys.has(resourceKey(r)));
+  if (added.length > 0 || removed.length > 0) {
+    changes.push({ field: 'membership', added, removed });
+  }
+  return changes;
+}
+
+function buildAddEntry(id: string, desired: ControlState): PlanEntry {
+  switch (desired.kind) {
+    case 'budget':
+      return { id, controlKind: 'budget', action: 'add', scope: desired.scope, entityName: desired.entityName, desired };
+    case 'included_cap':
+      return { id, controlKind: 'included_cap', action: 'add', costCenterName: desired.costCenterName, desired };
+    case 'cost_center':
+      return { id, controlKind: 'cost_center', action: 'add', name: desired.name, desired };
+  }
+}
+
+function buildDeleteEntry(id: string, live: ControlState): PlanEntry {
+  switch (live.kind) {
+    case 'budget':
+      return { id, controlKind: 'budget', action: 'delete', scope: live.scope, entityName: live.entityName, live };
+    case 'included_cap':
+      return { id, controlKind: 'included_cap', action: 'delete', costCenterName: live.costCenterName, live };
+    case 'cost_center':
+      return { id, controlKind: 'cost_center', action: 'delete', name: live.name, live };
+  }
+}
+
 // Terraform-style desired-vs-live diff (design/README.md §3's right rail: `+`
 // add, `~` change with old -> new, `-` delete). Deterministic: entries are
 // sorted by their stable identity key regardless of input order, so
@@ -207,46 +355,12 @@ export function diffControls(live: readonly ControlState[], desired: readonly Co
     const desiredControl = desiredById.get(id);
 
     if (!liveControl && desiredControl) {
-      entries.push(
-        desiredControl.kind === 'budget'
-          ? {
-              id,
-              controlKind: 'budget',
-              action: 'add',
-              scope: desiredControl.scope,
-              entityName: desiredControl.entityName,
-              desired: desiredControl,
-            }
-          : {
-              id,
-              controlKind: 'included_cap',
-              action: 'add',
-              costCenterName: desiredControl.costCenterName,
-              desired: desiredControl,
-            },
-      );
+      entries.push(buildAddEntry(id, desiredControl));
       continue;
     }
 
     if (liveControl && !desiredControl) {
-      entries.push(
-        liveControl.kind === 'budget'
-          ? {
-              id,
-              controlKind: 'budget',
-              action: 'delete',
-              scope: liveControl.scope,
-              entityName: liveControl.entityName,
-              live: liveControl,
-            }
-          : {
-              id,
-              controlKind: 'included_cap',
-              action: 'delete',
-              costCenterName: liveControl.costCenterName,
-              live: liveControl,
-            },
-      );
+      entries.push(buildDeleteEntry(id, liveControl));
       continue;
     }
 
@@ -278,6 +392,11 @@ export function diffControls(live: readonly ControlState[], desired: readonly Co
             changes,
           });
         }
+      } else if (liveControl.kind === 'cost_center' && desiredControl.kind === 'cost_center') {
+        const changes = diffCostCenter(liveControl, desiredControl);
+        if (changes.length > 0) {
+          entries.push({ id, controlKind: 'cost_center', action: 'change', name: liveControl.name, changes });
+        }
       } else {
         throw new Error(`diffControls: control kind mismatch for id ${id}`);
       }
@@ -307,6 +426,37 @@ function applyCapChanges(control: IncludedCapControl, changes: readonly CapField
   return next;
 }
 
+function membershipDelta(changes: readonly CostCenterFieldChange[]): Extract<CostCenterFieldChange, { field: 'membership' }> | undefined {
+  return changes.find((c): c is Extract<CostCenterFieldChange, { field: 'membership' }> => c.field === 'membership');
+}
+
+function applyCostCenterChanges(control: CostCenterControl, changes: readonly CostCenterFieldChange[]): CostCenterControl {
+  let next = control;
+  for (const change of changes) {
+    switch (change.field) {
+      case 'dewrDivision':
+        next = { ...next, dewrDivision: change.new };
+        break;
+      case 'dewrBranch':
+        next = { ...next, dewrBranch: change.new };
+        break;
+      case 'dewrProject':
+        next = { ...next, dewrProject: change.new };
+        break;
+      case 'excludedFromEnterpriseBudget':
+        next = { ...next, excludedFromEnterpriseBudget: change.new };
+        break;
+      case 'membership': {
+        const removedKeys = new Set(change.removed.map(resourceKey));
+        const kept = next.members.filter((r) => !removedKeys.has(resourceKey(r)));
+        next = { ...next, members: [...kept, ...change.added] };
+        break;
+      }
+    }
+  }
+  return next;
+}
+
 // Applies a Plan onto a live control list to produce the post-plan state --
 // what `live` becomes after Apply. Shared by validatePlan (post-plan checks
 // like the enterprise-cap-below-sum blocker) and simulatePlan (before-vs-
@@ -331,6 +481,30 @@ export function applyPlanToControls(live: readonly ControlState[], plan: Plan): 
       byId.set(entry.id, applyBudgetChanges(current, entry.changes));
     } else if (entry.controlKind === 'included_cap' && current.kind === 'included_cap') {
       byId.set(entry.id, applyCapChanges(current, entry.changes));
+    } else if (entry.controlKind === 'cost_center' && current.kind === 'cost_center') {
+      byId.set(entry.id, applyCostCenterChanges(current, entry.changes));
+      // A membership move shifts the cost center's attributed seats, so its
+      // GitHub-computed included-usage cap limit shifts by ±7,000/seat (only
+      // `User` seats are modeled in the pure layer -- see INCLUDED_CAP_
+      // CREDITS_PER_SEAT). This keeps post-plan cap governance honest in
+      // simulate: a member joining a cap-ON team lifts that team's ceiling,
+      // a member leaving lowers it. computedLimitCredits is never a diffable
+      // control field, so mutating it here can never produce a phantom plan
+      // entry -- it only feeds the after-state block/headroom math.
+      const membership = membershipDelta(entry.changes);
+      if (membership) {
+        const capId = `included_cap:${entry.name}`;
+        const cap = byId.get(capId);
+        if (cap && cap.kind === 'included_cap') {
+          const seatDelta = userSeatCount(membership.added) - userSeatCount(membership.removed);
+          if (seatDelta !== 0) {
+            byId.set(capId, {
+              ...cap,
+              computedLimitCredits: Math.max(0, cap.computedLimitCredits + seatDelta * INCLUDED_CAP_CREDITS_PER_SEAT),
+            });
+          }
+        }
+      }
     }
   }
 

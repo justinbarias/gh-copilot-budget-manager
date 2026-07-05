@@ -1,4 +1,4 @@
-import { applyPlanToControls, isUlbScope, type BudgetControl, type ControlState, type Plan } from './controls.js';
+import { applyPlanToControls, isUlbScope, type BudgetControl, type ControlState, type CostCenterControl, type Plan } from './controls.js';
 
 // FR4 / CLAUDE.md §6.3-§6.4: write-time validation. Blockers must stop Apply
 // outright (invariant #4: "block enterprise-cap-below-sum-of-cost-centers");
@@ -90,14 +90,32 @@ export function validatePlan(plan: Plan, context: ValidationContext): Validation
 // cost-center spending-limit amounts, regardless of whether either was
 // touched by *this* plan (raising cost-center budgets without touching the
 // enterprise cap must still trip this if the sum now exceeds it).
+//
+// Task 4.13 made this exclusion-aware. A cost center flagged
+// `excludedFromEnterpriseBudget` bills against its own included-usage cap, not
+// the enterprise metered budget, so its cost-center spending limit must NOT
+// count toward the sum the enterprise cap has to cover. (Before 4.13 the
+// exclusion flag didn't exist in the control model, so the 4.4 validator
+// conservatively summed ALL cost-center budgets -- a documented stopgap now
+// resolved here.) An excluded cost center is identified by a CostCenterControl
+// in the post-plan state carrying the flag; the flag lives on the cost-center
+// entity, while the spending limit is a separate cost_center-scope budget --
+// both keyed by the same cost-center name.
 function checkEnterpriseCapBelowCostCenterSum(postPlan: readonly ControlState[], blockers: Blocker[]): void {
   const enterpriseBudget = postPlan.find(
     (c): c is BudgetControl => c.kind === 'budget' && c.scope === 'enterprise',
   );
   if (!enterpriseBudget) return; // nothing to compare against -- no enterprise spending limit defined post-plan.
 
+  const excludedCostCenterNames = new Set(
+    postPlan
+      .filter((c): c is CostCenterControl => c.kind === 'cost_center' && c.excludedFromEnterpriseBudget)
+      .map((c) => c.name),
+  );
+
   const costCenterSumCredits = postPlan
     .filter((c): c is BudgetControl => c.kind === 'budget' && c.scope === 'cost_center')
+    .filter((c) => !excludedCostCenterNames.has(c.entityName))
     .reduce((sum, c) => sum + c.amountCredits, 0);
 
   if (enterpriseBudget.amountCredits < costCenterSumCredits) {

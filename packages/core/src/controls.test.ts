@@ -4,10 +4,12 @@ import {
   controlIdentity,
   creditsToUsd,
   diffControls,
+  INCLUDED_CAP_CREDITS_PER_SEAT,
   isSpendingLimitScope,
   isUlbScope,
   type BudgetControl,
   type ControlState,
+  type CostCenterControl,
   type IncludedCapControl,
   type PlanEntry,
 } from './controls';
@@ -31,6 +33,20 @@ function cap(overrides: Partial<IncludedCapControl> = {}): IncludedCapControl {
     enabled: true,
     overflow: 'block',
     computedLimitCredits: 105_000,
+    ...overrides,
+  };
+}
+
+function costCenter(overrides: Partial<CostCenterControl> = {}): CostCenterControl {
+  return {
+    kind: 'cost_center',
+    name: 'Platform',
+    dewrDivision: 'Digital',
+    dewrBranch: 'Delivery',
+    dewrProject: 'PLAT',
+    excludedFromEnterpriseBudget: false,
+    members: [{ type: 'User', name: 'user-07' }],
+    includedUsageCap: { enabled: true, overflow: 'block' },
     ...overrides,
   };
 }
@@ -348,5 +364,160 @@ describe('applyPlanToControls', () => {
     const live: ControlState[] = [budget(), cap()];
     const plan = diffControls(live, live);
     expect(applyPlanToControls(live, plan)).toEqual(live);
+  });
+});
+
+// --- Task 4.13: cost-center lifecycle as a control ------------------------
+
+describe('controlIdentity (cost_center)', () => {
+  it('keys a cost center by kind:name', () => {
+    expect(controlIdentity(costCenter({ name: 'Payments' }))).toBe('cost_center:Payments');
+  });
+
+  it('never collides a cost_center with a cap or budget of the same name', () => {
+    const id = controlIdentity(costCenter({ name: 'Platform' }));
+    expect(id).not.toBe(controlIdentity(cap({ costCenterName: 'Platform' })));
+    expect(id).not.toBe(controlIdentity(budget({ scope: 'multi_user_cost_center', entityName: 'Platform' })));
+  });
+});
+
+describe('diffControls (cost_center)', () => {
+  it('emits an add entry for a new cost center', () => {
+    const desired = costCenter({ name: 'New Team', members: [] });
+    const plan = diffControls([], [desired]);
+    expect(plan.entries).toEqual([
+      { id: 'cost_center:New Team', controlKind: 'cost_center', action: 'add', name: 'New Team', desired },
+    ]);
+  });
+
+  it('emits a delete entry for an archived/removed cost center', () => {
+    const live = costCenter({ name: 'Old Team' });
+    const plan = diffControls([live], []);
+    expect(plan.entries).toEqual([
+      { id: 'cost_center:Old Team', controlKind: 'cost_center', action: 'delete', name: 'Old Team', live },
+    ]);
+  });
+
+  it('emits an exact old->new change for the exclude-from-enterprise-budget flag', () => {
+    const live = costCenter({ excludedFromEnterpriseBudget: false });
+    const desired = costCenter({ excludedFromEnterpriseBudget: true });
+    const plan = diffControls([live], [desired]);
+    expect(plan.entries).toEqual([
+      {
+        id: 'cost_center:Platform',
+        controlKind: 'cost_center',
+        action: 'change',
+        name: 'Platform',
+        changes: [{ field: 'excludedFromEnterpriseBudget', old: false, new: true }],
+      },
+    ]);
+  });
+
+  it('emits DEWR field changes exactly', () => {
+    const live = costCenter({ dewrDivision: 'A', dewrBranch: 'B', dewrProject: 'C' });
+    const desired = costCenter({ dewrDivision: 'A2', dewrBranch: 'B', dewrProject: 'C2' });
+    const plan = diffControls([live], [desired]);
+    expect(plan.entries[0]).toMatchObject({
+      controlKind: 'cost_center',
+      action: 'change',
+      changes: [
+        { field: 'dewrDivision', old: 'A', new: 'A2' },
+        { field: 'dewrProject', old: 'C', new: 'C2' },
+      ],
+    });
+  });
+
+  it('batches a membership add+remove into one membership change (set-based on type:name)', () => {
+    const live = costCenter({ members: [{ type: 'User', name: 'alice' }, { type: 'User', name: 'bob' }] });
+    const desired = costCenter({ members: [{ type: 'User', name: 'alice' }, { type: 'User', name: 'carol' }] });
+    const plan = diffControls([live], [desired]);
+    expect(plan.entries).toEqual([
+      {
+        id: 'cost_center:Platform',
+        controlKind: 'cost_center',
+        action: 'change',
+        name: 'Platform',
+        changes: [{ field: 'membership', added: [{ type: 'User', name: 'carol' }], removed: [{ type: 'User', name: 'bob' }] }],
+      },
+    ]);
+  });
+
+  it('never diffs the included-usage cap prefs from the cost-center control (cap edits are IncludedCapControl only)', () => {
+    const live = costCenter({ includedUsageCap: { enabled: false, overflow: 'block' } });
+    const desired = costCenter({ includedUsageCap: { enabled: true, overflow: 'metered' } });
+    expect(diffControls([live], [desired]).isNoOp).toBe(true);
+  });
+
+  it('a 1:1 reassignment across two cost centers produces one removal entry and one addition entry', () => {
+    const liveA = costCenter({ name: 'A', members: [{ type: 'User', name: 'mover' }] });
+    const liveB = costCenter({ name: 'B', members: [] });
+    const desiredA = costCenter({ name: 'A', members: [] });
+    const desiredB = costCenter({ name: 'B', members: [{ type: 'User', name: 'mover' }] });
+    const plan = diffControls([liveA, liveB], [desiredA, desiredB]);
+    // Sorted by id: cost_center:A before cost_center:B.
+    expect(plan.entries).toEqual([
+      {
+        id: 'cost_center:A',
+        controlKind: 'cost_center',
+        action: 'change',
+        name: 'A',
+        changes: [{ field: 'membership', added: [], removed: [{ type: 'User', name: 'mover' }] }],
+      },
+      {
+        id: 'cost_center:B',
+        controlKind: 'cost_center',
+        action: 'change',
+        name: 'B',
+        changes: [{ field: 'membership', added: [{ type: 'User', name: 'mover' }], removed: [] }],
+      },
+    ]);
+  });
+});
+
+describe('applyPlanToControls (cost_center)', () => {
+  it('applies a membership add+remove to the post-plan roster', () => {
+    const live: ControlState[] = [
+      costCenter({ members: [{ type: 'User', name: 'alice' }, { type: 'User', name: 'bob' }] }),
+    ];
+    const desired: ControlState[] = [
+      costCenter({ members: [{ type: 'User', name: 'alice' }, { type: 'User', name: 'carol' }] }),
+    ];
+    const result = applyPlanToControls(live, diffControls(live, desired));
+    const cc = result.find((c): c is CostCenterControl => c.kind === 'cost_center')!;
+    expect(cc.members).toEqual([{ type: 'User', name: 'alice' }, { type: 'User', name: 'carol' }]);
+  });
+
+  it('recomputes an affected cap limit by +7,000 when a User joins a cap-ON team', () => {
+    const live: ControlState[] = [
+      costCenter({ name: 'Platform', members: [{ type: 'User', name: 'alice' }] }),
+      cap({ costCenterName: 'Platform', computedLimitCredits: 7_000 }),
+    ];
+    const desired: ControlState[] = [
+      costCenter({ name: 'Platform', members: [{ type: 'User', name: 'alice' }, { type: 'User', name: 'bob' }] }),
+      cap({ costCenterName: 'Platform', computedLimitCredits: 7_000 }),
+    ];
+    const result = applyPlanToControls(live, diffControls(live, desired));
+    const post = result.find((c): c is IncludedCapControl => c.kind === 'included_cap')!;
+    expect(post.computedLimitCredits).toBe(7_000 + INCLUDED_CAP_CREDITS_PER_SEAT);
+  });
+
+  it('recomputes an affected cap limit by −7,000 when a User leaves, floored at 0', () => {
+    const live: ControlState[] = [
+      costCenter({ name: 'Platform', members: [{ type: 'User', name: 'alice' }] }),
+      cap({ costCenterName: 'Platform', computedLimitCredits: 7_000 }),
+    ];
+    const desired: ControlState[] = [
+      costCenter({ name: 'Platform', members: [] }),
+      cap({ costCenterName: 'Platform', computedLimitCredits: 7_000 }),
+    ];
+    const result = applyPlanToControls(live, diffControls(live, desired));
+    const post = result.find((c): c is IncludedCapControl => c.kind === 'included_cap')!;
+    expect(post.computedLimitCredits).toBe(0);
+  });
+
+  it('round-trips a cost-center create through diff+apply', () => {
+    const desired: ControlState[] = [costCenter({ name: 'Fresh', members: [{ type: 'User', name: 'x' }] })];
+    const result = applyPlanToControls([], diffControls([], desired));
+    expect(result).toEqual(desired);
   });
 });

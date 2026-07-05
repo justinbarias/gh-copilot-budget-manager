@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   classifyHeadroom,
   costCenterStatus,
@@ -10,7 +10,11 @@ import {
 import type { CostCenterSummary } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { DrillModal } from './DrillModal';
+import { NewCostCenterModal } from './NewCostCenterModal';
 import './CostCentersTable.css';
+
+// Design "Interactions & behavior": success toast ~3.8s (same as Controls/Users).
+const TOAST_MS = 3800;
 
 export function formatCredits(value: number): string {
   return Math.round(value).toLocaleString('en-US');
@@ -56,6 +60,14 @@ export function CostCentersTable() {
   // loaded result, so loading and empty states can never be conflated.
   const [costCenters, setCostCenters] = useState<CostCenterSummary[] | null>(null);
   const [drillId, setDrillId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async () => {
+    const result = await api.listCostCenters();
+    setCostCenters(result);
+  }, [api]);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,6 +78,27 @@ export function CostCentersTable() {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+  }, []);
+
+  const onLifecycleApplied = useCallback(
+    (message: string) => {
+      showToast(message);
+      void refresh();
+    },
+    [showToast, refresh],
+  );
 
   if (costCenters === null) {
     return (
@@ -80,12 +113,19 @@ export function CostCentersTable() {
 
   return (
     <section className="cost-centers" aria-label="Cost centers">
-      <h2 className="cost-centers__title">Cost centers</h2>
+      <div className="cost-centers__header">
+        <h2 className="cost-centers__title">Cost centers</h2>
+        {/* Task 4.13: lifecycle writes arrive on this screen -- create here,
+            membership/exclude edits in the drill-in. All route through the
+            staged -> dry-run -> apply plan (CLAUDE.md §6.1). */}
+        <button type="button" className="cost-centers__create-btn" onClick={() => setCreating(true)}>
+          + New cost center
+        </button>
+      </div>
       <div className="cost-centers__caption">
         {costCenters.length} cost centers · mapped to the DEWR financial structure
       </div>
 
-      {/* Read-only in MVP (SPEC.md Assumption 4): no create/reassign affordances anywhere on this screen. */}
       <div className="cost-centers__card">
         <table className="cc-table">
           <thead>
@@ -142,7 +182,17 @@ export function CostCentersTable() {
       </div>
       <div className="cost-centers__hint">Click a cost center to drill into membership and per-member burn.</div>
 
-      {drillTarget && <DrillModal costCenter={drillTarget} onClose={() => setDrillId(null)} />}
+      {toast && (
+        <div className="cost-centers-toast" role="status">
+          {toast}
+        </div>
+      )}
+
+      {drillTarget && (
+        <DrillModal costCenter={drillTarget} onClose={() => setDrillId(null)} onApplied={onLifecycleApplied} />
+      )}
+
+      {creating && <NewCostCenterModal onClose={() => setCreating(false)} onApplied={onLifecycleApplied} />}
     </section>
   );
 }

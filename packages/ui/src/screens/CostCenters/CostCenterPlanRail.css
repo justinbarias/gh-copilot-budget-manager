@@ -1,0 +1,10 @@
+/* Task 4.13: cost-center rail deltas over the reused Controls/PlanRail.css. */
+.cc-plan-rail {
+  margin-top: 16px;
+}
+
+.cc-plan-rail__mutation-response {
+  color: #7c8980;
+  word-break: break-all;
+  margin-top: 2px;
+}

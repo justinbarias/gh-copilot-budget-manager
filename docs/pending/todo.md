@@ -22,7 +22,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 4.10 ULB family — universal/individual/CCULB rows, API-ONLY badge, exact CCULB payload [M]
 - [x] 4.11 Users screen — Set ULB modal + bulk-ULB modal through the rail [M]
 - [x] 4.12 Included-usage caps family — per-CC cards, toggle + block/overflow, no amount input anywhere [M]
-- [ ] 4.13 Cost-center lifecycle writes — new-CC modal, membership, exclude toggle, Users reassignment [M]
+- [x] 4.13 Cost-center lifecycle writes — new-CC modal, membership, exclude toggle, Users reassignment [M]
 - [ ] 4.14 ULB display-bug detection + repair banner (FR3) [S/M]
 - [ ] 4.15 Controls ingestion on sync + staged/drift markers [S/M]
 

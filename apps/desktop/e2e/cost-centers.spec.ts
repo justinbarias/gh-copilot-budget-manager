@@ -126,9 +126,11 @@ test('Cost Centers table renders fixture rows with fixture-derived headroom and 
     await expect(cyber.locator('.cc-table__headroom')).toHaveClass(/cc-table__headroom--ok/);
     await expect(corporate.locator('.cc-table__headroom')).toHaveClass(/cc-table__headroom--ok/);
 
-    // Read-only screen (SPEC.md Assumption 4): zero write affordances -- the
-    // prototype's "+ New cost center" button is absent entirely, not disabled.
-    await expect(window.getByText('+ New cost center')).toHaveCount(0);
+    // Task 4.13 supersedes the "read-only screen" (SPEC.md Assumption 4 was
+    // phase-scoped to the MVP): the "+ New cost center" lifecycle affordance is
+    // now present -- create rides the staged -> dry-run -> apply plan, exercised
+    // end-to-end in cost-centers-lifecycle.spec.ts.
+    await expect(window.getByRole('button', { name: '+ New cost center' })).toBeVisible();
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });
@@ -170,17 +172,22 @@ test('clicking the cap-bound row opens the drill modal with membership; Esc, ✕
       'No',
     );
 
-    // Membership: all 8 fixture members, with per-member cycle burn and
-    // ent-team provenance badges where the fixture provides them.
-    const members = modal.locator('.drill-modal__member');
+    // Task 4.13 membership EDITOR: the live cost center's 8 resources render as
+    // editable rows (each with a Remove control) plus an "Add a user…" picker.
+    // Per-member cycle burn + ent-team provenance join from the summary burn
+    // view (CostCenterControl.members is type+name only).
+    const members = modal.locator('.cc-members-editor__row');
     await expect(members).toHaveCount(8);
     const faisalNoor = members.filter({ hasText: 'faisal-noor' });
-    await expect(faisalNoor.locator('.drill-modal__member-burn')).toHaveText('4,180');
-    await expect(faisalNoor.locator('.drill-modal__member-badge')).toHaveText('ent-team: assurance');
+    await expect(faisalNoor.locator('.cc-members-editor__burn')).toHaveText('4,180');
+    await expect(faisalNoor.locator('.cc-members-editor__type-badge')).toHaveText('ent-team: assurance');
     // A member the credits-used fixture has no cycle rows for burns 0.
     const devRaman = members.filter({ hasText: 'dev-raman' });
-    await expect(devRaman.locator('.drill-modal__member-burn')).toHaveText('0');
-    await expect(devRaman.locator('.drill-modal__member-badge')).toHaveCount(0);
+    await expect(devRaman.locator('.cc-members-editor__burn')).toHaveText('0');
+    await expect(devRaman.locator('.cc-members-editor__type-badge')).toHaveCount(0);
+    // The editing affordances exist: a Remove per member + the add picker.
+    await expect(modal.getByRole('button', { name: 'Remove faisal-noor' })).toBeVisible();
+    await expect(modal.getByLabel('Add member')).toBeVisible();
 
     // Close via the ✕ button.
     await modal.getByRole('button', { name: 'Close' }).click();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { diffControls, type BudgetControl, type ControlState } from './controls';
+import { diffControls, type BudgetControl, type ControlState, type CostCenterControl } from './controls';
 import {
   DEFAULT_NEAR_ZERO_ULB_THRESHOLD_CREDITS,
   validatePlan,
@@ -89,6 +89,80 @@ describe('validatePlan -- enterprise cap below cost-center sum (blocker)', () =>
     const plan = diffControls(live, live);
     const result = validatePlan(plan, ctx(live));
     expect(result.blockers).toEqual([]);
+  });
+});
+
+// Task 4.13: the sum is exclusion-aware -- a cost center flagged
+// excludedFromEnterpriseBudget bills against its own cap, not the enterprise
+// budget, so its spending limit must not count toward the enterprise-cap sum.
+describe('validatePlan -- exclusion-aware enterprise-cap-below-sum (Task 4.13)', () => {
+  function costCenter(name: string, excluded: boolean): CostCenterControl {
+    return {
+      kind: 'cost_center',
+      name,
+      dewrDivision: 'D',
+      dewrBranch: 'B',
+      dewrProject: 'P',
+      excludedFromEnterpriseBudget: excluded,
+      members: [],
+      includedUsageCap: { enabled: true, overflow: 'block' },
+    };
+  }
+
+  it('does NOT block when the over-sum is entirely due to an EXCLUDED cost center', () => {
+    // Enterprise cap 100k; Platform 60k (counts) + Data 60k (EXCLUDED). Naive
+    // sum 120k > 100k would block; exclusion-aware sum is 60k <= 100k.
+    const live: ControlState[] = [
+      budget({ scope: 'enterprise', entityName: 'acme-enterprise', amountCredits: 100_000 }),
+      budget({ scope: 'cost_center', entityName: 'Platform', amountCredits: 60_000 }),
+      budget({ scope: 'cost_center', entityName: 'Data', amountCredits: 60_000 }),
+      costCenter('Platform', false),
+      costCenter('Data', true),
+    ];
+    const plan = diffControls(live, live);
+    const result = validatePlan(plan, ctx(live));
+    expect(result.isBlocked).toBe(false);
+    expect(result.blockers).toEqual([]);
+  });
+
+  it('STILL blocks when the non-excluded cost centers alone exceed the enterprise cap', () => {
+    // Same shape but neither is excluded -> 120k > 100k -> blocked.
+    const live: ControlState[] = [
+      budget({ scope: 'enterprise', entityName: 'acme-enterprise', amountCredits: 100_000 }),
+      budget({ scope: 'cost_center', entityName: 'Platform', amountCredits: 60_000 }),
+      budget({ scope: 'cost_center', entityName: 'Data', amountCredits: 60_000 }),
+      costCenter('Platform', false),
+      costCenter('Data', false),
+    ];
+    const plan = diffControls(live, live);
+    const result = validatePlan(plan, ctx(live));
+    expect(result.isBlocked).toBe(true);
+    expect(result.blockers[0]).toMatchObject({
+      kind: 'enterprise_cap_below_cost_center_sum',
+      costCenterSumCredits: 120_000,
+    });
+  });
+
+  it('reacts to a staged flip of the exclusion flag (post-plan state, not just live)', () => {
+    // Live blocks (both counted = 120k). The plan excludes Data -> post-plan
+    // sum drops to 60k -> no longer blocked.
+    const live: ControlState[] = [
+      budget({ scope: 'enterprise', entityName: 'acme-enterprise', amountCredits: 100_000 }),
+      budget({ scope: 'cost_center', entityName: 'Platform', amountCredits: 60_000 }),
+      budget({ scope: 'cost_center', entityName: 'Data', amountCredits: 60_000 }),
+      costCenter('Platform', false),
+      costCenter('Data', false),
+    ];
+    const desired: ControlState[] = [
+      budget({ scope: 'enterprise', entityName: 'acme-enterprise', amountCredits: 100_000 }),
+      budget({ scope: 'cost_center', entityName: 'Platform', amountCredits: 60_000 }),
+      budget({ scope: 'cost_center', entityName: 'Data', amountCredits: 60_000 }),
+      costCenter('Platform', false),
+      costCenter('Data', true), // staged exclusion
+    ];
+    const plan = diffControls(live, desired);
+    const result = validatePlan(plan, ctx(live));
+    expect(result.isBlocked).toBe(false);
   });
 });
 
