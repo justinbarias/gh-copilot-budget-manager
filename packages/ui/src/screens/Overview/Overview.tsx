@@ -69,11 +69,13 @@ function daysUntilCliff(asOf: Date): number | null {
 export interface OverviewProps {
   /** Task 5.7: the cliff banner's "Visualise the cliff ->" link, same cross-link mechanism App.tsx already wires for Controls' Auto-balance link. */
   onNavigateToForecast?: () => void;
+  /** Task 8.4: the Alerts panel's "View in audit ->" cross-link -- a disabled Task 2.5 stub until the Audit screen existed. */
+  onNavigateToAudit?: () => void;
 }
 
 type ForecastLens = 'pool' | 'metered';
 
-export function Overview({ onNavigateToForecast }: OverviewProps) {
+export function Overview({ onNavigateToForecast, onNavigateToAudit }: OverviewProps) {
   const api = useApiClient();
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -379,7 +381,7 @@ export function Overview({ onNavigateToForecast }: OverviewProps) {
           </div>
         ))}
 
-      <AlertsList alerts={alerts} />
+      <AlertsList alerts={alerts} onNavigateToAudit={onNavigateToAudit} />
     </section>
   );
 }

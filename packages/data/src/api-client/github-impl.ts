@@ -20,6 +20,7 @@ import {
   type AssembleCreditsUsedRow,
   type AssembleUsageRow,
 } from '../forecast/compute.js';
+import { readAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { ALERTS } from '../msw/fixtures/alerts.js';
 import { API_VERSION, SIM_CURRENT_DATE } from '../msw/fixtures/constants.js';
 import {
@@ -41,6 +42,8 @@ import type {
   ApiClient,
   ApplyPlanInput,
   ApplyPlanResult,
+  AuditChainEvent,
+  AuditChainVerification,
   CostCenterMemberSummary,
   CostCenterSummary,
   DailyBurnPoint,
@@ -736,6 +739,38 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     });
   }
 
+  // Task 8.4: a thin read-through to the audit package's own read-only
+  // surface (readAuditChain) -- ts is projected to an ISO string (the same
+  // boundary convention every other timestamp on this interface already
+  // uses), but envelopeSnapshot/before/after/prevHash/hash are passed through
+  // completely unchanged (see AuditChainEvent's doc comment in types.ts for
+  // why re-serializing them here would be unsafe).
+  async function getAuditChain(): Promise<AuditChainEvent[]> {
+    return readAuditChain(config.db).map((row) => ({
+      id: row.id,
+      ts: row.ts.toISOString(),
+      actor: row.actor,
+      action: row.action,
+      entityRef: row.entityRef,
+      trigger: row.trigger,
+      envelopeSnapshot: row.envelopeSnapshot,
+      before: row.before,
+      after: row.after,
+      justification: row.justification,
+      dataSnapshotId: row.dataSnapshotId,
+      prevHash: row.prevHash,
+      hash: row.hash,
+    }));
+  }
+
+  // Task 8.5: verification runs entirely in this (main) process against the
+  // raw SQLite rows -- never over a renderer-supplied chain, which would let
+  // a compromised/renderer-side actor "verify" a chain it hadn't actually
+  // read from disk.
+  async function verifyAuditChain(): Promise<AuditChainVerification> {
+    return verifyStoredChain(config.db);
+  }
+
   return {
     getUsageSummary,
     listCostCenters,
@@ -748,5 +783,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     getForecast,
     dryRunPlan,
     applyPlan,
+    getAuditChain,
+    verifyAuditChain,
   };
 }

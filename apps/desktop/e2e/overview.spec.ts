@@ -289,12 +289,13 @@ test('Overview renders the alerts & anomalies list from fixture data with correc
     await expect(fourth.locator('.alerts-list__severity')).toHaveAttribute('title', 'Info');
     await expect(fourth.locator('.alerts-list__tag')).toHaveText('cliff');
 
-    // "View in audit" is present but visibly inert (Audit screen is a Task 2.5
-    // stub) -- disabled, not silently missing, paired with an icon+text cue
-    // (never color-only per design/README.md's accessibility intent).
+    // "View in audit" is real since Task 8.4 -- clicking it lands on the
+    // Audit screen (the disabled Task 2.5 stub this replaced is gone).
     const auditLink = window.getByRole('button', { name: /View in audit/ });
     await expect(auditLink).toBeVisible();
-    await expect(auditLink).toBeDisabled();
+    await expect(auditLink).toBeEnabled();
+    await auditLink.click();
+    await expect(window.locator('.app-shell__title')).toHaveText('Audit');
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

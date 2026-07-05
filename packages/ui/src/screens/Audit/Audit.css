@@ -1,0 +1,131 @@
+.audit {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1160px;
+}
+
+.audit__loading,
+.audit__empty {
+  padding: 32px 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-neutral);
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+}
+
+.audit__toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.audit__filters {
+  display: flex;
+  gap: 8px;
+}
+
+.audit__filter {
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.audit__filter--active {
+  border-color: var(--blue);
+  background: rgba(141, 214, 255, 0.08);
+  color: var(--blue);
+}
+
+.audit__immutable-label {
+  font-size: 12px;
+  color: var(--text-neutral);
+}
+
+.audit__verify-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 14px 18px;
+}
+
+.audit__verify-button {
+  background: #000;
+  border: 1px solid var(--hairline);
+  color: var(--text-default);
+  border-radius: var(--radius-input);
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.audit__verify-button:hover:not(:disabled) {
+  border-color: var(--blue);
+}
+
+.audit__verify-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.audit__verify-result {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.audit__verify-result--pass {
+  color: var(--green);
+}
+
+.audit__verify-result--fail {
+  color: var(--red);
+}
+
+.audit__export-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.audit__export-button {
+  background: #000;
+  border: 1px solid var(--hairline);
+  color: var(--text-default);
+  border-radius: var(--radius-input);
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.audit__export-button:hover:not(:disabled) {
+  border-color: var(--blue);
+}
+
+.audit__export-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.audit__export-note {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  margin: -6px 2px 0;
+}
+
+.audit__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

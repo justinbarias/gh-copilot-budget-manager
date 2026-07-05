@@ -3,6 +3,8 @@ import './AlertsList.css';
 
 export interface AlertsListProps {
   alerts: Alert[];
+  /** Task 8.4: the Audit screen now exists to navigate to -- replaces the disabled Task 2.5 stub button below. */
+  onNavigateToAudit?: () => void;
 }
 
 // Pre-baked, not computed: severity/tag/title/meta/timestamp are pre-baked
@@ -34,22 +36,14 @@ export function formatAlertTimestamp(timestamp: string): string {
   return `${TIMESTAMP_FORMATTER.format(new Date(timestamp))} UTC`;
 }
 
-export function AlertsList({ alerts }: AlertsListProps) {
+export function AlertsList({ alerts, onNavigateToAudit }: AlertsListProps) {
   return (
     <div className="alerts-list">
       <div className="alerts-list__header">
         <h2 className="alerts-list__title">Alerts &amp; anomalies</h2>
-        {/* Audit screen is a Task 2.5 stub -- visibly present, not silently
-            missing, but inert (disabled + icon+text cue, never color-only,
-            same convention as Overview's forecast-lens toggle). */}
-        <button
-          type="button"
-          className="alerts-list__audit-link"
-          disabled
-          aria-disabled="true"
-          title="The Audit screen ships in Task 2.5"
-        >
-          <span aria-hidden="true">🔒</span> View in audit →
+        {/* Real since Task 8.4 -- the Audit screen exists to land on. */}
+        <button type="button" className="alerts-list__audit-link" onClick={() => onNavigateToAudit?.()}>
+          View in audit →
         </button>
       </div>
 

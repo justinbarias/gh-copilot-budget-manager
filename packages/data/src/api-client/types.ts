@@ -1,4 +1,4 @@
-import type { ControlState, EffectiveUlb, ForecastResult, ModelMix, Plan } from '@copilot-budget/core';
+import type { AuditChainVerification, ControlState, EffectiveUlb, ForecastResult, ModelMix, Plan } from '@copilot-budget/core';
 import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
 import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
 
@@ -8,7 +8,7 @@ import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
 // All type-only (isolatedModules erases these imports at compile time), so
 // this adds no runtime footprint to the pure barrel despite write/engine.ts
 // itself importing Octokit/drizzle/node:util.
-export type { ApplyPlanResult, ControlState, DryRunResult, ForecastResult, ForecastScope, Plan, StoredForecast };
+export type { ApplyPlanResult, AuditChainVerification, ControlState, DryRunResult, ForecastResult, ForecastScope, Plan, StoredForecast };
 
 export interface UsageSummaryParams {
   costCenterId?: string;
@@ -107,6 +107,43 @@ export interface LastSyncedControls {
   controls: ControlState[];
 }
 
+/**
+ * Task 8.4/8.5: one row of the append-only, hash-chained audit log
+ * (packages/core/src/auditChain.ts's chain math; packages/data/src/audit/writer.ts's
+ * storage), projected for the Audit screen + its export/verify surface.
+ * Ascending-by-id is the chain's real append order (readAuditChain's own
+ * contract) -- `getAuditChain()` always returns the FULL chain in that order;
+ * the Audit screen re-sorts newest-first for display and derives per-row
+ * "chain intact" indicators from a single `verifyAuditChain()` call's
+ * failedAtIndex against this same ascending order (see the Task 8.4/8.5
+ * build report for the full rationale).
+ *
+ * `envelopeSnapshot`/`before`/`after` are deliberately carried as the EXACT
+ * strings `appendAuditEvent` originally stored -- NOT `JSON.parse`d back into
+ * objects the way `AppliedAuditEvent` above does for renderer convenience.
+ * `canonicalizeAuditPayload` hashes those exact stored bytes; re-serializing
+ * a parsed object could reorder keys or change whitespace and silently stop
+ * matching the recorded hash. The Audit screen parses these ONLY for
+ * display; the JSON/CSV export helpers re-emit them verbatim, which is what
+ * makes an export independently re-verifiable offline (Task 8.5).
+ */
+export interface AuditChainEvent {
+  id: number;
+  /** ISO 8601. `Date.parse(ts)` recovers the exact epoch-ms value that was hashed (see AuditEventFields's `ts` doc comment) -- unlike before/after, this round-trip is lossless. */
+  ts: string;
+  actor: string;
+  action: string;
+  entityRef: string;
+  trigger: string;
+  envelopeSnapshot: string | null;
+  before: string | null;
+  after: string | null;
+  justification: string | null;
+  dataSnapshotId: number | null;
+  prevHash: string;
+  hash: string;
+}
+
 export interface ApplyPlanInput {
   /**
    * Attributed actor for the audit log (CLAUDE.md §6.5). No admin
@@ -146,9 +183,6 @@ export interface ApplyPlanInput {
 // at Checkpoint 4a; see that review packet for the full Phase 4-8 proposal):
 //   Phase 7: applyGrants(envelope): Promise<GrantResult>; revertGrant(grantId): Promise<void>;
 //            listGrants(): Promise<Grant[]>; getRebalancerPolicy()/setRebalancerPolicy(policy)
-//   Phase 8: getAuditChain(): Promise<StoredAuditEvent[]>; verifyAuditChain(): Promise<AuditChainVerification>
-//            (audit-read surface for the Audit screen + export/verify; the data
-//            layer's readAuditChain/verifyStoredChain stay data-internal until then)
 export interface ApiClient {
   getUsageSummary(params?: UsageSummaryParams): Promise<UsageSummary>;
   listCostCenters(): Promise<CostCenterSummary[]>;
@@ -186,4 +220,28 @@ export interface ApiClient {
    * baseline to compare a fresh server-side diff against.
    */
   applyPlan(stagedPlan: Plan, desiredControls: readonly ControlState[], input: ApplyPlanInput): Promise<ApplyPlanResult>;
+  /**
+   * Task 8.4: the Audit screen's sole read surface -- the FULL stored chain
+   * (readAuditChain's ascending-by-id order), never paged. Chosen over
+   * pagination because (a) `verifyAuditChain` below already has to walk the
+   * entire chain to verify it, so a paged read would let the screen show a
+   * "verified" indicator on rows it hasn't actually fetched; (b) Task 8.5's
+   * export must be a complete dump regardless, so the read and export paths
+   * would otherwise need two different fetch strategies; and (c) this is a
+   * local, single-admin desktop tool's audit log, not a multi-tenant SaaS
+   * table -- realistic chain sizes (dozens to low hundreds of events per
+   * install) never justify the complexity. Revisit if a real deployment's
+   * chain grows large enough to make a full fetch slow.
+   */
+  getAuditChain(): Promise<AuditChainEvent[]>;
+  /**
+   * Task 8.5: re-verifies the stored hash chain in the MAIN process, directly
+   * against the raw SQLite rows (packages/data/src/audit/writer.ts's
+   * `verifyStoredChain`, which reuses packages/core's `verifyAuditChain` +
+   * the real SHA-256 primitive) -- never trusts a renderer-supplied chain.
+   * `{ ok: true }`, or `{ ok: false, failedAtIndex, reason }` pinpointing the
+   * first broken/tampered row (ascending-by-id index, matching
+   * `getAuditChain()`'s order).
+   */
+  verifyAuditChain(): Promise<AuditChainVerification>;
 }

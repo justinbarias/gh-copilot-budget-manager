@@ -43,4 +43,6 @@ export function registerApiClientIpcHandlers(source: 'msw' | 'github'): void {
     (_event, stagedPlan: Plan, desiredControls: readonly ControlState[], input: ApplyPlanInput) =>
       client.applyPlan(stagedPlan, desiredControls, input),
   );
+  ipcMain.handle('apiClient:getAuditChain', () => client.getAuditChain());
+  ipcMain.handle('apiClient:verifyAuditChain', () => client.verifyAuditChain());
 }

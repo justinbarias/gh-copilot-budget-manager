@@ -3,6 +3,7 @@ import { cycleBounds } from '@copilot-budget/core';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
 import { SimBanner } from './components/SimBanner';
 import { Nav, type ScreenId } from './components/Nav';
+import { Audit } from './screens/Audit/Audit';
 import { Controls, type FamilyId } from './screens/Controls/Controls';
 import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
 import { Forecast } from './screens/Forecast/Forecast';
@@ -54,7 +55,10 @@ function renderScreen(
       // Task 5.7: the cliff banner's "Visualise the cliff ->" link -- same
       // navigate-callback mechanism the Controls screen's Auto-balance
       // cross-link already uses below.
-      return <Overview onNavigateToForecast={() => navigate('forecast')} />;
+      // Task 8.4 wires the Alerts panel's "View in audit ->" cross-link
+      // (Overview/AlertsList.tsx), which was a disabled Task 2.5 stub until
+      // the Audit screen itself existed to navigate to.
+      return <Overview onNavigateToForecast={() => navigate('forecast')} onNavigateToAudit={() => navigate('audit')} />;
     case 'forecast':
       // Real since Task 5.5 (scope tabs, the signature burn-down chart's
       // forecast layers, the metered-phase spend bar, the backtest/
@@ -75,6 +79,8 @@ function renderScreen(
       return <CostCentersTable />;
     case 'users':
       return <UsersTable />;
+    case 'audit':
+      return <Audit />;
     case 'settings':
       return <TokenHealth />;
     default:

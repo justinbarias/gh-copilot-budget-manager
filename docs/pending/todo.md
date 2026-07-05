@@ -78,8 +78,8 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [ ] 8.1 Actions-minutes second meter — fixtures + ingestion (+ §6.9 note) [S/M]
 - [ ] 8.2 `core`: chargeback pivot — Division→Branch→Project × credits/metered $/Actions minutes, totals reconcile [S/M]
 - [ ] 8.3 Chargeback screen + CSV export (PDF = open question) [M]
-- [ ] 8.4 Audit screen — filters, before→after expansion, trigger/envelope blocks for grants [M]
-- [ ] 8.5 Audit export + hash-chain verify surface (tamper pinpointing) [S]
+- [x] 8.4 Audit screen — filters, before→after expansion, trigger/envelope blocks for grants [M] (brought forward, 2026-07-05)
+- [x] 8.5 Audit export + hash-chain verify surface (tamper pinpointing) [S] (brought forward, 2026-07-05)
 - [ ] 8.6 Help screen — last stub removed [S]
 
 ### Checkpoint 8 — feature-complete in simulation mode

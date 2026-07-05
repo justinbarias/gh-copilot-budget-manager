@@ -19,6 +19,8 @@ const apiClientBridge: ApiClient = {
     ipcRenderer.invoke('apiClient:dryRunPlan', desiredControls, justification),
   applyPlan: (stagedPlan, desiredControls, input) =>
     ipcRenderer.invoke('apiClient:applyPlan', stagedPlan, desiredControls, input),
+  getAuditChain: () => ipcRenderer.invoke('apiClient:getAuditChain'),
+  verifyAuditChain: () => ipcRenderer.invoke('apiClient:verifyAuditChain'),
 };
 
 // The PAT itself never crosses this bridge: only set/clear/hasPat are exposed,

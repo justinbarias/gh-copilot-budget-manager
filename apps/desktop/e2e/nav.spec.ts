@@ -18,7 +18,7 @@ const NAV_ITEMS: Array<{ label: string; kind: 'functional' | 'stub' }> = [
   { label: 'Cost centers', kind: 'functional' },
   { label: 'Users', kind: 'functional' },
   { label: 'Chargeback', kind: 'stub' },
-  { label: 'Audit', kind: 'stub' },
+  { label: 'Audit', kind: 'functional' }, // real since Task 8.4 (filterable, read-only hash-chain stream + Task 8.5's verify/export)
   { label: 'Settings', kind: 'functional' },
   { label: 'Help', kind: 'stub' },
 ];
@@ -49,6 +49,12 @@ async function assertFunctionalScreen(window: Page, label: string): Promise<void
       break;
     case 'Settings':
       await expect(window.getByLabel(/personal access token/i)).toBeVisible();
+      break;
+    case 'Audit':
+      // Stable spine regardless of whether any audit events exist yet on a
+      // fresh DB (audit.spec.ts covers seeded-event content + export/verify).
+      await expect(window.getByTestId('audit-filter-all')).toBeVisible();
+      await expect(window.getByTestId('audit-verify-button')).toBeVisible();
       break;
     default:
       throw new Error(`No functional-screen assertion wired for "${label}"`);
