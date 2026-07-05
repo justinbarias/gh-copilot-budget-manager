@@ -20,7 +20,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ### Control-family slices
 - [x] 4.9 Controls screen shell + Spending-limits family + plan/simulate/apply right rail [L]
 - [x] 4.10 ULB family — universal/individual/CCULB rows, API-ONLY badge, exact CCULB payload [M]
-- [ ] 4.11 Users screen — Set ULB modal + bulk-ULB modal through the rail [M]
+- [x] 4.11 Users screen — Set ULB modal + bulk-ULB modal through the rail [M]
 - [ ] 4.12 Included-usage caps family — per-CC cards, toggle + block/overflow, no amount input anywhere [M]
 - [ ] 4.13 Cost-center lifecycle writes — new-CC modal, membership, exclude toggle, Users reassignment [M]
 - [ ] 4.14 ULB display-bug detection + repair banner (FR3) [S/M]
@@ -28,6 +28,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 
 ### Checkpoint 4 — control administration complete
 - [ ] Every PRD §1.3/§1.4 control CRUD-able, API-first, no write bypasses the rail; invariants §6.1–§6.5 hold; gate green; human review
+- [ ] **REQUIRED (pre-Checkpoint-4, gates "§6.1–§6.5 demonstrably hold"): simulate-before-apply preview fidelity.** `write/live-state.ts` `assembleUsageState` builds `usageState.users` **only** from the enterprise billing-usage report (`/settings/billing/usage`), which in the DEWR world itemises per-user rows for exactly two logins (faisal-noor, noah-tanaka); all other per-user burn lives in the metrics/CREDITS_USED report. Consequence: `simulatePlan` iterates a 2-user roster, so staging e.g. a $0 ULB for emily-zhao (5,480 MTD) previews **0 newly-blocked** — a structurally misleading §6.1 preview in a money-affecting tool. Surfaced during Task 4.11 (documented in `controls-ulb.spec.ts` / `users-ulb.spec.ts` headers as honest-given-the-data 0/0). Deferred from 4.11 because the fix is **not contained**: (a) two-report reconciliation — faisal-noor appears in **both** reports (2,300 metered billing + 4,180 metrics), so folding must not double-count; (b) `assembleUsageState` currently sums **all** billing rows (no cycle-filter — noah-tanaka's Aug/Sep cliff rows leak in), unlike `listHeavyUsers`/`listCostCenters` which cycle-filter — the fold must adopt the same `cycleBounds` window; (c) pool-vs-metered split decision (metered>0 is the spending-limit block signal — folding into pool keeps that correct); (d) seat-roster seeding. Blast radius: roster-wide before/after re-derivation flips several currently-0/0 dry-run assertions across `controls-ulb.spec.ts` (≥5 pairs; liam-obrien $0 → newly-blocked, CCULB-create/universal-raise may newly-*unblock* gap-MTD members) and `users-ulb.spec.ts` (hannah 3,000 / emily+aran 5,000 → newly-blocked). Fix = `assembleUsageState` + a new pinning data-test + recomputed CORRECT nonzero expectations in both spec files.
 
 ## Phase 5 — Forecasting (G2; FR5) *(parallel with Phase 4)*
 

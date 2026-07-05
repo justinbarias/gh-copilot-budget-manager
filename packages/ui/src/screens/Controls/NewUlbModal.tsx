@@ -1,23 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { AlertingState, BudgetControl, UlbBudgetScope } from '@copilot-budget/core';
 import type { CostCenterSummary, HeavyUser } from '@copilot-budget/data';
+import { parseCredits, parseRecipients } from '../../lib/creditsInput';
 import './NewUlbModal.css';
-
-// Same parsing convention as Controls.tsx's identically-named local helpers
-// (raw-digits cap input, comma-separated recipients) -- duplicated rather
-// than imported to avoid a Controls.tsx <-> NewUlbModal.tsx circular module
-// reference (Controls.tsx already imports this component).
-function parseCredits(raw: string): number {
-  const digits = raw.replace(/[^0-9]/g, '');
-  return digits === '' ? 0 : Number.parseInt(digits, 10);
-}
-
-function parseRecipients(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-}
 
 // Task 4.10's CREATE affordance. The design prototype (design/*.dc.html) ships
 // no "+ New user-level budget" button or modal at all -- only a "+ New cost

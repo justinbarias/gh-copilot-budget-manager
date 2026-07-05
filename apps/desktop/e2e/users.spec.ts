@@ -154,11 +154,17 @@ test('Users table renders the ranked fixture roster with working search, filters
     await expect(rows.nth(0).locator('.users-table__ulb')).toHaveText('5,200 · cost center');
     await expect(rows.nth(0).locator('.users-table__cc')).toHaveText('Workforce Australia Platform');
 
-    // Read-only screen (SPEC.md Assumption 4): no checkbox multi-select, no
-    // "Set ULB" action, no cost-center reassignment <select> anywhere.
-    await expect(window.locator('input[type="checkbox"]')).toHaveCount(0);
-    await expect(window.getByRole('button', { name: /set ulb/i })).toHaveCount(0);
-    await expect(window.getByText('Set ULB for selected')).toHaveCount(0);
+    // Task 4.11 phase-supersedes the "read-only screen" assertion this test
+    // originally made (SPEC.md Assumption 4 was itself phase-scoped to the
+    // MVP tables, not a permanent constraint): the table now carries exactly
+    // two write affordances -- a checkbox per row (+ "Select all on page" in
+    // the header) and a per-row "Set ULB" button, both exercised end-to-end
+    // in users-ulb.spec.ts. Cost-center reassignment stays OUT (Task 4.13's
+    // scope) -- still no <select> in any row, which is what actually matters
+    // for "no OTHER write affordance" per the acceptance criteria.
+    await expect(screen.getByLabel('Select all on page')).toBeVisible();
+    await expect(rows.getByRole('checkbox', { name: 'Select rpatel2' })).toBeVisible();
+    await expect(rows.getByRole('button', { name: 'Set ULB' })).toBeVisible();
     await expect(screen.locator('.users-table__row select')).toHaveCount(0);
   } finally {
     await app.close();

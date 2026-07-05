@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isUserAtRiskOfUlbBlock, type EffectiveUlb } from '@copilot-budget/core';
 import type { HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { ModelMixBar } from '../../components/ModelMixBar';
 import { Sparkline } from '../../components/Sparkline';
+import { BulkUlbModal } from './BulkUlbModal';
+import { SetUlbModal } from './SetUlbModal';
 import './UsersTable.css';
+
+// Design "Interactions & behavior": success toast ~3.8s -- same convention
+// Controls.tsx's rail already established for a staged->simulate->apply
+// flow's confirmation.
+const TOAST_MS = 3800;
 
 export function formatCredits(value: number): string {
   return Math.round(value).toLocaleString('en-US');
@@ -63,15 +70,80 @@ export function UsersTable() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [page, setPage] = useState(0);
 
+  // Task 4.11's write affordances: per-row "Set ULB" (individual-ULB modal)
+  // and multi-select -> bulk-ULB modal. Both route through the SAME
+  // staged->simulate->apply plan the Controls screen uses (a modal is just a
+  // scoped plan) -- see UlbPlanModal.tsx. Cost-center reassignment stays OUT
+  // (Task 4.13); no other write affordance exists on this table.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [settingUlbFor, setSettingUlbFor] = useState<HeavyUser | null>(null);
+  // A snapshot of the selected users at the moment "Set ULB for selected" was
+  // clicked -- deliberately NOT derived live from `selected` on every render.
+  // A successful bulk apply clears `selected` (see onBulkUlbApplied below) so
+  // the table's own bulk toolbar disappears immediately; if the modal's user
+  // list were derived from that same `selected` set, the modal would unmount
+  // itself the instant the apply succeeded, hiding the applied-result panel
+  // (mutation log + audit events) the admin needs to see. Closing the modal
+  // clears this snapshot explicitly.
+  const [bulkUsers, setBulkUsers] = useState<HeavyUser[] | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshUsers = useCallback(async () => {
+    const result = await api.listHeavyUsers();
+    setUsers(result);
+    return result;
+  }, [api]);
+
   useEffect(() => {
     let cancelled = false;
-    api.listHeavyUsers().then((result) => {
+    void (async () => {
+      const result = await api.listHeavyUsers();
       if (!cancelled) setUsers(result);
-    });
+    })();
     return () => {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+  }, []);
+
+  const onRowSelectToggle = useCallback((login: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(login)) next.delete(login);
+      else next.add(login);
+      return next;
+    });
+  }, []);
+
+  const onSetUlbApplied = useCallback(
+    (message: string) => {
+      showToast(message);
+      void refreshUsers();
+    },
+    [showToast, refreshUsers],
+  );
+
+  const onBulkUlbApplied = useCallback(
+    (message: string) => {
+      showToast(message);
+      setSelected(new Set());
+      void refreshUsers();
+    },
+    [showToast, refreshUsers],
+  );
 
   const ccOptions = useMemo(() => {
     if (!users) return [];
@@ -100,6 +172,26 @@ export function UsersTable() {
   const clampedPage = Math.min(page, pageCount - 1);
   const pageUsers = filtered.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
 
+  // Header checkbox is "select all ON THIS PAGE" (design/README.md §6) --
+  // selection itself persists across pages (a top-level login set, only
+  // cleared by "Clear selection" or a successful bulk apply), matching the
+  // design prototype's own toggleAllUsers/selUsers split.
+  const pageLogins = pageUsers.map((u) => u.userLogin);
+  const allPageSelected = pageLogins.length > 0 && pageLogins.every((login) => selected.has(login));
+  const selectedUsers = (users ?? []).filter((u) => selected.has(u.userLogin));
+
+  const onToggleAllOnPage = () => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (allPageSelected) {
+        for (const login of pageLogins) next.delete(login);
+      } else {
+        for (const login of pageLogins) next.add(login);
+      }
+      return next;
+    });
+  };
+
   if (users === null) {
     return (
       <section className="users" aria-label="Users">
@@ -119,9 +211,12 @@ export function UsersTable() {
     <section className="users" aria-label="Users">
       <h2 className="users__title">Users</h2>
 
-      {/* Read-only in MVP (SPEC.md Assumption 4): no checkbox column, no "Set
-          ULB" action, no cost-center reassignment <select> -- write
-          affordances are hidden entirely, not just disabled. */}
+      {/* Task 4.11: the table gained exactly two write affordances -- the
+          checkbox column (+ per-row "Set ULB") and the bulk toolbar below --
+          both routed through the staged->simulate->apply plan (see
+          UlbPlanModal.tsx). Cost-center reassignment stays a read-only
+          column (Task 4.13's scope, not this one's); no other cell is
+          editable. */}
       <div className="users__controls">
         <input
           className="users__search"
@@ -168,21 +263,50 @@ export function UsersTable() {
         <span className="users__result-count">{resultLabel}</span>
       </div>
 
+      {selected.size > 0 && (
+        <div className="users__bulk-bar">
+          <span className="users__bulk-label">{selected.size} selected</span>
+          <button type="button" className="users__bulk-set-ulb" onClick={() => setBulkUsers(selectedUsers)}>
+            Set ULB for selected
+          </button>
+          <button type="button" className="users__bulk-clear" onClick={() => setSelected(new Set())}>
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <div className="users__card">
         <table className="users-table">
           <thead>
             <tr className="users-table__head-row">
+              <th scope="col">
+                <input
+                  type="checkbox"
+                  aria-label="Select all on page"
+                  checked={allPageSelected}
+                  onChange={onToggleAllOnPage}
+                />
+              </th>
               <th scope="col">Login</th>
               <th scope="col">Cost center</th>
               <th scope="col">Credits MTD ↓</th>
               <th scope="col">Trend</th>
               <th scope="col">Model mix (best-effort)</th>
               <th scope="col">ULB</th>
+              <th scope="col"></th>
             </tr>
           </thead>
           <tbody>
             {pageUsers.map((user) => (
               <tr key={user.userId} className="users-table__row">
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${user.userLogin}`}
+                    checked={selected.has(user.userLogin)}
+                    onChange={() => onRowSelectToggle(user.userLogin)}
+                  />
+                </td>
                 <td>
                   <div className="users-table__login-cell">
                     <span className="mono users-table__login">{user.userLogin}</span>
@@ -198,6 +322,11 @@ export function UsersTable() {
                   <ModelMixBar mix={user.modelMix} />
                 </td>
                 <td className="users-table__ulb">{formatUlb(user.effectiveUlb)}</td>
+                <td>
+                  <button type="button" className="users-table__set-ulb" onClick={() => setSettingUlbFor(user)}>
+                    Set ULB
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -234,6 +363,20 @@ export function UsersTable() {
         Model mix is best-effort attribution — the unattributable % is shown explicitly so we never imply false
         precision.
       </p>
+
+      {toast && (
+        <div className="users-toast" role="status">
+          {toast}
+        </div>
+      )}
+
+      {settingUlbFor && (
+        <SetUlbModal user={settingUlbFor} onClose={() => setSettingUlbFor(null)} onApplied={onSetUlbApplied} />
+      )}
+
+      {bulkUsers && bulkUsers.length > 0 && (
+        <BulkUlbModal users={bulkUsers} onClose={() => setBulkUsers(null)} onApplied={onBulkUlbApplied} />
+      )}
     </section>
   );
 }

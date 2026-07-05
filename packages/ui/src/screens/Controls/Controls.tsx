@@ -11,6 +11,7 @@ import {
 } from '@copilot-budget/core';
 import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { parseCredits, parseRecipients } from '../../lib/creditsInput';
 import { ComingSoon } from '../_stubs/ComingSoon';
 import { ControlsTable, type RowUtilization, type SpendingLimitRowModel } from './ControlsTable';
 import { NewUlbModal } from './NewUlbModal';
@@ -73,18 +74,6 @@ interface StagedBudgetEdit {
 interface MeterData {
   enterpriseUsedCredits: number;
   usedCreditsByCostCenterName: Record<string, number>;
-}
-
-export function parseCredits(raw: string): number {
-  const digits = raw.replace(/[^0-9]/g, '');
-  return digits === '' ? 0 : Number.parseInt(digits, 10);
-}
-
-export function parseRecipients(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
 }
 
 function applyEdit(control: BudgetControl, edit: StagedBudgetEdit): BudgetControl {
