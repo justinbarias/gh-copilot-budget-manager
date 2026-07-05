@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { diffControls, type BudgetControl, type ControlState, type IncludedCapControl } from './controls';
-import { simulatePlan, type CostCenterUsage, type UsageState, type UserUsage } from './simulate';
+import { simulatePlan, type CostCenterUsage, type SimulationForecastInput, type UsageState, type UserUsage } from './simulate';
 
 const AS_OF_DATE = new Date('2026-06-14T00:00:00.000Z');
 const ENTERPRISE = 'acme-enterprise';
@@ -484,5 +484,34 @@ describe('simulatePlan -- cost-center membership moves re-home the mover (Task 4
     const result = simulatePlan(plan, usage, live, AS_OF_DATE);
     expect(result.newlyBlockedUserLogins).toEqual([]);
     expect(result.newlyUnblockedUserLogins).toEqual([]);
+  });
+});
+
+// Checkpoint 5: PLAN.md Task 4.6 promised simulatePlan takes an optional
+// forecast input "from day one so the [Phase 6] upgrade is additive". This
+// locks that promise: the SimulationForecastInput surface still compiles
+// end-to-end when a forecast is actually PROVIDED (not just when the arg is
+// omitted), and -- because v1 deliberately accepts-but-ignores it (`void
+// forecast`) -- passing one is inert: identical result to the no-forecast
+// call. Phase 6 only starts READING this input; the signature never changes.
+describe('simulatePlan -- optional forecast input (Task 4.6 additive surface)', () => {
+  it('compiles with a SimulationForecastInput provided and treats it as inert in v1', () => {
+    const live: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 })];
+    const desired: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 6_000 })];
+    const plan = diffControls(live, desired);
+    const usage = usageState({ users: [user({ userLogin: 'user-01', poolCreditsUsed: 4_500 })] });
+
+    // Type-level proof: this shape must satisfy the exported interface exactly.
+    const forecast: SimulationForecastInput = {
+      projectedEndOfCycleCreditsUsedByUser: { 'user-01': 9_000 },
+      projectedEndOfCycleCreditsUsedByCostCenter: { Platform: 42_000 },
+      cycleEndDate: new Date('2026-06-30T00:00:00.000Z'),
+    };
+
+    const withForecast = simulatePlan(plan, usage, live, AS_OF_DATE, forecast);
+    const withoutForecast = simulatePlan(plan, usage, live, AS_OF_DATE);
+
+    // v1 ignores the forecast (`void forecast`) -> byte-for-byte identical.
+    expect(withForecast).toEqual(withoutForecast);
   });
 });
