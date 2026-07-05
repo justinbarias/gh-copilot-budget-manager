@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isUserAtRiskOfUlbBlock, type EffectiveUlb } from '@copilot-budget/core';
-import type { CostCenterSummary, HeavyUser } from '@copilot-budget/data';
+import type { CostCenterSummary, HeavyUser, StoredForecast } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { ModelMixBar } from '../../components/ModelMixBar';
 import { Sparkline } from '../../components/Sparkline';
@@ -32,9 +32,40 @@ export function formatUlb(effectiveUlb: EffectiveUlb | null): string {
   return `${formatCredits(effectiveUlb.amountCredits)} · ${ULB_SCOPE_LABEL[effectiveUlb.scope]}`;
 }
 
-function loginSublabel(user: HeavyUser): string | null {
+// Task 5.8: "✕ block ~<date>" sublabel, matching design/README.md §6 and the
+// design handoff prototype's own `✕ block ~{{ u.blockDate }}` (Copilot Budget
+// Manager v2.dc.html) date convention -- short month + day, no year, no
+// leading zero, UTC-fixed (SIM_CURRENT_DATE-era fixture dates, never
+// wall-clock/locale-dependent -- same rendering discipline as
+// AlertsList.tsx's TIMESTAMP_FORMATTER).
+const BLOCK_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'UTC',
+  month: 'short',
+  day: 'numeric',
+});
+
+export function formatBlockDate(isoDate: string): string {
+  return BLOCK_DATE_FORMATTER.format(new Date(`${isoDate}T00:00:00.000Z`));
+}
+
+// Precedence (most-specific/urgent first), matching the pre-5.8 $0/no-usage
+// ordering exactly so neither existing rule's rendering changes:
+//   1. $0 ULB -> always-blocked, regardless of forecast or usage.
+//   2. Zero cycle-to-date usage -> "no usage yet this cycle" (per-user
+//      forecasts persist with a null exhaustion/runway for these -- Task 5.4
+//      -- so this branch never conflicts with #3 in practice, but is checked
+//      first regardless since it doesn't need the forecast to be loaded).
+//   3. A persisted forecast (Task 5.4, `getForecast('user', userId)`) whose
+//      binding-ULB projection has a non-null exhaustionDate -> the projected
+//      block-date sublabel (PRD §3.3's self-service headroom answer).
+//   4. Otherwise (forecast not yet loaded/pre-sync, or no projected block
+//      within the horizon) -> no sublabel at all.
+function loginSublabel(user: HeavyUser, forecast: StoredForecast | null | undefined): string | null {
   if (user.effectiveUlb !== null && user.effectiveUlb.amountCredits <= 0) return '✕ blocked · $0 ULB';
   if (user.creditsUsed === 0) return 'no usage yet this cycle';
+  if (forecast != null && forecast.result.exhaustionDate !== null) {
+    return `✕ block ~${formatBlockDate(forecast.result.exhaustionDate)}`;
+  }
   return null;
 }
 
@@ -196,7 +227,15 @@ export function UsersTable() {
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clampedPage = Math.min(page, pageCount - 1);
-  const pageUsers = filtered.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
+  // Memoized (not a plain `filtered.slice(...)` in the render body) so its
+  // reference is stable across renders that don't actually change the
+  // visible page -- the Task 5.8 forecast-fetch effect below depends on it,
+  // and an unstable reference would re-run that effect (and re-check the
+  // cache) on every unrelated re-render (toast timers, selection toggles…).
+  const pageUsers = useMemo(
+    () => filtered.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE),
+    [filtered, clampedPage],
+  );
 
   // Header checkbox is "select all ON THIS PAGE" (design/README.md §6) --
   // selection itself persists across pages (a top-level login set, only
@@ -205,6 +244,44 @@ export function UsersTable() {
   const pageLogins = pageUsers.map((u) => u.userLogin);
   const allPageSelected = pageLogins.length > 0 && pageLogins.every((login) => selected.has(login));
   const selectedUsers = (users ?? []).filter((u) => selected.has(u.userLogin));
+
+  // Task 5.8: per-user forecast vs binding ULB -> "✕ block ~<date>" sublabel.
+  // Fetched per VISIBLE row only (not all 81 users) -- IPC is local/cheap
+  // (CLAUDE.md's bridge is a same-process preload call, not a network round
+  // trip) but there's no reason to fetch rows that aren't on screen.
+  // Cache is keyed by login (never re-fetches a login already resolved,
+  // including a resolved `null` pre-sync/no-such-scope answer) and grows
+  // across page/filter/search navigation for the lifetime of this component
+  // instance; nothing ever invalidates an entry because forecasts are only
+  // ever recomputed by a fresh `syncNow` (Task 5.4), which this screen has no
+  // affordance to trigger itself (Settings' "Sync now" does, and remounts/
+  // re-navigations naturally pick up a fresh cache from a fresh mount).
+  const [forecasts, setForecasts] = useState<ReadonlyMap<string, StoredForecast | null>>(new Map());
+
+  useEffect(() => {
+    const toFetch = pageUsers.filter((u) => !forecasts.has(u.userLogin));
+    if (toFetch.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      toFetch.map(async (u) => [u.userLogin, await api.getForecast('user', u.userId)] as const),
+    ).then((entries) => {
+      if (cancelled) return;
+      setForecasts((current) => {
+        const next = new Map(current);
+        for (const [login, forecast] of entries) next.set(login, forecast);
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `forecasts` is deliberately excluded: it's read as this render's cache
+    // snapshot (via the `toFetch` guard above), not a value this effect
+    // should re-run in response to -- only a change in the visible page
+    // (`pageUsers`, now referentially stable, see above) or the api-client
+    // instance should re-trigger the fetch/cache-check.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageUsers, api]);
 
   const onToggleAllOnPage = () => {
     setSelected((current) => {
@@ -336,7 +413,10 @@ export function UsersTable() {
                 <td>
                   <div className="users-table__login-cell">
                     <span className="mono users-table__login">{user.userLogin}</span>
-                    {loginSublabel(user) && <span className="users-table__sublabel">{loginSublabel(user)}</span>}
+                    {(() => {
+                      const sublabel = loginSublabel(user, forecasts.get(user.userLogin));
+                      return sublabel && <span className="users-table__sublabel">{sublabel}</span>;
+                    })()}
                   </div>
                 </td>
                 <td className="users-table__cc">
