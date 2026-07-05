@@ -1,0 +1,67 @@
+/* Card chrome matching .forecast__pct-card, its bottom-grid sibling, so the
+   two cells read as one symmetric row rather than a bordered card beside
+   bare canvas text. */
+.backtest-chart {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 20px 22px;
+}
+
+.backtest-chart__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.backtest-chart__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.backtest-chart__mape {
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.backtest-chart__mape--green {
+  color: var(--green);
+  background: rgba(95, 237, 131, 0.1);
+  border: 1px solid rgba(95, 237, 131, 0.35);
+}
+
+.backtest-chart__mape--amber {
+  color: var(--amber);
+  background: rgba(227, 179, 65, 0.1);
+  border: 1px solid rgba(227, 179, 65, 0.35);
+}
+
+.backtest-chart__mape--red {
+  color: var(--red);
+  background: rgba(255, 123, 114, 0.1);
+  border: 1px solid rgba(255, 123, 114, 0.35);
+}
+
+.backtest-chart__body {
+  font-size: 12.5px;
+  color: var(--text-neutral);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.backtest-chart__note {
+  font-size: 12px;
+  color: var(--text-subtle);
+  line-height: 1.5;
+  background: var(--canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  padding: 10px 12px;
+}

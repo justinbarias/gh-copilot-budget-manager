@@ -5,6 +5,7 @@ import { SimBanner } from './components/SimBanner';
 import { Nav, type ScreenId } from './components/Nav';
 import { Controls } from './screens/Controls/Controls';
 import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
+import { Forecast } from './screens/Forecast/Forecast';
 import { Overview } from './screens/Overview/Overview';
 import { TokenHealth } from './screens/Settings/TokenHealth';
 import { UsersTable } from './screens/Users/UsersTable';
@@ -36,6 +37,12 @@ function renderScreen(screen: ScreenId, navigate: (screen: ScreenId) => void) {
   switch (screen) {
     case 'overview':
       return <Overview />;
+    case 'forecast':
+      // Real since Task 5.5: scope tabs (enterprise/cost-center/user), the
+      // signature burn-down chart's forecast layers, the metered-phase spend
+      // bar, and the backtest/percentile bottom grid. Cost-center scope
+      // stays a labeled placeholder pending Task 5.6.
+      return <Forecast />;
     case 'controls':
       // Real since Task 4.9 (Spending-limits family + the plan/simulate/apply
       // rail); its "⇄ Auto-balance headroom" cross-link targets the (still

@@ -12,7 +12,7 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 // pick" rule. See App.tsx's top comment for the full flag.
 const NAV_ITEMS: Array<{ label: string; kind: 'functional' | 'stub' }> = [
   { label: 'Overview', kind: 'functional' },
-  { label: 'Forecast', kind: 'stub' },
+  { label: 'Forecast', kind: 'functional' }, // real since Task 5.5 (scope tabs, burn-down forecast layers, metered spend, backtest)
   { label: 'Controls', kind: 'functional' }, // real since Task 4.9 (Spending-limits family + plan/simulate/apply rail)
   { label: 'Auto-balance', kind: 'stub' },
   { label: 'Cost centers', kind: 'functional' },
@@ -35,6 +35,11 @@ async function assertFunctionalScreen(window: Page, label: string): Promise<void
     case 'Controls':
       // Family tabs are the screen's stable spine (controls.spec.ts covers the rest).
       await expect(window.getByRole('tab', { name: 'Included-usage caps' })).toBeVisible();
+      break;
+    case 'Forecast':
+      // Scope tabs are the screen's stable spine, present whether or not a
+      // sync has ever run (forecast-screen.spec.ts covers the real content).
+      await expect(window.locator('.forecast__tab--active')).toHaveText('Enterprise');
       break;
     case 'Cost centers':
       await expect(window.getByText(/cost centers · mapped to the DEWR financial structure/)).toBeVisible();
