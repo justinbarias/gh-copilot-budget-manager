@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { diffControls, type ControlState } from '@copilot-budget/core';
 import { readAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
+import { snapshot } from '../db/schema.js';
 import { server } from '../msw/server.js';
 import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { applyPlan, dryRunPlan, type ApplyPlanOptions } from './engine.js';
@@ -50,7 +51,15 @@ async function stageWorkforceAmountChangePlan() {
 }
 
 function baseOptions(desiredControls: readonly ControlState[]): ApplyPlanOptions {
-  return { enterprise: ENTERPRISE_SLUG, octokit, db, actor: 'admin@example.com', desiredControls, asOfDate: new Date('2026-06-14T00:00:00.000Z') };
+  return {
+    enterprise: ENTERPRISE_SLUG,
+    octokit,
+    db,
+    actor: 'admin@example.com',
+    desiredControls,
+    asOfDate: new Date('2026-06-14T00:00:00.000Z'),
+    source: 'msw',
+  };
 }
 
 describe('fetchLiveControls', () => {
@@ -662,5 +671,62 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
     // Each entry still gets exactly one audit event (create + two membership).
     expect(result.auditEvents).toHaveLength(3);
     expect(verifyStoredChain(db)).toEqual({ ok: true });
+  });
+});
+
+// docs/pending/todo.md's "Audit provenance mode-scoping" deferred item:
+// latestSnapshotId (engine.ts) used to pick the max-id snapshot ACROSS BOTH
+// 'msw' and 'github' generations, so a live apply in the (by-design,
+// unpurged) mixed-mode DB could stamp an MSW snapshot id as its audit
+// event's CLAUDE.md §6.5 "data snapshot it was based on" whenever the newest
+// snapshot happened to be a simulation sync. These tests seed the snapshot
+// table directly (bypassing syncNow, matching audit/writer.test.ts's
+// upgrade-path convention) to control exactly which source is newest.
+describe('applyPlan -- audit dataSnapshotId is scoped to the apply\'s own source', () => {
+  it('stamps the newest GITHUB snapshot, not the newest snapshot overall, when the apply\'s source is "github"', async () => {
+    const mswGen1 = db.insert(snapshot).values({ capturedAt: new Date('2026-06-01T00:00:00.000Z'), source: 'msw' }).returning().get();
+    const githubGen = db.insert(snapshot).values({ capturedAt: new Date('2026-06-05T00:00:00.000Z'), source: 'github' }).returning().get();
+    const mswGen2 = db.insert(snapshot).values({ capturedAt: new Date('2026-06-10T00:00:00.000Z'), source: 'msw' }).returning().get();
+    // mswGen2 is the highest-id / newest snapshot overall -- the bug this
+    // guards against would stamp ITS id even though this apply's source is
+    // 'github'. githubGen (the middle generation) is the one a source-scoped
+    // lookup must return.
+    expect(mswGen2.id).toBeGreaterThan(githubGen.id);
+    expect(githubGen.id).toBeGreaterThan(mswGen1.id);
+
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
+    const result = await applyPlan(stagedPlan, { ...baseOptions(desiredControls), source: 'github' });
+
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0]!.dataSnapshotId).toBe(githubGen.id);
+    expect(result.auditEvents[0]!.dataSnapshotId).not.toBe(mswGen2.id);
+    expect(result.auditEvents[0]!.dataSnapshotId).not.toBe(mswGen1.id);
+  });
+
+  // Decision (CLAUDE.md §6.5 lens, recorded per the brief): when NO snapshot
+  // of the apply's own source exists yet, dataSnapshotId is null -- not a
+  // fallback to the newest snapshot of the OTHER source. A null data basis
+  // honestly says "this github-sourced apply has no github-sourced snapshot
+  // to point to yet"; silently substituting the newest msw snapshot would
+  // stamp a WRONG data basis into an immutable, hash-chained compliance log,
+  // which is worse than admitting there isn't one. This also matches the
+  // existing no-snapshot-of-this-source convention already established on
+  // the read side (getLastSyncedControls/getLatestForecast in sync-now.ts
+  // both return null, never a cross-source fallback, when nothing of the
+  // requested source exists) and the column itself (data_snapshot_id is a
+  // nullable FK -- schema.ts's audit_event.dataSnapshotId).
+  it('records a null dataSnapshotId (not a wrong-source id) when zero snapshots of the apply\'s source exist', async () => {
+    db.insert(snapshot).values({ capturedAt: new Date('2026-06-01T00:00:00.000Z'), source: 'msw' }).run();
+    db.insert(snapshot).values({ capturedAt: new Date('2026-06-05T00:00:00.000Z'), source: 'msw' }).run();
+
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
+    const result = await applyPlan(stagedPlan, { ...baseOptions(desiredControls), source: 'github' });
+
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error('unreachable');
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0]!.dataSnapshotId).toBeNull();
   });
 });

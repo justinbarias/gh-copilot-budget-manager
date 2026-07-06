@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Octokit } from 'octokit';
-import { desc } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import {
   applyPlanToControls,
   controlIdentity,
@@ -123,6 +123,20 @@ export interface ApplyPlanOptions {
   asOfDate: Date;
   users?: readonly UserLicenseContext[];
   nearZeroUlbThresholdCredits?: number;
+  /**
+   * The SAME 'msw' | 'github' flag github-impl.ts's clock seam
+   * (resolveClockDate) and the source-scoped reads (getLastSyncedControls,
+   * getLatestForecast) already key off -- not a second mode flag. Required
+   * (not optional/defaulted) so no caller can silently fall back to the old
+   * mode-blind behaviour: latestSnapshotId below filters to snapshots of
+   * THIS source, so an applied change's audit `dataSnapshotId` (CLAUDE.md
+   * §6.5's "the data snapshot it was based on") always names a snapshot that
+   * genuinely came from the same source as this apply, never a same-DB
+   * snapshot from the other mode (the DB is mixed-mode in steady state --
+   * no purge exists by design, see docs/pending/todo.md's deferred-items
+   * note).
+   */
+  source: 'msw' | 'github';
 }
 
 export interface MutationLogEntry {
@@ -187,8 +201,25 @@ export type ApplyPlanResult =
       errorMessage: string;
     };
 
-function latestSnapshotId(db: Db): number | null {
-  const latest = db.select({ id: schema.snapshot.id }).from(schema.snapshot).orderBy(desc(schema.snapshot.id)).limit(1).all()[0];
+// Mode-scoped (CLAUDE.md §6.5 / §6.8, following the same fix
+// getLastSyncedControls/getLatestForecast already applied to the read side,
+// docs/pending/todo.md's "Audit provenance mode-scoping" deferred item):
+// filters to snapshots of THIS source only. Without the filter this picked
+// the max-id snapshot across BOTH 'msw' and 'github' generations, so a live
+// apply in the (by-design, unpurged) mixed-mode DB could stamp an MSW
+// snapshot id as its audit event's compliance-log data basis whenever the
+// newest snapshot happened to be a simulation sync. Returns null (rather
+// than falling back to a wrong-source id) when no snapshot of `source`
+// exists yet -- a null data basis is honest; a same-DB-but-wrong-mode one is
+// not (see applyPlan's zero-github-snapshots case).
+function latestSnapshotId(db: Db, source: 'msw' | 'github'): number | null {
+  const latest = db
+    .select({ id: schema.snapshot.id })
+    .from(schema.snapshot)
+    .where(eq(schema.snapshot.source, source))
+    .orderBy(desc(schema.snapshot.id))
+    .limit(1)
+    .all()[0];
   return latest ? latest.id : null;
 }
 
@@ -588,7 +619,7 @@ export async function applyPlan(stagedPlan: Plan, options: ApplyPlanOptions): Pr
   const postPlanControls = applyPlanToControls(live.controls, currentPlan);
   const liveById = new Map(live.controls.map((c) => [controlIdentity(c), c]));
   const postById = new Map(postPlanControls.map((c) => [controlIdentity(c), c]));
-  const dataSnapshotId = latestSnapshotId(options.db);
+  const dataSnapshotId = latestSnapshotId(options.db, options.source);
 
   const mutationLog: MutationLogEntry[] = [];
   const auditEvents: AppliedAuditEvent[] = [];

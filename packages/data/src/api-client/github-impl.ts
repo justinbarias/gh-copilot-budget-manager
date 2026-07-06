@@ -781,6 +781,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       justification: input.justification,
       trigger: 'manual',
       asOfDate: currentDateObj(),
+      source: config.source,
     });
   }
 
