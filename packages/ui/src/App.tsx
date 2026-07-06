@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { cycleBounds } from '@copilot-budget/core';
+import type { ScenarioId, ScenarioSummary } from '@copilot-budget/data';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
 import { SimBanner } from './components/SimBanner';
+import { ScenarioSelector } from './components/ScenarioSelector';
 import { Nav, type ScreenId } from './components/Nav';
 import { Audit } from './screens/Audit/Audit';
 import { Controls, type FamilyId } from './screens/Controls/Controls';
@@ -103,6 +105,52 @@ function AppShell() {
   // Controls.
   const [controlsInitialFamily, setControlsInitialFamily] = useState<FamilyId | undefined>(undefined);
 
+  // Task 6.7: sim-mode scenario state. `scenarios` is null in live mode
+  // (listScenarios refuses) or before the fetch resolves, so the selector is
+  // absent unless we're genuinely in simulation. Switching a scenario re-seeds
+  // MSW + re-anchors the sim clock in the main process; `scenarioVersion` is a
+  // remount key on the content + a re-fetch trigger for the topbar/nav so every
+  // screen re-reads the new fixture world.
+  const [mode, setMode] = useState<'simulation' | 'live' | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioSummary[] | null>(null);
+  const [activeScenarioId, setActiveScenarioId] = useState<ScenarioId | null>(null);
+  const [scenarioVersion, setScenarioVersion] = useState(0);
+  const [switching, setSwitching] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.getMode(), api.listScenarios()]).then(([m, list]) => {
+      if (cancelled) return;
+      setMode(m);
+      if (!list.refused) {
+        setScenarios(list.scenarios);
+        setActiveScenarioId(list.activeId);
+      } else {
+        setScenarios(null);
+        setActiveScenarioId(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  async function handleSelectScenario(id: ScenarioId) {
+    if (id === activeScenarioId || switching) return;
+    setSwitching(true);
+    try {
+      const res = await api.setScenario(id);
+      if (!res.refused) {
+        setActiveScenarioId(res.scenario.id);
+        setScenarioVersion((v) => v + 1); // remount screens + re-fetch topbar/nav
+      }
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  const activeScenario = scenarios?.find((s) => s.id === activeScenarioId) ?? null;
+
   function navigate(next: ScreenId, options?: NavigateOptions) {
     setControlsInitialFamily(options?.controlsFamily);
     setScreen(next);
@@ -128,7 +176,9 @@ function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [api]);
+    // scenarioVersion: switching a scenario re-anchors the sim clock, so the
+    // topbar cycle label (day X/Y) must re-read the new asOf date.
+  }, [api, scenarioVersion]);
 
   return (
     <div className="app-shell">
@@ -137,13 +187,29 @@ function AppShell() {
           screen can ever mount without it in view. */}
       <SimBanner />
       <div className="app-shell__body">
-        <Nav screen={screen} onNavigate={navigate} />
+        <Nav
+          screen={screen}
+          onNavigate={navigate}
+          autoBalanceBadge={mode === 'simulation' ? (activeScenario?.atRiskCount ?? 0) : 0}
+        />
         <main className="app-shell__main">
           <header className="app-shell__topbar">
             <h1 className="app-shell__title">{SCREEN_TITLES[screen]}</h1>
             {cycleLabel && <span className="app-shell__cycle">{cycleLabel}</span>}
+            {mode === 'simulation' && scenarios && activeScenarioId && (
+              <ScenarioSelector
+                scenarios={scenarios}
+                activeId={activeScenarioId}
+                onSelect={handleSelectScenario}
+                busy={switching}
+              />
+            )}
           </header>
-          <div className="app-shell__content">{renderScreen(screen, navigate, controlsInitialFamily)}</div>
+          {/* scenarioVersion remounts every screen on a scenario switch, so
+              each screen's data effects re-run against the new fixture world. */}
+          <div className="app-shell__content" key={scenarioVersion}>
+            {renderScreen(screen, navigate, controlsInitialFamily)}
+          </div>
         </main>
       </div>
     </div>

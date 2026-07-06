@@ -1,0 +1,365 @@
+import type { EntityRef, UsageState } from '@copilot-budget/core';
+import { BUDGETS, type Budget } from './budgets.js';
+import { COST_CENTERS, COST_CENTER_RESOURCES } from './costCenters.js';
+import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG } from './constants.js';
+import { SEATS } from './licenses.js';
+import { CREDITS_USED_ITEMS, USAGE_ITEMS, type CreditsUsedItem, type UsageItem } from './usage.js';
+import { getActiveScenarioId, type ScenarioId } from '../scenario-state.js';
+
+// ============================================================================
+// Task 6.7 -- SCENARIO FIXTURE DATA + the engine inputs the rebalancers prove
+// against. The mechanism/metadata lives in ../scenario-state.ts; this module
+// owns (a) the MSW-servable wire fixtures per scenario (getActiveFixtures) and
+// (b) the assembled rebalancer inputs the engine-proof tests
+// (scenarios.engine.test.ts) pin outcomes against.
+//
+// DESIGN (documented so the 6.8/6.9 UI builder and the validator can re-derive):
+//   - 'healthy' is the DEWR world, byte-identical: its wire IS the committed
+//     arrays; its rebalancer `currentUsage`/`controls` come from the real
+//     assembleUsageState/fetchLiveControls rollup (the test asserts this).
+//   - The three alternates REUSE the DEWR roster (SEATS), cost centers, and
+//     memberships, and (except 'surplus', which drops the $0 ULB so its at-risk
+//     count can be zero) the DEWR budgets. They differ ONLY in usage + dates,
+//     authored as a compact `ScenarioSeed` and expanded to wire by `buildWire`
+//     -- which is the EXACT inverse of live-state.ts's assembleUsageState, so
+//     `assembleUsageState(wire) === currentUsage` round-trips (proven in-test).
+//   - The rebalancer also needs a PROJECTION and pool/metered scalars, which no
+//     current-usage wire carries (a forecast produces them). The engines are
+//     projection/asOf-EXPLICIT by design (they never run a forecast themselves),
+//     so each scenario carries them here as `poolInputs`/`meteredInputs` -- the
+//     same inputs 6.8/6.9 will thread into the Auto-balance screen.
+//
+// COHERENCE (per-scenario equations are documented at each seed below).
+// ============================================================================
+
+// --- login -> cost-center id / name, seat id (built once from the roster) ----
+const CC_NAME_BY_ID: Record<string, string> = Object.fromEntries(COST_CENTERS.map((c) => [c.id, c.name]));
+
+const CC_ID_BY_LOGIN: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const [ccId, resources] of Object.entries(COST_CENTER_RESOURCES)) {
+    for (const r of resources) if (r.type === 'User') map[r.name] = ccId;
+  }
+  return map;
+})();
+
+const SEAT_ID_BY_LOGIN: Record<string, string> = Object.fromEntries(
+  SEATS.map((s) => [s.assignee.login, String(s.assignee.id)]),
+);
+
+// --- the compact seed a scenario authors (a transformation of the roster) ----
+
+interface SeedUser {
+  readonly login: string;
+  /** cycle-to-date pool draw (credits). */
+  readonly pool: number;
+  /** cycle-to-date metered spend (credits); default 0. */
+  readonly metered?: number;
+}
+
+interface ScenarioSeed {
+  /** In-cycle date all authored rows carry (weekday, inside cycleBounds(asOf)). */
+  readonly date: string;
+  readonly users: readonly SeedUser[];
+  /** Per-CC aggregate POOL draw (billing discount rows, user_login null), by CC id. */
+  readonly ccPool: Readonly<Record<string, number>>;
+  /** Per-CC aggregate SHARED metered (billing net rows, user_login null), by CC id. */
+  readonly ccMetered?: Readonly<Record<string, number>>;
+}
+
+interface ScenarioWire {
+  readonly budgets: readonly Budget[];
+  readonly costCenters: typeof COST_CENTERS;
+  readonly costCenterResources: typeof COST_CENTER_RESOURCES;
+  readonly seats: typeof SEATS;
+  readonly usageItems: readonly UsageItem[];
+  readonly creditsUsedItems: readonly CreditsUsedItem[];
+}
+
+// buildWire is the exact inverse of assembleUsageState (live-state.ts):
+//   per-user TOTAL  = ai_credits_used (metrics report) = pool + metered
+//   per-user METERED= Σ net_amount over that login's billing rows
+//   per-user POOL   = total - metered
+//   per-CC POOL     = Σ discount_amount over that CC's billing rows
+//   per-CC METERED  = Σ net_amount over that CC's billing rows (shared + per-user)
+//   enterprise METERED = Σ net_amount over all in-cycle billing rows
+// so assembleUsageState(buildWire(seed)) reproduces the seed exactly.
+function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedItems: CreditsUsedItem[] } {
+  const { date } = seed;
+  const creditsUsedItems: CreditsUsedItem[] = seed.users.map((u) => ({
+    date,
+    user_id: SEAT_ID_BY_LOGIN[u.login] ?? '0',
+    user_login: u.login,
+    ai_credits_used: u.pool + (u.metered ?? 0),
+  }));
+
+  const usageItems: UsageItem[] = [];
+  for (const [ccId, pool] of Object.entries(seed.ccPool)) {
+    usageItems.push({
+      date,
+      product: 'copilot',
+      sku: 'ai_credits',
+      cost_center_id: ccId,
+      user_login: null,
+      quantity: pool,
+      gross_amount: pool / 100,
+      discount_amount: pool / 100,
+      net_amount: 0,
+    });
+  }
+  for (const [ccId, metered] of Object.entries(seed.ccMetered ?? {})) {
+    usageItems.push({
+      date,
+      product: 'copilot',
+      sku: 'ai_credits',
+      cost_center_id: ccId,
+      user_login: null,
+      quantity: metered,
+      gross_amount: metered / 100,
+      discount_amount: 0,
+      net_amount: metered / 100,
+    });
+  }
+  for (const u of seed.users) {
+    if (!u.metered) continue;
+    usageItems.push({
+      date,
+      product: 'copilot',
+      sku: 'ai_credits',
+      cost_center_id: CC_ID_BY_LOGIN[u.login] ?? null,
+      user_login: u.login,
+      quantity: u.metered,
+      gross_amount: u.metered / 100,
+      discount_amount: 0,
+      net_amount: u.metered / 100,
+    });
+  }
+  return { usageItems, creditsUsedItems };
+}
+
+// ===========================================================================
+// Cost-center NAMES (must equal CostCenter.name -- resolvers key by name).
+// ===========================================================================
+const PAYMENTS = 'Payments Integrity Engineering';
+const DATA_EVAL = 'Data & Evaluation Platform';
+const CYBER = 'Cyber & Identity Services';
+const CORPORATE = 'Corporate Systems';
+
+// ===========================================================================
+// AT-RISK (pool phase, day 26/30 = 2026-06-27, cycleEnd 2026-06-30).
+//
+// Story: Corporate Systems (universal 4,600 ULB, no CCULB) has a blocked +
+// approaching cohort; Payments Integrity is a cap-bound team (its cap-hit team
+// is the relax branch); ext-dmorrow's standing $0-ULB block persists. A modest
+// non-at-risk Corporate cohort carries per-user projected draw so the envelope's
+// `held` segment is nonzero (engine-validator hazard #1).
+//
+// Universal ULB 4,600. cohorts (per-user pool, projected total):
+//   BLOCKED   x3 (karen-fox, ali-rezaei, josh-bright):   4,600 -> 7,000  (grant 2,400)
+//   APPROACH  x4 (mia-larsson, tom-becker, wei-sun, colin-hurst): 4,400 -> 6,000 (grant 1,400)
+//   HELD      x5 (blake-ferris, noor-jaber, gina-lombardi, ext-rknott, devi-anand):
+//                                                        1,000 -> 2,500 (held +1,500 each)
+//   ext-dmorrow: $0 ULB, 0 usage -> standing blocked (grant 0, not fundable)
+// Cap-bound team Payments Integrity: CC pool 55,000 -> 61,000 vs cap 56,000
+//   (8 members carry 0 individual usage, so each resolves cap-bound; +1 CC entity).
+//
+// Pool scalars: total 567,000; consumed 511,150 -> remaining_pool 55,850;
+//   reserve = round(0.05*567,000) = 28,350; held = 5 * 1,500 = 7,500;
+//   ENVELOPE = 55,850 - 28,350 - 7,500 = 20,000.
+//   grants = 3*2,400 + 4*1,400 = 12,800 (all funded), slack = 7,200.
+//   projected P50 520,000 (util 91.71% < 95% -> underutilised); P90 545,000.
+//   trigger: near(3d) + underutil + 17 at-risk -> FIRES.
+//   at-risk = 3 + 4 + 1(ext-dmorrow) + 8(payments members) + 1(payments CC) = 17.
+//   cap-relax rows = 9 (8 members + CC), each unlock = 61,000 - 56,000 = 5,000.
+//   sim: before 520,000 (91.71%) -> after 532,800 (93.97%); 7 unblocked.
+// ===========================================================================
+const AT_RISK_BLOCKED = ['karen-fox', 'ali-rezaei', 'josh-bright'];
+const AT_RISK_APPROACHING = ['mia-larsson', 'tom-becker', 'wei-sun', 'colin-hurst'];
+const AT_RISK_HELD = ['blake-ferris', 'noor-jaber', 'gina-lombardi', 'ext-rknott', 'devi-anand'];
+
+const AT_RISK_SEED: ScenarioSeed = {
+  date: '2026-06-15',
+  users: [
+    ...AT_RISK_BLOCKED.map((login) => ({ login, pool: 4_600 })),
+    ...AT_RISK_APPROACHING.map((login) => ({ login, pool: 4_400 })),
+    ...AT_RISK_HELD.map((login) => ({ login, pool: 1_000 })),
+  ],
+  ccPool: { [COST_CENTER_IDS.corporate]: 40_000, [COST_CENTER_IDS.capBound]: 55_000 },
+};
+
+function usr(userLogin: string, costCenterName: string | null, pool: number, metered = 0): UsageState['users'][number] {
+  return { userLogin, costCenterName, poolCreditsUsed: pool, meteredCreditsUsed: metered };
+}
+
+const AT_RISK_POOL_INPUTS: PoolScenarioInputs = {
+  projectedUsage: {
+    enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 0 },
+    users: [
+      ...AT_RISK_BLOCKED.map((l) => usr(l, CORPORATE, 7_000)),
+      ...AT_RISK_APPROACHING.map((l) => usr(l, CORPORATE, 6_000)),
+      ...AT_RISK_HELD.map((l) => usr(l, CORPORATE, 2_500)),
+    ],
+    costCenters: [{ costCenterName: PAYMENTS, poolCreditsUsed: 61_000, meteredCreditsUsed: 0 }],
+  },
+  poolTotalCredits: 567_000,
+  poolConsumedCredits: 511_150,
+  projectedPoolConsumedCredits: 520_000,
+  projectedPoolConsumedP90Credits: 545_000,
+  cycleEndDate: '2026-06-30',
+};
+
+// ===========================================================================
+// SURPLUS (pool phase, day 26/30 = 2026-06-27). Drastic under-consumption, but
+// NOBODY at risk -- so the trigger does NOT fire (no one to redistribute to);
+// the story is pure forfeit. Budgets DROP the $0 ULB (BUDGET_IDS.zeroUlb) so
+// ext-dmorrow falls back to the 4,600 universal ULB and is not standing-blocked
+// -- otherwise at-risk >= 1 and the trigger could fire.
+//
+//   8 light users at 1,200 pool (26% of 4,600 ULB -> not at-risk).
+//   All CC aggregates far under cap (no cap-bound team).
+//   scalars: total 567,000; consumed 14,000; projected 40,000
+//     -> util 7.05%, FORFEIT 92.95% (527,000 credits). at-risk 0 -> NOT fired.
+// ===========================================================================
+const SURPLUS_USERS = ['rpatel2', 'd-okafor', 'jr-mitchell', 'amir-haddad', 'claire-donnelly', 'ruby-carter', 'omar-farah', 'lucas-meyer'];
+
+const SURPLUS_SEED: ScenarioSeed = {
+  date: '2026-06-15',
+  users: SURPLUS_USERS.map((login) => ({ login, pool: 1_200 })),
+  ccPool: { [COST_CENTER_IDS.workforce]: 6_000, [COST_CENTER_IDS.cyber]: 3_600 },
+};
+
+const SURPLUS_BUDGETS: readonly Budget[] = BUDGETS.filter((b) => b.id !== BUDGET_IDS.zeroUlb);
+
+const SURPLUS_POOL_INPUTS: PoolScenarioInputs = {
+  // No growth projected (mirror current) -- nobody approaches a ceiling.
+  projectedUsage: {
+    enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 0 },
+    users: SURPLUS_USERS.map((l) => {
+      const ccId = CC_ID_BY_LOGIN[l];
+      return usr(l, ccId ? (CC_NAME_BY_ID[ccId] ?? null) : null, 1_200);
+    }),
+    costCenters: [],
+  },
+  poolTotalCredits: 567_000,
+  poolConsumedCredits: 14_000,
+  projectedPoolConsumedCredits: 40_000,
+  projectedPoolConsumedP90Credits: 60_000,
+  cycleEndDate: '2026-06-30',
+};
+
+// ===========================================================================
+// METERED (metered phase active, 2026-06-27). A hard-stop cost-center budget at
+// its cap with enterprise headroom -> the metered rebalancer fires.
+//
+//   enterprise metered 300,000 of 800,000 budget (headroom 500,000).
+//   Data & Evaluation cc-budget $250 = 25,000, HARD-STOP ON: current metered
+//     24,500 (98%), projected 30,000 -> needed 5,000 (cc-budget raise, $50 bill).
+//   sam-kelly (Cyber, individual ULB 5,400): total 5,400 -> 6,400 -> needed
+//     1,000 (individual override, $10 bill).
+//   entities CURATED to [Data & Evaluation CC, sam-kelly] -- a CC in ONE branch
+//     and a user in a DIFFERENT CC, so no member/CC double-count (hazard #2).
+//   envelope base 500,000, reserve 0, held 0, allocatable 500,000, granted 6,000,
+//     slack 494,000. trigger FIRES, at-risk 2. bill delta $60; unblocked 2.
+//   wire: dataEval shared metered 24,500 + Employer shared 275,000 + sam-kelly
+//     500 = 300,000 enterprise metered. dataEval pool 63,000 (== cap, exhausted).
+// ===========================================================================
+const METERED_SEED: ScenarioSeed = {
+  date: '2026-06-15',
+  users: [{ login: 'sam-kelly', pool: 4_900, metered: 500 }],
+  ccPool: { [COST_CENTER_IDS.dataEval]: 63_000, [COST_CENTER_IDS.cyber]: 4_900 },
+  ccMetered: { [COST_CENTER_IDS.dataEval]: 24_500, [COST_CENTER_IDS.employer]: 275_000 },
+};
+
+const METERED_INPUTS: MeteredScenarioInputs = {
+  projectedUsage: {
+    enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 300_000 },
+    users: [usr('sam-kelly', CYBER, 4_900, 1_500)],
+    costCenters: [{ costCenterName: DATA_EVAL, poolCreditsUsed: 63_000, meteredCreditsUsed: 30_000 }],
+  },
+  entities: [
+    { kind: 'cost_center', costCenterName: DATA_EVAL },
+    { kind: 'user', userLogin: 'sam-kelly', costCenterName: CYBER },
+  ],
+  meteredPhaseActive: true,
+  reserveCredits: 0,
+};
+
+// ===========================================================================
+// Exported engine-input shapes (consumed by scenarios.engine.test.ts and,
+// later, the 6.8/6.9 Auto-balance screen). currentUsage/controls are assembled
+// from the wire at call time; these carry the projection + scalars.
+// ===========================================================================
+export interface PoolScenarioInputs {
+  readonly projectedUsage: UsageState;
+  readonly poolTotalCredits: number;
+  readonly poolConsumedCredits: number;
+  readonly projectedPoolConsumedCredits: number;
+  readonly projectedPoolConsumedP90Credits: number;
+  /** cycle end (YYYY-MM-DD) -- the pool trigger's near-cycle-end reference. */
+  readonly cycleEndDate: string;
+}
+
+export interface MeteredScenarioInputs {
+  readonly projectedUsage: UsageState;
+  readonly entities: readonly EntityRef[];
+  readonly meteredPhaseActive: boolean;
+  readonly reserveCredits: number;
+}
+
+// ===========================================================================
+// Assembled wire per scenario. 'healthy' is the committed DEWR arrays verbatim.
+// ===========================================================================
+const AT_RISK_WIRE = buildWire(AT_RISK_SEED);
+const SURPLUS_WIRE = buildWire(SURPLUS_SEED);
+const METERED_WIRE = buildWire(METERED_SEED);
+
+const SCENARIO_WIRE: Record<ScenarioId, ScenarioWire> = {
+  healthy: {
+    budgets: BUDGETS,
+    costCenters: COST_CENTERS,
+    costCenterResources: COST_CENTER_RESOURCES,
+    seats: SEATS,
+    usageItems: USAGE_ITEMS,
+    creditsUsedItems: CREDITS_USED_ITEMS,
+  },
+  'at-risk': {
+    budgets: BUDGETS,
+    costCenters: COST_CENTERS,
+    costCenterResources: COST_CENTER_RESOURCES,
+    seats: SEATS,
+    usageItems: AT_RISK_WIRE.usageItems,
+    creditsUsedItems: AT_RISK_WIRE.creditsUsedItems,
+  },
+  surplus: {
+    budgets: SURPLUS_BUDGETS,
+    costCenters: COST_CENTERS,
+    costCenterResources: COST_CENTER_RESOURCES,
+    seats: SEATS,
+    usageItems: SURPLUS_WIRE.usageItems,
+    creditsUsedItems: SURPLUS_WIRE.creditsUsedItems,
+  },
+  metered: {
+    budgets: BUDGETS,
+    costCenters: COST_CENTERS,
+    costCenterResources: COST_CENTER_RESOURCES,
+    seats: SEATS,
+    usageItems: METERED_WIRE.usageItems,
+    creditsUsedItems: METERED_WIRE.creditsUsedItems,
+  },
+};
+
+/** The MSW-servable fixture set for the ACTIVE scenario (handlers read this). */
+export function getActiveFixtures(): ScenarioWire {
+  return SCENARIO_WIRE[getActiveScenarioId()];
+}
+
+/** The pool-rebalancer projection + scalars for a scenario (tests / 6.8). */
+export const POOL_SCENARIO_INPUTS: Partial<Record<ScenarioId, PoolScenarioInputs>> = {
+  'at-risk': AT_RISK_POOL_INPUTS,
+  surplus: SURPLUS_POOL_INPUTS,
+};
+
+/** The metered-rebalancer projection + curation for a scenario (tests / 6.9). */
+export const METERED_SCENARIO_INPUTS: Partial<Record<ScenarioId, MeteredScenarioInputs>> = {
+  metered: METERED_INPUTS,
+};

@@ -158,3 +158,21 @@
   color: var(--text-neutral);
   line-height: 1.5;
 }
+
+/* Task 6.7: Auto-balance at-risk badge (active simulation scenario's firing
+   at-risk count). Red pill, pushed to the row's trailing edge. */
+.nav__item-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--red, #e5484d);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}

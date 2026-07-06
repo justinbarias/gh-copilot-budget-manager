@@ -1,22 +1,23 @@
 import { http, HttpResponse } from 'msw';
 import { buildLinkHeader, paginate } from './pagination.js';
 import {
-  BUDGETS,
-  COST_CENTER_RESOURCES,
-  COST_CENTERS,
-  CREDITS_USED_ITEMS,
   DEFAULT_ENTERPRISE_TEAM_SEATS,
   ENTERPRISE_TEAM_SEAT_COUNTS,
   GITHUB_API_BASE,
   HISTORICAL_CREDITS_USED_ITEMS,
   HISTORICAL_USAGE_ITEMS,
-  SEATS,
-  USAGE_ITEMS,
+  getActiveFixtures,
   type Budget,
   type BudgetScope,
   type BudgetType,
   type CostCenterResource,
 } from './fixtures/index.js';
+
+// Task 6.7: every READ + canonical-lookup below resolves the ACTIVE scenario's
+// fixture set (getActiveFixtures) rather than closing over the committed DEWR
+// arrays, so `setScenario` re-seeds the mock with no handler re-registration.
+// The default scenario ('healthy') returns the exact committed arrays, so every
+// pre-6.7 pin is byte-identical.
 
 const ENTERPRISE_BASE = `${GITHUB_API_BASE}/enterprises/:enterprise`;
 
@@ -448,6 +449,7 @@ export const handlers = [
   }),
 
   http.get(`${ENTERPRISE_BASE}/copilot/billing/seats`, ({ request }) => {
+    const { seats: SEATS } = getActiveFixtures();
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
     return HttpResponse.json(
@@ -457,13 +459,13 @@ export const handlers = [
   }),
 
   http.get(`${ENTERPRISE_BASE}/settings/billing/cost-centers`, () => {
-    return HttpResponse.json({ costCenters: COST_CENTERS });
+    return HttpResponse.json({ costCenters: getActiveFixtures().costCenters });
   }),
 
   http.get(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, ({ request, params }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
-    const all = COST_CENTER_RESOURCES[params.costCenterId as string] ?? [];
+    const all = getActiveFixtures().costCenterResources[params.costCenterId as string] ?? [];
     return HttpResponse.json(
       { resources: paginate(all, page, perPage) },
       { headers: linkHeaders(request.url, page, perPage, all.length) },
@@ -503,7 +505,7 @@ export const handlers = [
   }),
 
   http.delete(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId`, ({ params }) => {
-    const canonical = COST_CENTERS.find((c) => c.id === params.costCenterId);
+    const canonical = getActiveFixtures().costCenters.find((c) => c.id === params.costCenterId);
     if (!canonical) return githubError(404, 'Not Found');
     return new HttpResponse(null, { status: 204 });
   }),
@@ -512,7 +514,8 @@ export const handlers = [
   // (docs/api-surface-validation.md): PATCH .../cost-centers/{id} exists at
   // API version 2026-03-10. Body/response wire shape pinned against live at 9.2.
   http.patch(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId`, async ({ request, params }) => {
-    const canonical = COST_CENTERS.find((c) => c.id === params.costCenterId);
+    const fx = getActiveFixtures();
+    const canonical = fx.costCenters.find((c) => c.id === params.costCenterId);
     if (!canonical) return githubError(404, 'Not Found');
 
     const parsed = await readJsonBody(request);
@@ -525,7 +528,7 @@ export const handlers = [
     // computed_limit_credits is always freshly derived from canonical
     // membership, never taken from the client or the old fixture value --
     // reinforces "the cap is never modeled as an amount" even on edit.
-    const seatCount = licensedSeatCount(COST_CENTER_RESOURCES[canonical.id] ?? []);
+    const seatCount = licensedSeatCount(fx.costCenterResources[canonical.id] ?? []);
     return HttpResponse.json({
       ...canonical,
       name: value.name ?? canonical.name,
@@ -553,8 +556,9 @@ export const handlers = [
   // and a stateless mock can't surface it on a re-GET. Kept as an enrichment
   // and flagged for github-impl reconciliation at Task 9.2 -- not "corrected".
   http.post(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, async ({ request, params }) => {
+    const fx = getActiveFixtures();
     const ccId = params.costCenterId as string;
-    const canonical = COST_CENTERS.find((c) => c.id === ccId);
+    const canonical = fx.costCenters.find((c) => c.id === ccId);
     if (!canonical) return githubError(404, 'Not Found');
 
     const parsed = await readJsonBody(request);
@@ -570,7 +574,7 @@ export const handlers = [
     }
     if (errors.length > 0 || !added) return githubError(422, 'Validation Failed', errors);
 
-    const existing = COST_CENTER_RESOURCES[ccId] ?? [];
+    const existing = fx.costCenterResources[ccId] ?? [];
     const recomputedSeatCount = licensedSeatCount(existing) + licensedSeatCount(added);
     return HttpResponse.json(
       {
@@ -588,8 +592,9 @@ export const handlers = [
   }),
 
   http.delete(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, async ({ request, params }) => {
+    const fx = getActiveFixtures();
     const ccId = params.costCenterId as string;
-    const canonical = COST_CENTERS.find((c) => c.id === ccId);
+    const canonical = fx.costCenters.find((c) => c.id === ccId);
     if (!canonical) return githubError(404, 'Not Found');
 
     const parsed = await readJsonBody(request);
@@ -605,7 +610,7 @@ export const handlers = [
     }
     if (errors.length > 0 || !removed) return githubError(422, 'Validation Failed', errors);
 
-    const existing = COST_CENTER_RESOURCES[ccId] ?? [];
+    const existing = fx.costCenterResources[ccId] ?? [];
     const remainingSeatCount = Math.max(0, licensedSeatCount(existing) - licensedSeatCount(removed));
     return HttpResponse.json({
       cost_center_id: ccId,
@@ -620,6 +625,7 @@ export const handlers = [
   }),
 
   http.get(`${ENTERPRISE_BASE}/settings/billing/budgets`, ({ request }) => {
+    const { budgets: BUDGETS } = getActiveFixtures();
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
     return HttpResponse.json(
@@ -642,13 +648,13 @@ export const handlers = [
   }),
 
   http.get(`${ENTERPRISE_BASE}/settings/billing/budgets/:budgetId`, ({ params }) => {
-    const budget = BUDGETS.find((b) => b.id === params.budgetId);
+    const budget = getActiveFixtures().budgets.find((b) => b.id === params.budgetId);
     if (!budget) return githubError(404, 'Not Found');
     return HttpResponse.json(budget);
   }),
 
   http.patch(`${ENTERPRISE_BASE}/settings/billing/budgets/:budgetId`, async ({ request, params }) => {
-    const budget = BUDGETS.find((b) => b.id === params.budgetId);
+    const budget = getActiveFixtures().budgets.find((b) => b.id === params.budgetId);
     if (!budget) return githubError(404, 'Not Found');
 
     const parsed = await readJsonBody(request);
@@ -664,7 +670,7 @@ export const handlers = [
   }),
 
   http.delete(`${ENTERPRISE_BASE}/settings/billing/budgets/:budgetId`, ({ params }) => {
-    const budget = BUDGETS.find((b) => b.id === params.budgetId);
+    const budget = getActiveFixtures().budgets.find((b) => b.id === params.budgetId);
     if (!budget) return githubError(404, 'Not Found');
     return new HttpResponse(null, { status: 204 });
   }),
@@ -684,6 +690,7 @@ export const handlers = [
     const month = url.searchParams.get('month');
     const day = url.searchParams.get('day');
 
+    const { usageItems: USAGE_ITEMS } = getActiveFixtures();
     const source = year ? [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS] : USAGE_ITEMS;
     let filtered = costCenterId ? source.filter((item) => item.cost_center_id === costCenterId) : source;
     if (year) {
@@ -717,6 +724,7 @@ export const handlers = [
     const since = url.searchParams.get('since');
     const until = url.searchParams.get('until');
 
+    const { creditsUsedItems: CREDITS_USED_ITEMS } = getActiveFixtures();
     const source = since || until ? [...CREDITS_USED_ITEMS, ...HISTORICAL_CREDITS_USED_ITEMS] : CREDITS_USED_ITEMS;
     const filtered =
       since || until ? source.filter((item) => (!since || item.date >= since) && (!until || item.date <= until)) : source;

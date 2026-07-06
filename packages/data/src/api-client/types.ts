@@ -19,6 +19,29 @@ export type { ApplyPlanResult, AuditChainVerification, ControlState, DryRunResul
 export type { TenantConfig };
 export type { ReadSmokeEndpointResult, ReadSmokeStatus } from '../smoke/read-smoke.js';
 
+// Task 6.7: the sim-mode scenario selector's cross-boundary types. Re-exported
+// so a UI consumer depending only on '@copilot-budget/data' can name them
+// without importing the msw subpath. Type-only (erased at compile time).
+export type { ScenarioId, ScenarioSummary } from '../msw/scenario-state.js';
+import type { ScenarioId, ScenarioSummary } from '../msw/scenario-state.js';
+
+/**
+ * Task 6.7: scenarios are a SIMULATION-ONLY affordance (they drive the MSW
+ * fixture world). All three scenario methods REFUSE in live mode -- mirroring
+ * runLiveReadSmoke's `{ refused, reason }` shape but with the guard inverted
+ * (`'live mode'` instead of `'simulation mode'`), since a scenario has no
+ * meaning against a real tenant.
+ */
+export type ListScenariosResult =
+  | { refused: true; reason: string }
+  | { refused: false; scenarios: ScenarioSummary[]; activeId: ScenarioId };
+export type ActiveScenarioResult =
+  | { refused: true; reason: string }
+  | { refused: false; scenario: ScenarioSummary };
+export type SetScenarioResult =
+  | { refused: true; reason: string }
+  | { refused: false; scenario: ScenarioSummary };
+
 /**
  * Task 9.1: the result of classifying the stored PAT against GitHub's
  * documented auth surface (validatePat). Classic PATs return an
@@ -305,4 +328,18 @@ export interface ApiClient {
    * becomes the Task 9.2 work order.
    */
   runLiveReadSmoke(): Promise<ReadSmokeResult>;
+  /**
+   * Task 6.7: the simulation demo scenarios (Healthy / At risk / Surplus /
+   * Metered) + which is active. REFUSES in live mode (`{ refused: true, reason:
+   * 'live mode' }`). The top-bar scenario selector (sim-mode-only) renders this.
+   */
+  listScenarios(): Promise<ListScenariosResult>;
+  /** Task 6.7: the currently active scenario's summary (nav badge source). REFUSES in live mode. */
+  getActiveScenario(): Promise<ActiveScenarioResult>;
+  /**
+   * Task 6.7: switch the active scenario -- re-seeds MSW + re-anchors the sim
+   * clock deterministically (in-memory; resets to 'healthy' on relaunch).
+   * REFUSES in live mode. Returns the now-active scenario.
+   */
+  setScenario(id: ScenarioId): Promise<SetScenarioResult>;
 }

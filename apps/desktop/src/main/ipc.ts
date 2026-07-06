@@ -2,7 +2,7 @@ import path from 'node:path';
 import { app, ipcMain } from 'electron';
 import { createGitHubApiClient } from '@copilot-budget/data/api-client';
 import { createTenantConfigStore, resolveBaseUrl } from '@copilot-budget/data/tenant';
-import type { ApiClient, ApplyPlanInput, ControlState, ForecastScope, Plan, TenantConfig, UsageSummaryParams } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams } from '@copilot-budget/data';
 import { getDb } from './db';
 import { getPatStore } from './pat-bridge';
 
@@ -75,4 +75,7 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   ipcMain.handle('apiClient:setTenantConfig', (_event, config: TenantConfig) => client.setTenantConfig(config));
   ipcMain.handle('apiClient:validatePat', () => client.validatePat());
   ipcMain.handle('apiClient:runLiveReadSmoke', () => client.runLiveReadSmoke());
+  ipcMain.handle('apiClient:listScenarios', () => client.listScenarios());
+  ipcMain.handle('apiClient:getActiveScenario', () => client.getActiveScenario());
+  ipcMain.handle('apiClient:setScenario', (_event, id: ScenarioId) => client.setScenario(id));
 }

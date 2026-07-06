@@ -56,13 +56,23 @@ import type {
   HeavyUser,
   HeavyUserDailyPoint,
   LastSyncedControls,
+  ActiveScenarioResult,
+  ListScenariosResult,
   PatValidation,
   ReadSmokeResult,
+  SetScenarioResult,
   StoredForecast,
   SyncStatus,
   UsageSummary,
   UsageSummaryParams,
 } from './types.js';
+import {
+  getActiveScenarioSummary,
+  isScenarioId,
+  listScenarioSummaries,
+  setActiveScenarioId,
+  type ScenarioId,
+} from '../msw/scenario-state.js';
 
 export interface GitHubApiClientConfig {
   enterprise: string;
@@ -909,6 +919,25 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return { refused: false, ranAt: new Date().toISOString(), results };
   }
 
+  // Task 6.7: scenario selector bridge. The mirror-image of runLiveReadSmoke's
+  // gate -- scenarios drive the MSW fixture world, so they REFUSE in LIVE mode
+  // (`config.source === 'github'`) rather than in sim. In sim they mutate the
+  // in-memory active-scenario pointer, which re-seeds MSW (getActiveFixtures)
+  // and re-anchors the clock (resolveClockDate) for every subsequent read.
+  async function listScenarios(): Promise<ListScenariosResult> {
+    if (config.source === 'github') return { refused: true, reason: 'live mode' };
+    return { refused: false, scenarios: [...listScenarioSummaries()], activeId: getActiveScenarioSummary().id };
+  }
+  async function getActiveScenario(): Promise<ActiveScenarioResult> {
+    if (config.source === 'github') return { refused: true, reason: 'live mode' };
+    return { refused: false, scenario: getActiveScenarioSummary() };
+  }
+  async function setScenario(id: ScenarioId): Promise<SetScenarioResult> {
+    if (config.source === 'github') return { refused: true, reason: 'live mode' };
+    if (!isScenarioId(id)) return { refused: true, reason: `unknown scenario: ${String(id)}` };
+    return { refused: false, scenario: setActiveScenarioId(id) };
+  }
+
   return {
     getUsageSummary,
     listCostCenters,
@@ -927,5 +956,8 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     setTenantConfig,
     validatePat,
     runLiveReadSmoke,
+    listScenarios,
+    getActiveScenario,
+    setScenario,
   };
 }

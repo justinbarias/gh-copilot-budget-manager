@@ -33,14 +33,21 @@ export const NAV_ITEMS: ReadonlyArray<{ id: ScreenId; label: string }> = [
 interface NavProps {
   screen: ScreenId;
   onNavigate: (screen: ScreenId) => void;
+  /**
+   * Task 6.7: the Auto-balance nav badge = the ACTIVE simulation scenario's
+   * engine at-risk count (0 = no badge). Derived by App from the scenario's
+   * ScenarioSummary.atRiskCount, which is trigger-gated (0 unless the
+   * rebalancer fires) and engine-verified in scenarios.engine.test.ts. Always 0
+   * outside simulation mode.
+   */
+  autoBalanceBadge?: number;
 }
 
-// Nav badges (red at-risk counts) and the top-bar demo-scenario switch
-// (Healthy/At risk/Surplus) are prototype-only affordances: design/README.md
-// ties both to a re-seeding demo mechanism, and there's no real data source
-// for either yet (no auto-balance/at-risk engine ships until Phase 5+) --
-// out of MVP scope entirely, not merely deferred-and-disabled.
-export function Nav({ screen, onNavigate }: NavProps) {
+// Nav badges (red at-risk counts) + the top-bar demo-scenario switch are wired
+// to the Task 6.7 scenario mechanism: the badge below reflects the active
+// scenario's firing-trigger at-risk count; the switch itself lives in the App
+// top bar (ScenarioSelector), sim-mode-only.
+export function Nav({ screen, onNavigate, autoBalanceBadge = 0 }: NavProps) {
   const api = useApiClient();
   const [mode, setMode] = useState<'simulation' | 'live' | null>(null);
   const [hasPat, setHasPat] = useState<boolean | null>(null);
@@ -72,6 +79,7 @@ export function Nav({ screen, onNavigate }: NavProps) {
       <nav className="nav__items">
         {NAV_ITEMS.map((item) => {
           const active = item.id === screen;
+          const badge = item.id === 'autobalance' && autoBalanceBadge > 0 ? autoBalanceBadge : null;
           return (
             <button
               key={item.id}
@@ -82,6 +90,11 @@ export function Nav({ screen, onNavigate }: NavProps) {
             >
               <span className="nav__item-bar" aria-hidden="true" />
               <span className="nav__item-label">{item.label}</span>
+              {badge !== null && (
+                <span className="nav__item-badge" data-testid="nav-badge-autobalance" aria-label={`${badge} at risk`}>
+                  {badge}
+                </span>
+              )}
             </button>
           );
         })}

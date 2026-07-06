@@ -5,3 +5,4 @@ export * from './budgets.js';
 export * from './usage.js';
 export * from './usage-history.js';
 export * from './alerts.js';
+export * from './scenarios.js';

@@ -1,0 +1,61 @@
+/* Sim-mode affordance (CLAUDE.md §6.8): violet, matching SimBanner's language,
+   so the scenario switch never reads as a normal money-moving app control. */
+.scenario-selector {
+  margin-left: auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.scenario-selector__tag {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--violet);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.scenario-selector__glyph {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.scenario-selector__seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--violet);
+  border-radius: 7px;
+  background: rgba(147, 80, 255, 0.1);
+}
+
+.scenario-selector__opt {
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--violet-light);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.scenario-selector__opt:hover:not(:disabled):not(.scenario-selector__opt--active) {
+  background: rgba(147, 80, 255, 0.18);
+}
+
+.scenario-selector__opt--active {
+  background: var(--violet);
+  color: #fff;
+}
+
+.scenario-selector__opt:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

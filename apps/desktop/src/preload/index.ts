@@ -25,6 +25,9 @@ const apiClientBridge: ApiClient = {
   setTenantConfig: (config) => ipcRenderer.invoke('apiClient:setTenantConfig', config),
   validatePat: () => ipcRenderer.invoke('apiClient:validatePat'),
   runLiveReadSmoke: () => ipcRenderer.invoke('apiClient:runLiveReadSmoke'),
+  listScenarios: () => ipcRenderer.invoke('apiClient:listScenarios'),
+  getActiveScenario: () => ipcRenderer.invoke('apiClient:getActiveScenario'),
+  setScenario: (id) => ipcRenderer.invoke('apiClient:setScenario', id),
 };
 
 // The PAT itself never crosses this bridge: only set/clear/hasPat are exposed,
