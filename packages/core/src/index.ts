@@ -7,6 +7,7 @@ export * from './burndown.js';
 export * from './controls.js';
 export * from './costCenter.js';
 export * from './forecast.js';
+export * from './meteredRebalancer.js';
 export * from './modelMix.js';
 export * from './poolAllowance.js';
 export * from './poolRebalancer.js';
