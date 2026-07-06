@@ -42,11 +42,11 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 5.8 Users — projected block date sublabels [S]
 
 ### Checkpoint 5 — forecasting complete
-- [ ] All four scopes functional; Overview overlay live; gate green; human review. **4 + 5 both done before Phase 6.**
+- [x] All four scopes functional; Overview overlay live; gate green; human review. **4 + 5 both done before Phase 6.** (human review: maintainer approved proceed-to-Phase-6, 2026-07-07)
 
 ## Phase 6 — Auto-balancing, dry-run (G3/G4; FR6–FR14)
 
-- [ ] 6.1 `core`: binding-constraint resolver — ULB-bound vs cap-bound vs budget-bound (cap never grantable, by type) [M]
+- [x] 6.1 `core`: binding-constraint resolver — ULB-bound vs cap-bound vs budget-bound (cap never grantable, by type) [M]
 - [ ] 6.2 `core`: pool trigger + funding envelope (reproduces PRD day-26 scenario) [M]
 - [ ] 6.3 `core`: pool allocator — greedy, most-specific lever, cap-relax branch, Σ-ceilings safety [M]
 - [ ] 6.4 `core`: pool simulation — utilisation before→after, metered-tip probability; upgrades 4.6 with forecasts [M]
