@@ -10,6 +10,7 @@ import {
   type Plan,
 } from './controls.js';
 import { resolveEffectiveUlb, type UlbCandidate } from './ulb.js';
+import type { ForecastResult } from './forecast.js';
 
 // CLAUDE.md §6.1's engine ("no write without simulate-before-apply") -- v1,
 // deterministic, no forecast (Phase 6 upgrades this additively; see
@@ -54,17 +55,55 @@ export interface UsageState {
 }
 
 /**
- * Reserved for the Phase 6 upgrade (PLAN.md Task 4.6: "the interface takes an
- * optional forecast input from day one so the upgrade is additive"). Phase 6
- * replaces this v1's "at current consumption" snapshot with forecasted
- * end-of-cycle projections. Accepting the shape now means simulatePlan's
- * signature never changes -- Phase 6 only starts reading it. Deliberately
- * unused by this v1 implementation.
+ * The forecast basis simulatePlan projects onto (PLAN.md Task 4.6 accepted this
+ * shape "from day one so the [Phase 6] upgrade is additive"; Task 6.4 makes it
+ * LIVE). When supplied, simulatePlan additionally resolves block/unblock on the
+ * PROJECTED end-of-cycle basis (surfaced as `forecastProjectedBasis`), on top of
+ * the unchanged current-basis result. `projectedEndOfCycle...` are per-entity
+ * TOTAL credits (pool + metered; a ULB caps the total). Build one from per-entity
+ * forecast.ts results via {@link buildSimulationForecastInput}.
  */
 export interface SimulationForecastInput {
   projectedEndOfCycleCreditsUsedByUser: Readonly<Record<string, number>>;
   projectedEndOfCycleCreditsUsedByCostCenter: Readonly<Record<string, number>>;
   cycleEndDate: Date;
+}
+
+/**
+ * Adapter (Task 6.4): fold per-entity forecast.ts results into the forecast
+ * basis simulatePlan/the pool rebalancer read (the 5.2 report flagged this exact
+ * gap -- ForecastResult is per-entity, SimulationForecastInput is the
+ * entity-keyed aggregate). Each entity's projected end-of-cycle total is the
+ * central (P50) cumulative on the `cycleEndDate` day of its series, falling back
+ * to the final series day when that exact day isn't present (e.g. horizon short
+ * of cycle end). Missing/empty series contribute nothing (entity absent from the
+ * record -> simulatePlan falls back to its current usage for that entity).
+ */
+export function buildSimulationForecastInput(
+  perUserForecasts: Readonly<Record<string, ForecastResult>>,
+  perCostCenterForecasts: Readonly<Record<string, ForecastResult>>,
+  cycleEndDate: Date,
+): SimulationForecastInput {
+  const cycleEndIso = cycleEndDate.toISOString().slice(0, 10);
+  const project = (f: ForecastResult): number | undefined => {
+    if (f.dailySeries.length === 0) return undefined;
+    const onDay = f.dailySeries.find((d) => d.date === cycleEndIso);
+    if (onDay) return onDay.p50Cumulative;
+    return f.dailySeries[f.dailySeries.length - 1]?.p50Cumulative;
+  };
+  const foldEntities = (src: Readonly<Record<string, ForecastResult>>): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const [name, f] of Object.entries(src)) {
+      const v = project(f);
+      if (v !== undefined) out[name] = v;
+    }
+    return out;
+  };
+  return {
+    projectedEndOfCycleCreditsUsedByUser: foldEntities(perUserForecasts),
+    projectedEndOfCycleCreditsUsedByCostCenter: foldEntities(perCostCenterForecasts),
+    cycleEndDate,
+  };
 }
 
 export type BindingConstraintKind = 'ulb' | 'included_cap' | 'spending_limit';
@@ -112,6 +151,20 @@ export interface SimulationSummary {
   totalMeteredCapacityDeltaUsd: number;
 }
 
+/**
+ * Task 6.4 forecast-aware preview: the SAME newly-blocked/unblocked analysis run
+ * on the PROJECTED end-of-cycle basis instead of cycle-to-date. Present ONLY
+ * when a `SimulationForecastInput` is supplied; absent otherwise, so the
+ * no-forecast result is byte-identical to the pre-6.4 shape (backward compat).
+ * "Newly" here means before-plan vs after-plan, both evaluated at the projected
+ * usage -- i.e. "with this plan applied, who will (still) block by cycle end".
+ */
+export interface ProjectedBlockBasis {
+  newlyBlockedUserLogins: readonly string[];
+  newlyUnblockedUserLogins: readonly string[];
+  userBlockStatus: readonly UserBlockStatus[];
+}
+
 export interface SimulationResult {
   /** Sorted ascending; the design rail's "newly blocked (red)" count/list. */
   newlyBlockedUserLogins: readonly string[];
@@ -122,6 +175,8 @@ export interface SimulationResult {
   scopeDeltas: readonly ScopeDelta[];
   capToggleDeltas: readonly CapToggleDelta[];
   summary: SimulationSummary;
+  /** Projected-basis block/unblock; present only when a forecast is supplied (Task 6.4). */
+  forecastProjectedBasis?: ProjectedBlockBasis;
 }
 
 function budgetControls(controls: readonly ControlState[]): BudgetControl[] {
@@ -336,6 +391,55 @@ function membershipMovesByLogin(plan: Plan): Map<string, string | null> {
   return moves;
 }
 
+// Overlay a forecast onto a usage snapshot: each entity's projected end-of-cycle
+// TOTAL replaces its cycle-to-date draw (Task 6.4). A user's total goes to
+// `poolCreditsUsed` with `meteredCreditsUsed` zeroed, since a ULB caps the total
+// and the pool-phase preview keys off it (the projected metered SPLIT isn't
+// carried -- projected metered-limit blocking is out of this pool-phase adapter's
+// scope). Cost-center projected total goes to pool draw (the cap's basis);
+// enterprise usage is carried forward. Entities absent from the forecast keep
+// their current-basis usage.
+function projectUsage(usage: UsageState, forecast: SimulationForecastInput): UsageState {
+  const users = usage.users.map((u) => {
+    const proj = forecast.projectedEndOfCycleCreditsUsedByUser[u.userLogin];
+    return proj === undefined ? u : { ...u, poolCreditsUsed: proj, meteredCreditsUsed: 0 };
+  });
+  const costCenters = usage.costCenters.map((cc) => {
+    const proj = forecast.projectedEndOfCycleCreditsUsedByCostCenter[cc.costCenterName];
+    return proj === undefined ? cc : { ...cc, poolCreditsUsed: proj };
+  });
+  return { enterprise: usage.enterprise, users, costCenters };
+}
+
+// Before-plan vs after-plan block/unblock analysis on ONE usage basis. Shared by
+// the current-basis result and (when a forecast is supplied) the projected basis.
+function analyzeBlocks(
+  usage: UsageState,
+  controlsState: readonly ControlState[],
+  postPlanControls: readonly ControlState[],
+  moves: Map<string, string | null>,
+): { userBlockStatus: UserBlockStatus[]; newlyBlocked: string[]; newlyUnblocked: string[] } {
+  const userBlockStatus: UserBlockStatus[] = usage.users
+    .map((user) => {
+      const before = resolveUserBlockStatus(user, usage, controlsState);
+      const afterUser = moves.has(user.userLogin)
+        ? { ...user, costCenterName: moves.get(user.userLogin) ?? null }
+        : user;
+      const after = resolveUserBlockStatus(afterUser, usage, postPlanControls);
+      return {
+        userLogin: user.userLogin,
+        blockedBefore: before.blocked,
+        blockedAfter: after.blocked,
+        bindingConstraintAfter: after.bindingConstraint,
+      };
+    })
+    .sort((a, b) => a.userLogin.localeCompare(b.userLogin));
+
+  const newlyBlocked = userBlockStatus.filter((u) => u.blockedAfter && !u.blockedBefore).map((u) => u.userLogin);
+  const newlyUnblocked = userBlockStatus.filter((u) => !u.blockedAfter && u.blockedBefore).map((u) => u.userLogin);
+  return { userBlockStatus, newlyBlocked, newlyUnblocked };
+}
+
 export function simulatePlan(
   plan: Plan,
   usageState: UsageState,
@@ -343,11 +447,12 @@ export function simulatePlan(
   asOfDate: Date,
   forecast?: SimulationForecastInput,
 ): SimulationResult {
-  // v1 is a deterministic point-in-time snapshot (no projection): asOfDate is
-  // threaded through per the "no Date.now(), asOfDate explicit" convention,
-  // and `forecast` is accepted but unused -- see SimulationForecastInput.
+  // Deterministic point-in-time snapshot: asOfDate is threaded through per the
+  // "no Date.now(), asOfDate explicit" convention. The current-basis result is
+  // computed exactly as before; `forecast` (Task 6.4) adds a projected-basis
+  // preview additively (see forecastProjectedBasis) and never alters the
+  // current-basis fields, so the no-forecast call is byte-identical to pre-6.4.
   void asOfDate;
-  void forecast;
 
   // applyPlanToControls already folds cost_center membership moves into the
   // post-plan control set -- notably recomputing an affected cost center's
@@ -365,28 +470,9 @@ export function simulatePlan(
   const postPlanControls = applyPlanToControls(controlsState, plan);
   const moves = membershipMovesByLogin(plan);
 
-  const userBlockStatus: UserBlockStatus[] = usageState.users
-    .map((user) => {
-      const before = resolveUserBlockStatus(user, usageState, controlsState);
-      const afterUser = moves.has(user.userLogin)
-        ? { ...user, costCenterName: moves.get(user.userLogin) ?? null }
-        : user;
-      const after = resolveUserBlockStatus(afterUser, usageState, postPlanControls);
-      return {
-        userLogin: user.userLogin,
-        blockedBefore: before.blocked,
-        blockedAfter: after.blocked,
-        bindingConstraintAfter: after.bindingConstraint,
-      };
-    })
-    .sort((a, b) => a.userLogin.localeCompare(b.userLogin));
-
-  const newlyBlockedUserLogins = userBlockStatus
-    .filter((u) => u.blockedAfter && !u.blockedBefore)
-    .map((u) => u.userLogin);
-  const newlyUnblockedUserLogins = userBlockStatus
-    .filter((u) => !u.blockedAfter && u.blockedBefore)
-    .map((u) => u.userLogin);
+  const current = analyzeBlocks(usageState, controlsState, postPlanControls, moves);
+  const newlyBlockedUserLogins = current.newlyBlocked;
+  const newlyUnblockedUserLogins = current.newlyUnblocked;
 
   const scopeDeltas = computeScopeDeltas(plan);
   const capToggleDeltas = computeCapToggleDeltas(plan);
@@ -394,10 +480,26 @@ export function simulatePlan(
   const totalPoolCapacityDeltaCredits = sumDeltaCredits(scopeDeltas, 'ulb');
   const totalMeteredCapacityDeltaCredits = sumDeltaCredits(scopeDeltas, 'spending_limit');
 
+  const forecastProjectedBasis: ProjectedBlockBasis | undefined = forecast
+    ? (() => {
+        const projected = analyzeBlocks(
+          projectUsage(usageState, forecast),
+          controlsState,
+          postPlanControls,
+          moves,
+        );
+        return {
+          newlyBlockedUserLogins: projected.newlyBlocked,
+          newlyUnblockedUserLogins: projected.newlyUnblocked,
+          userBlockStatus: projected.userBlockStatus,
+        };
+      })()
+    : undefined;
+
   return {
     newlyBlockedUserLogins,
     newlyUnblockedUserLogins,
-    userBlockStatus,
+    userBlockStatus: current.userBlockStatus,
     scopeDeltas,
     capToggleDeltas,
     summary: {
@@ -408,5 +510,6 @@ export function simulatePlan(
       totalPoolCapacityDeltaUsd: creditsToUsd(totalPoolCapacityDeltaCredits),
       totalMeteredCapacityDeltaUsd: creditsToUsd(totalMeteredCapacityDeltaCredits),
     },
+    ...(forecastProjectedBasis ? { forecastProjectedBasis } : {}),
   };
 }

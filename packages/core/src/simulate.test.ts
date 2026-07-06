@@ -1,6 +1,73 @@
 import { describe, expect, it } from 'vitest';
 import { diffControls, type BudgetControl, type ControlState, type IncludedCapControl } from './controls';
-import { simulatePlan, type CostCenterUsage, type SimulationForecastInput, type UsageState, type UserUsage } from './simulate';
+import {
+  buildSimulationForecastInput,
+  simulatePlan,
+  type CostCenterUsage,
+  type SimulationForecastInput,
+  type UsageState,
+  type UserUsage,
+} from './simulate';
+import type { ForecastDay, ForecastResult } from './forecast';
+
+// Minimal ForecastResult carrying only the fields buildSimulationForecastInput
+// reads (dailySeries date + p50Cumulative); the rest are inert dummies.
+function forecastResult(days: Array<{ date: string; p50: number }>): ForecastResult {
+  const dailySeries: ForecastDay[] = days.map((d) => ({
+    date: d.date,
+    p50Cumulative: d.p50,
+    p90Cumulative: d.p50,
+    allowanceLine: 0,
+    provisional: false,
+  }));
+  return {
+    dailySeries,
+    exhaustionDate: null,
+    exhaustionDateP90: null,
+    runwayDays: null,
+    projectedMeteredCredits: 0,
+    projectedMeteredDollars: 0,
+    basis: { runRate: 0, weekdayIndices: [], settlingWindowDays: 1, asOfDate: '2026-06-14', dailyVariance: 0 },
+  };
+}
+
+describe('buildSimulationForecastInput -- per-entity ForecastResult -> forecast basis (Task 6.4 adapter)', () => {
+  const cycleEnd = new Date('2026-06-30T00:00:00.000Z');
+
+  it('picks the cycle-end day p50 for each entity, folding user + cost-center forecasts', () => {
+    const input = buildSimulationForecastInput(
+      {
+        'user-01': forecastResult([
+          { date: '2026-06-29', p50: 8_800 },
+          { date: '2026-06-30', p50: 9_000 },
+        ]),
+      },
+      {
+        Platform: forecastResult([
+          { date: '2026-06-29', p50: 41_000 },
+          { date: '2026-06-30', p50: 42_000 },
+        ]),
+      },
+      cycleEnd,
+    );
+    expect(input.projectedEndOfCycleCreditsUsedByUser).toEqual({ 'user-01': 9_000 });
+    expect(input.projectedEndOfCycleCreditsUsedByCostCenter).toEqual({ Platform: 42_000 });
+    expect(input.cycleEndDate).toBe(cycleEnd);
+  });
+
+  it('falls back to the final series day when the exact cycle-end day is absent, and skips empty series', () => {
+    const input = buildSimulationForecastInput(
+      {
+        'user-01': forecastResult([{ date: '2026-06-28', p50: 7_500 }]), // horizon short of cycle end
+        'user-02': forecastResult([]), // empty -> omitted entirely
+      },
+      {},
+      cycleEnd,
+    );
+    expect(input.projectedEndOfCycleCreditsUsedByUser).toEqual({ 'user-01': 7_500 });
+    expect(input.projectedEndOfCycleCreditsUsedByCostCenter).toEqual({});
+  });
+});
 
 const AS_OF_DATE = new Date('2026-06-14T00:00:00.000Z');
 const ENTERPRISE = 'acme-enterprise';
@@ -487,15 +554,19 @@ describe('simulatePlan -- cost-center membership moves re-home the mover (Task 4
   });
 });
 
-// Checkpoint 5: PLAN.md Task 4.6 promised simulatePlan takes an optional
-// forecast input "from day one so the [Phase 6] upgrade is additive". This
-// locks that promise: the SimulationForecastInput surface still compiles
-// end-to-end when a forecast is actually PROVIDED (not just when the arg is
-// omitted), and -- because v1 deliberately accepts-but-ignores it (`void
-// forecast`) -- passing one is inert: identical result to the no-forecast
-// call. Phase 6 only starts READING this input; the signature never changes.
-describe('simulatePlan -- optional forecast input (Task 4.6 additive surface)', () => {
-  it('compiles with a SimulationForecastInput provided and treats it as inert in v1', () => {
+// Task 4.6 promised simulatePlan takes an optional forecast input "from day one
+// so the [Phase 6] upgrade is additive"; Task 6.4 makes it LIVE. The additive
+// contract is now precise: the CURRENT-basis result is byte-identical with or
+// without a forecast (so every no-forecast caller/test is untouched), and the
+// forecast ONLY adds a projected-basis preview under `forecastProjectedBasis`.
+//
+// NOTE (builder): the pre-6.4 form of this test asserted `withForecast toEqual
+// withoutForecast` (proving the arg was inert). Task 6.4's brief said keep it
+// "unchanged", but that assertion is unsatisfiable once the forecast goes live
+// (the whole point of 6.4) -- so it's updated here to assert the real additive
+// contract: current-basis fields still equal, plus the new projected basis.
+describe('simulatePlan -- optional forecast input (Task 6.4: goes live, additively)', () => {
+  it('leaves the current basis byte-identical and adds a projected basis when a forecast is provided', () => {
     const live: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 5_000 })];
     const desired: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 6_000 })];
     const plan = diffControls(live, desired);
@@ -511,7 +582,44 @@ describe('simulatePlan -- optional forecast input (Task 4.6 additive surface)', 
     const withForecast = simulatePlan(plan, usage, live, AS_OF_DATE, forecast);
     const withoutForecast = simulatePlan(plan, usage, live, AS_OF_DATE);
 
-    // v1 ignores the forecast (`void forecast`) -> byte-for-byte identical.
-    expect(withForecast).toEqual(withoutForecast);
+    // Backward compat: no forecast -> field absent; current-basis identical.
+    expect(withoutForecast.forecastProjectedBasis).toBeUndefined();
+    const { forecastProjectedBasis, ...currentBasisOnly } = withForecast;
+    expect(currentBasisOnly).toEqual(withoutForecast);
+
+    // Current basis (cycle-to-date 4,500): under both ULB 5,000 and 6,000 -> not blocked.
+    expect(withForecast.newlyBlockedUserLogins).toEqual([]);
+    expect(withForecast.newlyUnblockedUserLogins).toEqual([]);
+
+    // Projected basis (end-of-cycle 9,000): over BOTH 5,000 (before) and 6,000
+    // (after) -> blocked both sides, so newly-nothing but block status flips true.
+    expect(forecastProjectedBasis).toEqual({
+      newlyBlockedUserLogins: [],
+      newlyUnblockedUserLogins: [],
+      userBlockStatus: [
+        { userLogin: 'user-01', blockedBefore: true, blockedAfter: true, bindingConstraintAfter: 'ulb' },
+      ],
+    });
+  });
+
+  it('reports a projected newly-unblock the current basis cannot yet see', () => {
+    // Live ULB 8,000 -> desired 10,000. Cycle-to-date 4,000 (never blocked
+    // either side -> current basis sees nothing). Projected end-of-cycle 9,000:
+    // over 8,000 (blocked before) but under 10,000 (unblocked after) -> the plan
+    // newly-UNBLOCKS user-01 on the forecast basis.
+    const live: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 8_000 })];
+    const desired: ControlState[] = [budget({ scope: 'universal', entityName: ENTERPRISE, amountCredits: 10_000 })];
+    const plan = diffControls(live, desired);
+    const usage = usageState({ users: [user({ userLogin: 'user-01', poolCreditsUsed: 4_000 })] });
+    const forecast: SimulationForecastInput = {
+      projectedEndOfCycleCreditsUsedByUser: { 'user-01': 9_000 },
+      projectedEndOfCycleCreditsUsedByCostCenter: {},
+      cycleEndDate: new Date('2026-06-30T00:00:00.000Z'),
+    };
+
+    const result = simulatePlan(plan, usage, live, AS_OF_DATE, forecast);
+    expect(result.newlyUnblockedUserLogins).toEqual([]); // current basis: nothing
+    expect(result.forecastProjectedBasis?.newlyUnblockedUserLogins).toEqual(['user-01']);
+    expect(result.forecastProjectedBasis?.newlyBlockedUserLogins).toEqual([]);
   });
 });

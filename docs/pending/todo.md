@@ -47,9 +47,9 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ## Phase 6 — Auto-balancing, dry-run (G3/G4; FR6–FR14)
 
 - [x] 6.1 `core`: binding-constraint resolver — ULB-bound vs cap-bound vs budget-bound (cap never grantable, by type) [M]
-- [ ] 6.2 `core`: pool trigger + funding envelope (reproduces PRD day-26 scenario) [M]
-- [ ] 6.3 `core`: pool allocator — greedy, most-specific lever, cap-relax branch, Σ-ceilings safety [M]
-- [ ] 6.4 `core`: pool simulation — utilisation before→after, metered-tip probability; upgrades 4.6 with forecasts [M]
+- [x] 6.2 `core`: pool trigger + funding envelope (reproduces PRD day-26 scenario) [M]
+- [x] 6.3 `core`: pool allocator — greedy, most-specific lever, cap-relax branch, Σ-ceilings safety [M]
+- [x] 6.4 `core`: pool simulation — utilisation before→after, metered-tip probability; upgrades 4.6 with forecasts [M]
 - [ ] 6.5 `core`: metered rebalancer — trigger, $-envelope, binding-budget allocation, excluded-CC funding (reproduces PRD $8k scenario) [M]
 - [ ] 6.6 `core`: metered simulation — bill delta, projected total, remaining headroom [S]
 - [ ] 6.7 Scenario fixtures (Healthy / At risk / Surplus / metered) + sim-mode-only scenario selector + nav badges [M]
