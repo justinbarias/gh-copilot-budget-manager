@@ -95,6 +95,10 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [ ] 9.4 First guarded live write + drift reconcile + revert; runbook (`docs/live-write-runbook.md`) [S/M]
 - [ ] 9.5 Tenant-shape feature gating (Business vs Enterprise, paid-usage off, pool posture defaults) [M]
 
+### Deferred / maintainer decisions
+- No purge UI for MVP (ruled 2026-07-06): audit chain immutable; DB-file delete = factory reset (export audit first); retention policy deferred to §9 org-shape answer.
+- **Audit provenance mode-scoping (follow-up to the 2026-07-06 mode-isolation slice):** `write/engine.ts`'s `latestSnapshotId(db)` (the audit `dataSnapshotId` basis) is still mode-blind, unlike the now-source-scoped `getLatestForecast`/`getLastSyncedControls` reads. In the mixed-mode DB (no purge — sim + live snapshots coexist), a live apply with no newer live snapshot can stamp an MSW snapshot id as an audit event's data basis (§6.5). Minimal fix: `ApplyPlanOptions` gains `source`, `latestSnapshotId(db, source)` filters via the snapshot join, `github-impl` passes `config.source`, `baseOptions` test helper +1 field; add a test that a live-mode apply with only MSW snapshot history records `dataSnapshotId: null` (not the MSW id). Kept out of the read-side commit deliberately (write-engine + immutable compliance log ⇒ own task + independent validation per §11). Becomes load-bearing in Phase 6/7 (rebalancer applies are genuinely snapshot-based). Same-family lower-priority: `getSyncStatus` is also mode-blind (a sim "last synced" time can surface in live mode) — bundle if addressed.
+
 ### Checkpoint 9 — done
 - [ ] Live mode operational under separation of duties; sim mode still first-class; all §6 invariants re-verified live; final sign-off
 

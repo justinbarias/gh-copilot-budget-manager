@@ -11,6 +11,16 @@ export type Db = BetterSQLite3Database<typeof schema>;
 export function createDb(dbPath: string): Db {
   const sqlite = new Database(dbPath);
   sqlite.pragma('journal_mode = WAL');
+  // Mode-isolation hardening (CLAUDE.md §6.8 slice): SQLite does not enforce
+  // `references()` foreign keys unless this pragma is on for the connection
+  // (it defaults OFF and is NOT persisted in the database file -- it must be
+  // set every time a connection opens, same as journal_mode above). Every
+  // schema.ts `.references()` (usage_fact/credits_used_fact/control_snapshot/
+  // forecast -> snapshot.id; cost_center_member/license/audit_event's
+  // dataSnapshotId -> their targets) was previously decorative for
+  // referential integrity purposes -- Drizzle still generates the FK
+  // constraint in the migration SQL, but nothing enforced it at write time.
+  sqlite.pragma('foreign_keys = ON');
   return drizzle(sqlite, { schema });
 }
 

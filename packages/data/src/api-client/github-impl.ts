@@ -733,15 +733,20 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // rather than the internal Date, since a preload/IPC/renderer caller has no
   // use for a raw Date across that boundary.
   async function getLastSyncedControls(): Promise<LastSyncedControls | null> {
-    const result = readLastSyncedControls(config.db);
+    // Mode-isolation fix (CLAUDE.md §6.8): scoped to THIS client's source so a
+    // live client never surfaces an MSW-derived drift baseline (or vice
+    // versa) -- the same config.source the clock seam already keys off.
+    const result = readLastSyncedControls(config.db, config.source);
     return result ? { capturedAt: result.capturedAt.toISOString(), controls: result.controls } : null;
   }
 
   // Task 5.4: a thin read-through to the sync package's latest-forecast
   // lookup (packages/data/src/sync/sync-now.ts's getLatestForecast) -- the
   // Forecast screen's (and Overview/Users' forecast overlays') read surface.
+  // Mode-isolation fix (CLAUDE.md §6.8): scoped to THIS client's source so a
+  // live client never surfaces an MSW-derived forecast as if it were live.
   async function getForecast(scope: ForecastScope, entityId?: string): Promise<StoredForecast | null> {
-    return readLatestForecast(config.db, scope, entityId);
+    return readLatestForecast(config.db, config.source, scope, entityId);
   }
 
   // Task 4.8's write engine. getControls IS the write engine's own re-read

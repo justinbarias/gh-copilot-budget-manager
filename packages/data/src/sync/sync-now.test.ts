@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { BudgetControl, ControlState, IncludedCapControl } from '@copilot-budget/core';
+import type { BudgetControl, ControlState, ForecastResult, IncludedCapControl } from '@copilot-budget/core';
 import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from '../db/schema.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
-import { getLastSyncedControls, getSyncStatus, syncNow, type IngestData } from './sync-now.js';
+import { getLastSyncedControls, getLatestForecast, getSyncStatus, syncNow, type IngestData, type IngestForecastItem } from './sync-now.js';
 
 let tmpDir: string;
 let db: Db;
@@ -67,6 +67,25 @@ const baseData: IngestData = {
   ],
   forecasts: [],
 };
+
+// Minimal, structurally-valid ForecastResult -- these mode-isolation tests
+// only care that a row round-trips through getLatestForecast unmodified, not
+// that the forecast math itself is realistic (that's compute.test.ts's job).
+function fakeForecastResult(marker: number): ForecastResult {
+  return {
+    dailySeries: [{ date: '2026-06-14', p50Cumulative: marker, p90Cumulative: marker, allowanceLine: 10_000, provisional: false }],
+    exhaustionDate: null,
+    exhaustionDateP90: null,
+    runwayDays: null,
+    projectedMeteredCredits: 0,
+    projectedMeteredDollars: 0,
+    basis: { runRate: marker, weekdayIndices: [1, 1, 1, 1, 1, 1, 1], settlingWindowDays: 14, asOfDate: '2026-06-14', dailyVariance: 0 },
+  };
+}
+
+function enterpriseForecastItem(marker: number, computedAt = '2026-06-14'): IngestForecastItem {
+  return { scope: 'enterprise', entityId: null, computedAt, result: fakeForecastResult(marker), mape: null };
+}
 
 describe('syncNow', () => {
   it('ingests a fresh DB with exactly the fixture data on one call', () => {
@@ -209,12 +228,12 @@ describe('syncNow control ingestion (Task 4.15)', () => {
 
   describe('getLastSyncedControls', () => {
     it('returns null before any sync has run', () => {
-      expect(getLastSyncedControls(db)).toBeNull();
+      expect(getLastSyncedControls(db, 'msw')).toBeNull();
     });
 
     it('returns the ingested controls, matching the fixture-derived input (minus the stripped display-only field)', () => {
       syncNow(db, 'msw', baseData);
-      const result = getLastSyncedControls(db);
+      const result = getLastSyncedControls(db, 'msw');
 
       expect(result).not.toBeNull();
       expect(result!.controls).toHaveLength(2);
@@ -230,9 +249,69 @@ describe('syncNow control ingestion (Task 4.15)', () => {
       ];
       const second = syncNow(db, 'msw', { ...baseData, controls: secondControls });
 
-      const result = getLastSyncedControls(db);
+      const result = getLastSyncedControls(db, 'msw');
       expect(result!.capturedAt).toEqual(second.capturedAt);
       expect(result!.controls).toEqual(secondControls);
+    });
+  });
+});
+
+// Mode-isolation fix (CLAUDE.md §6.8): getLastSyncedControls/getLatestForecast
+// previously took the max-id row across BOTH 'msw' and 'github' generations,
+// so an admin who ran simulation mode and then flipped to live saw
+// MSW-derived data presented as if it were live, until the first live sync
+// ever completed. These tests confirm the read-side `source` filter closes
+// that gap without touching the write path (no deletions, no purge, no
+// migration -- `syncNow` still writes both sources into the same tables).
+describe('mode isolation (source-scoped reads)', () => {
+  describe('getLastSyncedControls', () => {
+    it('seeding an msw generation and reading as github returns null (the pre-first-live-sync honest empty state)', () => {
+      syncNow(db, 'msw', baseData);
+
+      expect(getLastSyncedControls(db, 'github')).toBeNull();
+      // The msw read is unaffected by the msw write still being present.
+      expect(getLastSyncedControls(db, 'msw')).not.toBeNull();
+    });
+
+    it('seeding both sources: each mode reads only its own latest generation, never the other source\'s', () => {
+      const mswControls: ControlState[] = [
+        { kind: 'included_cap', costCenterName: 'Platform', enabled: true, overflow: 'block', computedLimitCredits: 105_000 },
+      ];
+      const githubControls: ControlState[] = [
+        { kind: 'included_cap', costCenterName: 'Platform', enabled: false, overflow: 'metered', computedLimitCredits: 105_000 },
+      ];
+      syncNow(db, 'msw', { ...baseData, controls: mswControls });
+      syncNow(db, 'github', { ...baseData, controls: githubControls });
+      // A second msw generation, LATER (higher id) than the github one -- proves
+      // the filter is "latest WITHIN source", not "latest overall, source-permitting".
+      const laterMswControls: ControlState[] = [
+        { kind: 'included_cap', costCenterName: 'Platform', enabled: true, overflow: 'metered', computedLimitCredits: 105_000 },
+      ];
+      syncNow(db, 'msw', { ...baseData, controls: laterMswControls });
+
+      expect(getLastSyncedControls(db, 'msw')!.controls).toEqual(laterMswControls);
+      expect(getLastSyncedControls(db, 'github')!.controls).toEqual(githubControls);
+    });
+  });
+
+  describe('getLatestForecast', () => {
+    it('seeding an msw generation and reading as github returns null (the pre-first-live-sync honest empty state)', () => {
+      syncNow(db, 'msw', { ...baseData, forecasts: [enterpriseForecastItem(111)] });
+
+      expect(getLatestForecast(db, 'github', 'enterprise')).toBeNull();
+      expect(getLatestForecast(db, 'msw', 'enterprise')).not.toBeNull();
+    });
+
+    it('seeding both sources: each mode reads only its own latest forecast, never the other source\'s', () => {
+      syncNow(db, 'msw', { ...baseData, forecasts: [enterpriseForecastItem(1)] });
+      syncNow(db, 'github', { ...baseData, forecasts: [enterpriseForecastItem(2)] });
+      // A later msw generation (higher id) than the github one, same as above.
+      syncNow(db, 'msw', { ...baseData, forecasts: [enterpriseForecastItem(3)] });
+
+      const mswResult = getLatestForecast(db, 'msw', 'enterprise');
+      const githubResult = getLatestForecast(db, 'github', 'enterprise');
+      expect(mswResult!.result.basis.runRate).toBe(3);
+      expect(githubResult!.result.basis.runRate).toBe(2);
     });
   });
 });
@@ -295,7 +374,7 @@ describe('0002_control_snapshot migration -- upgrade path smoke test', () => {
       // generation has no control_snapshot row (never had one recorded).
       expect(upgradeDb.select().from(snapshot).all()).toHaveLength(1);
       expect(upgradeDb.select().from(costCenter).all()).toHaveLength(1);
-      expect(getLastSyncedControls(upgradeDb)).toBeNull();
+      expect(getLastSyncedControls(upgradeDb, 'msw')).toBeNull();
 
       // 5. The new table works immediately: a sync run post-upgrade ingests
       // and is readable straight away, referencing a NEW snapshot generation
@@ -303,7 +382,7 @@ describe('0002_control_snapshot migration -- upgrade path smoke test', () => {
       const result = syncNow(upgradeDb, 'msw', baseData);
       expect(result.snapshotId).not.toBe(preExistingSnapshot.id);
 
-      const lastSynced = getLastSyncedControls(upgradeDb);
+      const lastSynced = getLastSyncedControls(upgradeDb, 'msw');
       expect(lastSynced).not.toBeNull();
       expect(lastSynced!.controls).toHaveLength(2);
     } finally {

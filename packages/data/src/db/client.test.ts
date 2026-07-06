@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { budget, costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from './schema';
+import { budget, costCenter, costCenterMember, creditsUsedFact, forecast, license, snapshot, usageFact } from './schema';
 import { createDb, runMigrations, type Db } from './client';
 
 let tmpDir: string;
@@ -114,5 +114,29 @@ describe('schema migrations + smoke round-trip', () => {
 
   it('is a fresh, empty database before any insert', () => {
     expect(db.select().from(snapshot).all()).toEqual([]);
+  });
+});
+
+// Mode-isolation hardening (CLAUDE.md §6.8 slice): `createDb` now sets
+// `PRAGMA foreign_keys = ON` (SQLite defaults it OFF per-connection --
+// unlike journal_mode, it is NOT persisted in the database file, so this
+// must run on every connection open, not just once via a migration).
+// Confirms the pragma actually took effect -- a bare `.references()` in
+// schema.ts is otherwise decorative for SQLite's own enforcement purposes.
+describe('foreign_keys pragma', () => {
+  it('rejects an insert whose snapshot_id references a snapshot row that does not exist', () => {
+    expect(() =>
+      db
+        .insert(forecast)
+        .values({
+          snapshotId: 999_999, // no such snapshot row
+          scope: 'enterprise',
+          entityRef: null,
+          computedAt: '2026-06-14',
+          forecastJson: '{}',
+          mape: null,
+        })
+        .run(),
+    ).toThrow(/FOREIGN KEY constraint failed/);
   });
 });

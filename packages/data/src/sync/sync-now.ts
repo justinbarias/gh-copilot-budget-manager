@@ -233,18 +233,29 @@ export function getSyncStatus(db: Db): SyncStatus {
 
 // Task 4.15: the Controls screen's "last synced" baseline for browse-time
 // drift detection (packages/core's driftedControlIds). Null exactly when no
-// sync has ever run -- an ungoverned/never-synced app has nothing to compare
-// against, so nothing can honestly be called "drifted" yet (Controls.tsx
-// treats null as "show no drift markers", never as "everything is drifted").
+// sync of THIS source has ever run -- an ungoverned/never-synced-in-this-mode
+// app has nothing to compare against, so nothing can honestly be called
+// "drifted" yet (Controls.tsx treats null as "show no drift markers", never
+// as "everything is drifted").
+//
+// `source` is required (mode-isolation fix, CLAUDE.md §6.8): without it this
+// query took the max-id row across BOTH 'msw' and 'github' generations, so an
+// admin who ran simulation mode and then flipped to live saw an MSW-derived
+// drift baseline presented as if it were live data, until the first live
+// sync ever completed. Callers pass the SAME 'msw' | 'github' flag
+// github-impl.ts's clock seam (resolveClockDate) already keys off
+// (GitHubApiClientConfig.source) -- not a second mode flag.
+//
 // INNER JOIN (not a separate lookup keyed off getSyncStatus's snapshotId) so
 // this can only ever return a snapshot generation that genuinely has a
 // control_snapshot row -- syncNow's transaction inserts both together, so in
-// practice this is always the latest snapshot overall.
-export function getLastSyncedControls(db: Db): LastSyncedControls | null {
+// practice this is always the latest snapshot of that source.
+export function getLastSyncedControls(db: Db, source: 'msw' | 'github'): LastSyncedControls | null {
   const latest = db
     .select({ capturedAt: schema.snapshot.capturedAt, controlsJson: schema.controlSnapshot.controlsJson })
     .from(schema.snapshot)
     .innerJoin(schema.controlSnapshot, eq(schema.controlSnapshot.snapshotId, schema.snapshot.id))
+    .where(eq(schema.snapshot.source, source))
     .orderBy(desc(schema.snapshot.id))
     .limit(1)
     .all()[0];
@@ -254,25 +265,52 @@ export function getLastSyncedControls(db: Db): LastSyncedControls | null {
 
 // Task 5.4: the Forecast screen's (and Overview/Users' forecast overlays,
 // Phase 5's later tasks) read surface -- the latest persisted forecast for
-// one (scope, entity), regardless of which snapshot generation produced it
-// (a forecast is recomputed every sync, but a caller asking "what's the
-// current forecast for cost center X" wants the newest one, not necessarily
-// tied to the newest snapshot's OTHER rows). `entityId` omitted/undefined
-// selects the row with a NULL entity_ref (the 'enterprise' scope's only
-// shape); passing it for 'enterprise' would simply match nothing (its rows
-// never carry a non-null entityRef), returning null -- not a footgun in
-// practice since ForecastScope callers only ever pass entityId for
-// 'cost_center'/'user'. Null exactly when this (scope, entity) has never been
-// computed -- in practice, only true pre-sync (syncNow always computes
-// enterprise + every active cost center + every licensed user, so any
-// synced app has a row for every legitimate combination).
-export function getLatestForecast(db: Db, scope: ForecastScope, entityId?: string): StoredForecast | null {
-  const condition =
+// one (scope, entity) OF THIS SOURCE, regardless of which snapshot generation
+// produced it (a forecast is recomputed every sync, but a caller asking
+// "what's the current forecast for cost center X" wants the newest one for
+// its own mode, not necessarily tied to the newest snapshot's OTHER rows).
+// `entityId` omitted/undefined selects the row with a NULL entity_ref (the
+// 'enterprise' scope's only shape); passing it for 'enterprise' would simply
+// match nothing (its rows never carry a non-null entityRef), returning null
+// -- not a footgun in practice since ForecastScope callers only ever pass
+// entityId for 'cost_center'/'user'. Null exactly when this (scope, entity)
+// has never been computed FOR THIS SOURCE -- in practice, pre-sync, or (mode-
+// isolation fix, CLAUDE.md §6.8) live mode before the first live sync ever
+// completes, even if simulation mode has run many times. Without the
+// `source` filter this took the max-id forecast row across BOTH 'msw' and
+// 'github' generations, so a live admin with only simulation history would
+// see an MSW-derived forecast rendered as if it were live. `source` is the
+// SAME 'msw' | 'github' flag github-impl.ts's clock seam (resolveClockDate)
+// already keys off (GitHubApiClientConfig.source) -- not a second mode flag.
+// An inner join against `snapshot` (rather than a `source` column on
+// `forecast` itself) keeps this filter keyed off the one place source
+// already lives, matching getLastSyncedControls's join above.
+export function getLatestForecast(
+  db: Db,
+  source: 'msw' | 'github',
+  scope: ForecastScope,
+  entityId?: string,
+): StoredForecast | null {
+  const scopeCondition =
     entityId !== undefined
       ? and(eq(schema.forecast.scope, scope), eq(schema.forecast.entityRef, entityId))
       : and(eq(schema.forecast.scope, scope), isNull(schema.forecast.entityRef));
 
-  const row = db.select().from(schema.forecast).where(condition).orderBy(desc(schema.forecast.id)).limit(1).all()[0];
+  const row = db
+    .select({
+      snapshotId: schema.forecast.snapshotId,
+      scope: schema.forecast.scope,
+      entityRef: schema.forecast.entityRef,
+      computedAt: schema.forecast.computedAt,
+      forecastJson: schema.forecast.forecastJson,
+      mape: schema.forecast.mape,
+    })
+    .from(schema.forecast)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.forecast.snapshotId))
+    .where(and(scopeCondition, eq(schema.snapshot.source, source)))
+    .orderBy(desc(schema.forecast.id))
+    .limit(1)
+    .all()[0];
   if (!row) return null;
 
   return {
