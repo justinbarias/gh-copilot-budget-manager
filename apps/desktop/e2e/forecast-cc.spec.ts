@@ -96,6 +96,14 @@ test('Forecast screen cost-center scope: cap-ON burn-down (both label variants) 
     await expect(screen.locator('.forecast__block-label')).toHaveText('Cap block date');
     await expect(screen.getByTestId('forecast-cc-exhaustion-date')).toHaveText('none');
     await expect(chart.getByText('allowance 168,000')).toBeVisible();
+
+    // Task 5.9 design-fidelity pass: NO exhaustion zone/callout when there's
+    // no exhaustion in this cycle (Workforce stays healthy all cycle) --
+    // BurndownChart's `forecast?.exhaustionDay !== undefined` gate covers
+    // both, so this is the negative case the enterprise/user scopes' presence
+    // assertions pair with.
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toHaveCount(0);
+    await expect(chart.getByTestId('burndown-exhaustion-callout')).toHaveCount(0);
     await expect(screen.getByTestId('forecast-cc-metered-card')).toBeVisible();
     await expect(screen.getByTestId('forecast-cc-metered-headline')).toHaveCount(0);
     await expect(
@@ -113,6 +121,15 @@ test('Forecast screen cost-center scope: cap-ON burn-down (both label variants) 
     await expect(screen.locator('.forecast__block-label')).toHaveText('Overflow-to-metered date');
     await expect(screen.getByTestId('forecast-cc-exhaustion-date')).toHaveText('2026-06-12');
     await expect(chart.getByText('allowance 56,000')).toBeVisible();
+
+    // Task 5.9: this CC's own exhaustion zone + callout (day 11 of 30 -- a
+    // near-left, well-clear-of-the-edge case, unlike the enterprise scope's
+    // day 28 of 30).
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toBeVisible();
+    const paymentsCallout = chart.getByTestId('burndown-exhaustion-callout');
+    await expect(paymentsCallout).toBeVisible();
+    await expect(paymentsCallout.getByText('2026-06-12 · day 12')).toBeVisible();
+
     await expect(screen.getByText('Included-usage cap · Overflow → metered')).toBeVisible();
     await expect(screen.locator('.cc-scope__apionly-pill')).toHaveText('API-ONLY');
 
@@ -132,6 +149,12 @@ test('Forecast screen cost-center scope: cap-ON burn-down (both label variants) 
     await expect(screen.locator('.forecast__block-label')).toHaveText('Cap block date');
     await expect(screen.getByTestId('forecast-cc-exhaustion-date')).toHaveText('2026-06-15');
     await expect(chart.getByText('allowance 63,000')).toBeVisible();
+
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toBeVisible();
+    const dataEvalCallout = chart.getByTestId('burndown-exhaustion-callout');
+    await expect(dataEvalCallout).toBeVisible();
+    await expect(dataEvalCallout.getByText('2026-06-15 · day 15')).toBeVisible();
+
     await expect(screen.getByText('Included-usage cap · Block')).toBeVisible();
     await expect(screen.getByTestId('forecast-cc-metered-headline')).toHaveCount(0);
     await expect(

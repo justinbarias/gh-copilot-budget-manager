@@ -64,6 +64,18 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
     await expect(chart).toBeVisible();
     await expect(chart.getByText('allowance 567,000')).toBeVisible();
 
+    // Task 5.9 design-fidelity pass: the red exhaustion zone (2026-06-29 ->
+    // the June chart's right edge) + its boxed callout ("Exhaustion" +
+    // the same "2026-06-29 · day 29" string the plain-text label already
+    // used), plus the P50/P90 terminus tags at the forecast band's end.
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toBeVisible();
+    const enterpriseCallout = chart.getByTestId('burndown-exhaustion-callout');
+    await expect(enterpriseCallout).toBeVisible();
+    await expect(enterpriseCallout.getByText('Exhaustion')).toBeVisible();
+    await expect(enterpriseCallout.getByText('2026-06-29 · day 29')).toBeVisible();
+    await expect(chart.getByTestId('burndown-p50-label')).toHaveText('P50');
+    await expect(chart.getByTestId('burndown-p90-label')).toHaveText('P90');
+
     await expect(screen.getByTestId('mape-pill')).toHaveText('MAPE 1.2%');
     const pctRows = screen.locator('.forecast__pct-row');
     await expect(pctRows.filter({ hasText: 'P50' }).locator('.forecast__pct-value')).toHaveText('604,662');
@@ -97,6 +109,19 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
     await expect(screen.getByTestId('forecast-runway')).toHaveText('runway ~1 day');
     await expect(screen.getByTestId('forecast-exhaustion-date')).toHaveText('2026-06-15');
     await expect(chart.getByText('allowance 6,000')).toBeVisible();
+
+    // Same design-fidelity elements on the user scope's block-date chart --
+    // exhaustionDay 14 of a 30-day cycle sits mid-chart (no right-edge
+    // overflow, so the callout box is NOT expected to flip left here, unlike
+    // the enterprise scope above).
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toBeVisible();
+    const userCallout = chart.getByTestId('burndown-exhaustion-callout');
+    await expect(userCallout).toBeVisible();
+    await expect(userCallout.getByText('Exhaustion')).toBeVisible();
+    await expect(userCallout.getByText('2026-06-15 · day 15')).toBeVisible();
+    await expect(chart.getByTestId('burndown-p50-label')).toHaveText('P50');
+    await expect(chart.getByTestId('burndown-p90-label')).toHaveText('P90');
+
     await expect(screen.getByTestId('mape-pill')).toHaveText('MAPE 2.2%');
     await expect(pctRows.filter({ hasText: 'P50' }).locator('.forecast__pct-value')).toHaveText('16,858');
     await expect(pctRows.filter({ hasText: 'P90' }).locator('.forecast__pct-value')).toHaveText('17,422');

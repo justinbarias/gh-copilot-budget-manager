@@ -65,6 +65,8 @@ test('Overview renders the actual-only burn-down chart, runway tiles, a live for
     // acceptance criterion 4) -- byte-for-byte the Task 2.1 actual-only chart.
     await expect(chart.getByTestId('burndown-band')).toHaveCount(0);
     await expect(chart.getByTestId('burndown-exhaustion-marker')).toHaveCount(0);
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toHaveCount(0);
+    await expect(chart.getByTestId('burndown-exhaustion-callout')).toHaveCount(0);
 
     // Runway tiles: 4-up grid of cycle-to-date facts computed via packages/core.
     // Pre-sync, this is exactly the Task 2.1 MVP grid (forecast === null keeps
@@ -162,6 +164,15 @@ test('Overview: after Sync Now, the pool lens gains the forecast overlay + proje
     await expect(chart.getByTestId('burndown-band')).toBeVisible();
     await expect(chart.getByTestId('burndown-exhaustion-marker')).toBeVisible();
     await expect(chart.getByText(/2026-06-29/)).toBeVisible();
+
+    // Task 5.9 design-fidelity pass: the pool lens gets the same red
+    // exhaustion zone + boxed callout as the Forecast screen's enterprise
+    // scope (same underlying forecast, same day-28-of-30 exhaustion).
+    await expect(chart.getByTestId('burndown-exhaustion-zone')).toBeVisible();
+    const overviewCallout = chart.getByTestId('burndown-exhaustion-callout');
+    await expect(overviewCallout).toBeVisible();
+    await expect(overviewCallout.getByText('Exhaustion')).toBeVisible();
+    await expect(overviewCallout.getByText('2026-06-29 · day 29')).toBeVisible();
 
     // Projected tiles replace "Credits consumed"/"Allowance" (Task 5.7):
     // "Pool runway 15 days" + "Projected metered spend $3,851.12", with an
