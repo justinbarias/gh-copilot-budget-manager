@@ -193,7 +193,7 @@ export function NewCostCenterModal({ onClose, onApplied }: NewCostCenterModalPro
                 <span>
                   Enable included-usage cap
                   <span className="cc-lifecycle-modal__check-note">
-                    The limit is GitHub-computed from attributed licenses — not settable here (CLAUDE.md §5).
+                    The limit is GitHub-computed from attributed licenses — not settable here.
                   </span>
                 </span>
               </label>

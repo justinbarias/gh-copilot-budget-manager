@@ -181,7 +181,7 @@ function ApplyResultPanel({
           <span aria-hidden="true">⤺ </span>Drift — live state moved since this plan was staged.
         </div>
         <div className="plan-rail__result-sub">
-          Nothing was applied and nothing was audited (CLAUDE.md §6.2). Refresh live state and re-stage.
+          Nothing was applied and nothing was audited. Refresh live state and re-stage.
         </div>
         <button type="button" className="plan-rail__secondary-btn" onClick={onReconcileDrift}>
           ⤺ Refresh live state &amp; re-stage

@@ -349,7 +349,7 @@ export function Overview({ onNavigateToForecast, onNavigateToAudit }: OverviewPr
               )}
               <p className="overview__gap-note">
                 P90 isn't shown here: the persisted forecast computes one P50-equivalent metered total across the whole
-                horizon, with no P90 counterpart (design gap — see the Task 5.5 build report).
+                horizon, with no P90 counterpart.
               </p>
             </div>
 

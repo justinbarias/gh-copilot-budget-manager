@@ -165,7 +165,7 @@ function warningText(warning: Warning): string {
     case 'multi_org_licensed_user':
       return `${warning.userLogin} is licensed via multiple orgs (${warning.orgLogins.join(', ')}) — org-budget enforcement is unpredictable for them.`;
     case 'alert_only_without_hard_stop':
-      return `Turning off the hard stop on ${warning.controlId} means spend continues past the cap (alert-only). Explicit override required (§6.3)${warning.override.status === 'acknowledged' ? ' — justification recorded' : ''}.`;
+      return `Turning off the hard stop on ${warning.controlId} means spend continues past the cap (alert-only). Explicit override required${warning.override.status === 'acknowledged' ? ' — justification recorded' : ''}.`;
   }
 }
 
@@ -234,7 +234,7 @@ function ApplyResultPanel({
           <span aria-hidden="true">⤺ </span>Drift — live state moved since this plan was staged.
         </div>
         <div className="plan-rail__result-sub">
-          Nothing was applied and nothing was audited (CLAUDE.md §6.2). Refresh live state, review your staged edits
+          Nothing was applied and nothing was audited. Refresh live state, review your staged edits
           against it, then dry-run again.
         </div>
         <button type="button" className="plan-rail__secondary-btn" onClick={onReconcileDrift}>
@@ -427,7 +427,7 @@ export function PlanRail({
                     />
                     <span>
                       <span aria-hidden="true">⚠ </span>I acknowledge: this removes the hard stop — spend can continue
-                      past this limit. The override and justification are logged (CLAUDE.md §6.3).
+                      past this limit. The override and justification are logged.
                     </span>
                   </label>
                 )}

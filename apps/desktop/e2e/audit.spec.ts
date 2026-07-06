@@ -101,10 +101,10 @@ test('pre-apply, fresh DB: the Audit screen renders an honest empty state', asyn
     await expect(window.getByTestId('audit-event')).toHaveCount(0);
 
     // Filter chips are still all present and clickable on an empty chain --
-    // switching to Auto-balance (permanently empty until Phase 6/7) shows
+    // switching to Auto-balance (permanently empty until auto-balancing ships) shows
     // ITS OWN honest empty copy, not a generic/broken one.
     await window.getByTestId('audit-filter-autobalance').click();
-    await expect(window.getByTestId('audit-empty')).toContainText('Phase 6/7');
+    await expect(window.getByTestId('audit-empty')).toContainText("automatic rebalancing hasn't run yet");
 
     // Verify chain on a genuinely empty chain trivially passes (0 events).
     await window.getByTestId('audit-verify-button').click();

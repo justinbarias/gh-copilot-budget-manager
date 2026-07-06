@@ -187,7 +187,7 @@ export function UlbTable({
             ) : (
               <div className="controls-ulb__alert-warn">
                 <span aria-hidden="true">⚠ </span>Not enforcing a hard stop — {SCOPE_LABEL[row.scope]} ULBs must
-                always hard-stop (CLAUDE.md §6.3). Repair via the API.
+                always hard-stop. Repair via the API.
               </div>
             )}
           </div>

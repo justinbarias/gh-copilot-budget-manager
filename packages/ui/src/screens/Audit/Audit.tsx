@@ -66,7 +66,7 @@ const FILTER_EMPTY_COPY: Record<AuditFamily, string> = {
   budget: 'No budget or cap events yet.',
   ulb: 'No user-level-budget events yet.',
   autobalance:
-    'No auto-balance events yet — the pool and metered rebalancers ship in Phase 6/7. This tab will populate once a rebalancer grant is applied; it is empty by design, not broken.',
+    'No auto-balance events yet — automatic rebalancing hasn\'t run yet. This tab will populate once a rebalancer grant is applied; it is empty by design, not broken.',
 };
 
 // Derives each row's "chain intact" indicator from a SINGLE verifyAuditChain

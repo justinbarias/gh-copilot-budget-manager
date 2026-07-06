@@ -210,7 +210,7 @@ export function TokenHealth() {
       <div className="token-health__card">
         <h2 className="token-health__title">Tenant configuration</h2>
         <p className="token-health__hint">
-          Where this app points in live mode (spec §2). Not a secret — stored as plain JSON, never in the token store.
+          Where this app points in live mode. Not a secret — stored as plain JSON, never in the token store.
         </p>
 
         <div className="token-health__pat-form">
@@ -273,7 +273,7 @@ export function TokenHealth() {
         <h2 className="token-health__title">Live read smoke</h2>
         <p className="token-health__hint">
           Reads every enterprise billing/budget endpoint once and reconciles each response shape against what the app
-          parses — the day-one Task 9.2 work order.
+          parses.
         </p>
         {isSimulation && (
           <p className="token-health__hint token-health__hint--warn" data-testid="smoke-sim-note">

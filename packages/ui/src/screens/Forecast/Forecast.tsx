@@ -344,7 +344,7 @@ export function Forecast({ onNavigateToControlsCaps }: ForecastProps) {
                 )}
                 <p className="forecast__gap-note">
                   P90 isn't shown here: the persisted forecast computes one P50-equivalent metered total across the
-                  whole horizon, with no P90 counterpart (design gap — see the Task 5.5 build report).
+                  whole horizon, with no P90 counterpart.
                 </p>
               </div>
             ) : (
@@ -362,7 +362,7 @@ export function Forecast({ onNavigateToControlsCaps }: ForecastProps) {
                 ⧗
               </span>
               <p>
-                A user-level budget hard-stops in both phases (CLAUDE.md §5), so a bound user's projected block date
+                A user-level budget hard-stops in both phases, so a bound user's projected block date
                 above is a pool-phase event — there's no separate metered-phase forecast for an individual.
               </p>
             </div>
@@ -379,7 +379,7 @@ export function Forecast({ onNavigateToControlsCaps }: ForecastProps) {
                 </div>
               ))}
               <p className="forecast__gap-note">
-                P10 isn't modeled — core persists P50/P90 only (design gap — see the Task 5.5 build report).
+                P10 isn't modeled — only P50/P90 are available.
               </p>
             </div>
           </div>
