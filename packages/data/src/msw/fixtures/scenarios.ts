@@ -409,34 +409,104 @@ const SURPLUS_POOL_INPUTS: PoolScenarioInputs = {
 };
 
 // ===========================================================================
-// METERED (metered phase active, 2026-06-27). A hard-stop cost-center budget at
-// its cap with enterprise headroom -> the metered rebalancer fires.
+// METERED (metered phase active, day 26/30 = 2026-06-27). Retuned 2026-07-08
+// (Checkpoint-6 review). The metered phase is only domain-coherent once the
+// shared pool is EXHAUSTED, so the pool is now 100% CONSUMED: every team sits
+// AT its GitHub-computed included-usage cap (Σ caps == pool 567,000) and has
+// TIPPED to metered. METERED_COST_CENTERS (below) flips every cap's overflow to
+// 'metered' -- the everyone-tipped story (a cap on overflow='block' would BLOCK
+// a team at its cap, not tip it, contradicting the metered draw; CLAUDE.md §5).
+// The shared COST_CENTERS array (block-overflow on 5 of 6) is left byte-
+// untouched for the other three scenarios; the swap is scenario-local, and the
+// metered rebalancer never reads caps (metered phase binds on spending limits),
+// so this is a NARRATIVE-coherence swap with no engine effect.
 //
-//   enterprise metered 300,000 of 800,000 budget (headroom 500,000).
-//   Data & Evaluation cc-budget $250 = 25,000, HARD-STOP ON: current metered
-//     24,500 (98%), projected 30,000 -> needed 5,000 (cc-budget raise, $50 bill).
-//   sam-kelly (Cyber, individual ULB 5,400): total 5,400 -> 6,400 -> needed
-//     1,000 (individual override, $10 bill).
-//   entities CURATED to [Data & Evaluation CC, sam-kelly] -- a CC in ONE branch
-//     and a user in a DIFFERENT CC, so no member/CC double-count (hazard #2).
-//   envelope base 500,000, reserve 0, held 0, allocatable 500,000, granted 6,000,
-//     slack 494,000. trigger FIRES, at-risk 2. bill delta $60; unblocked 2.
-//   wire: dataEval shared metered 24,500 + Employer shared 275,000 + sam-kelly
-//     500 = 300,000 enterprise metered. dataEval pool 63,000 (== cap, exhausted).
-// COHERENCE: the CC-aggregate pool + shared-metered rows are spread daily
-// through day 25 (Defect 2(a)) so this scenario's forecast series is dense too;
-// each per-CC total is preserved exactly, so every engine literal above holds.
+// Enterprise metered now sits at 480,000 of the 800,000 budget (60%, $4,800) --
+// enterprise headroom $3,200 (was $5,000; the demo reads noticeably tighter).
+//
+//   POOL (== each cap; Σ = 567,000, the burn-down's 100%):
+//     workforce 168,000 · employer 112,000 · payments 56,000 · dataEval 63,000
+//     · cyber 77,000 · corporate 91,000.
+//   METERED (shared CC-aggregate rows + sam-kelly's per-user 500; Σ = 480,000):
+//     dataEval 24,500 (near its $250 HARD-STOP CC budget -- the at-risk CC) ·
+//     workforce 30,000 (under its $600 alert-only CC budget) · employer 180,000
+//     · payments 60,000 · cyber 90,000 (+500 sam-kelly) · corporate 95,000.
+//     Only workforce + dataEval own a CC spending limit; the bulk of metered
+//     sits on the four limitless CCs, so no team blows past a hard-stop it owns.
+//
+//   ENGINE STORY (curated entities [Data & Evaluation CC, sam-kelly] -- a CC in
+//   ONE branch and a user in a DIFFERENT CC, so no member/CC double-count):
+//     Data & Evaluation cc-budget $250 = 25,000, HARD-STOP ON: current metered
+//       24,500 (98%), projected 30,000 -> needed 5,000 (cc-budget raise, $50).
+//     sam-kelly (Cyber, individual ULB 5,400): total 5,400 (pool 4,900 + metered
+//       500) -> projected 6,400 (metered 1,500) -> needed 1,000 (individual
+//       override, $10). ULB "used" = pool + metered TOTAL (bindingConstraint.ts),
+//       so sam is at 100% of his ULB now and 118.5% projected -- genuinely
+//       at-risk, and NOT touched by the 100%-pool rework (a ULB hard-stops the
+//       total in BOTH phases, so his pool can't exceed 4,900 without blocking).
+//     envelope base = 800,000 - 480,000 = 320,000; reserve 0, held 0,
+//       allocatable 320,000, granted 6,000, slack 314,000. trigger FIRES,
+//       at-risk 2. bill delta $60; projected total metered 486,000 ($4,860);
+//       remaining enterprise headroom 314,000 ($3,140); unblocked 2.
+//
+//   FORECAST (post-switch, asOf day 26): the enterprise forecast series sums
+//   `quantity` (pool + metered = 1,047,000 by day 25), measured against the
+//   567,000 pool allowance line, so it crosses the line MID-CYCLE -> runway 0,
+//   exhaustion 2026-06-16 (P50 & P90). runway 0 is the honest "pool is gone"
+//   signal; projectedMetered is a large, horizon-summed figure (~$23,964),
+//   a PRE-EXISTING forecast-model property (series = Σ quantity vs the burn-
+//   down's Σ discount = 567,000) -- proportionally LESS divergent than the old
+//   metered world (67,900 burn-down vs 367,900 series). Flag for the maintainer;
+//   not a regression and out of this fixture-only retune's scope to change.
+//
+// COHERENCE: pool + shared-metered CC rows spread daily through day 25 (Defect
+// 2(a), splitDaily); each per-CC total preserved exactly, so every engine
+// literal holds. assembleUsageState(wire): Σ per-CC pool = 567,000 (burn-down),
+// enterprise metered = 480,000, dataEval metered = 24,500, dataEval pool =
+// 63,000 (== cap). No user other than sam-kelly is authored, so no accidental
+// at-risk user appears; the at-risk set is exactly {Data & Evaluation, sam}.
 // ===========================================================================
+
+// Pool draw per CC == its GitHub-computed cap (every team exhausted its share).
+const METERED_CC_POOL: Readonly<Record<string, number>> = Object.fromEntries(
+  COST_CENTERS.map((cc) => [cc.id, cc.included_usage_cap.computed_limit_credits]),
+);
+// Shared (CC-aggregate) metered draw per CC. sam-kelly's 500 per-user metered
+// (Cyber) is authored separately in the seed's `users`; the two + these sum to
+// the 480,000 enterprise metered.
+const METERED_SAM_KELLY_METERED = 500; // per-user, Cyber
+const METERED_CC_SHARED: Readonly<Record<string, number>> = {
+  [COST_CENTER_IDS.workforce]: 30_000,
+  [COST_CENTER_IDS.employer]: 180_000,
+  [COST_CENTER_IDS.capBound]: 60_000,
+  [COST_CENTER_IDS.dataEval]: 24_500,
+  [COST_CENTER_IDS.cyber]: 90_000,
+  [COST_CENTER_IDS.corporate]: 95_000,
+};
+
+// Scenario-local cost centers: every included-usage cap overflows to metered
+// (the enterprise is in the metered phase), and each mtd_burn == pool (== cap)
+// + this CC's metered draw (shared + any per-user), coherent with the wire.
+// COST_CENTERS itself is untouched -- the other three scenarios keep it verbatim.
+const METERED_COST_CENTERS: typeof COST_CENTERS = COST_CENTERS.map((cc) => ({
+  ...cc,
+  included_usage_cap: { ...cc.included_usage_cap, overflow: 'metered' as const },
+  mtd_burn_credits:
+    cc.included_usage_cap.computed_limit_credits +
+    (METERED_CC_SHARED[cc.id] ?? 0) +
+    (cc.id === COST_CENTER_IDS.cyber ? METERED_SAM_KELLY_METERED : 0),
+}));
+
 const METERED_SEED: ScenarioSeed = {
   date: '2026-06-15',
-  users: [{ login: 'sam-kelly', pool: 4_900, metered: 500 }],
-  ccPool: { [COST_CENTER_IDS.dataEval]: 63_000, [COST_CENTER_IDS.cyber]: 4_900 },
-  ccMetered: { [COST_CENTER_IDS.dataEval]: 24_500, [COST_CENTER_IDS.employer]: 275_000 },
+  users: [{ login: 'sam-kelly', pool: 4_900, metered: METERED_SAM_KELLY_METERED }],
+  ccPool: METERED_CC_POOL,
+  ccMetered: METERED_CC_SHARED,
 };
 
 const METERED_INPUTS: MeteredScenarioInputs = {
   projectedUsage: {
-    enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 300_000 },
+    enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 480_000 },
     users: [usr('sam-kelly', CYBER, 4_900, 1_500)],
     costCenters: [{ costCenterName: DATA_EVAL, poolCreditsUsed: 63_000, meteredCreditsUsed: 30_000 }],
   },
@@ -512,7 +582,7 @@ const SCENARIO_WIRE: Record<ScenarioId, ScenarioWire> = {
   },
   metered: {
     budgets: BUDGETS,
-    costCenters: COST_CENTERS,
+    costCenters: METERED_COST_CENTERS,
     costCenterResources: COST_CENTER_RESOURCES,
     seats: SEATS,
     usageItems: METERED_WIRE.usageItems,

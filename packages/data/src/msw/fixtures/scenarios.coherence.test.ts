@@ -77,11 +77,13 @@ describe('scenario wire <-> engine-scalar coherence', () => {
     }
   });
 
-  it('metered: assembled enterprise metered == the scenario projected enterprise metered (300,000)', async () => {
+  it('metered: pool 100% consumed (567,000); assembled enterprise metered == projected (480,000)', async () => {
     const usage = await assembled('metered');
+    // Pool is 100% consumed -- every CC sits at its cap, Σ == the 567,000 pool.
+    expect(sumCcPool(usage)).toBe(567_000);
     const projected = METERED_SCENARIO_INPUTS['metered']!.projectedUsage.enterprise.meteredCreditsUsed;
-    expect(projected).toBe(300_000);
-    expect(usage.enterprise.meteredCreditsUsed).toBe(300_000);
+    expect(projected).toBe(480_000);
+    expect(usage.enterprise.meteredCreditsUsed).toBe(480_000);
     const dataEval = usage.costCenters.find((cc) => cc.costCenterName === 'Data & Evaluation Platform')!;
     expect(dataEval.meteredCreditsUsed).toBe(24_500);
     expect(dataEval.poolCreditsUsed).toBe(63_000); // == cap, exhausted

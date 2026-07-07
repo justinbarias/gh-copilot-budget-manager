@@ -77,9 +77,14 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
     await expect(badge(window)).toHaveText('4');
     await expect(burndownHeadline(window)).toHaveText('16,000');
 
-    // --- METERED: metered rebalancer fires (2 at-risk).
+    // --- METERED: metered rebalancer fires (2 at-risk). The shared pool is now
+    // 100% CONSUMED (567,000 -- every team at its cap, tipped to metered), so the
+    // burn-down reads the full pool: the metered phase is only coherent once the
+    // pool is exhausted.
     await pickScenario(window, 'Metered');
+    await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 26 of 30');
     await expect(badge(window)).toHaveText('2');
+    await expect(burndownHeadline(window)).toHaveText('567,000');
     await expect(selector(window).getByRole('button', { name: 'Metered', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
     // --- Back to Healthy resets the world (deterministic re-seed).

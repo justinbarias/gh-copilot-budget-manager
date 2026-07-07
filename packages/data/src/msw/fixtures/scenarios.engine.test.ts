@@ -253,11 +253,14 @@ describe('SURPLUS scenario', () => {
 // METERED -- metered rebalancer fires. cc-budget raise + individual bump.
 // ===========================================================================
 describe('METERED scenario', () => {
-  it('assembles 300,000 enterprise metered + 24,500 Data & Evaluation metered', async () => {
+  it('assembles the 100%-consumed pool (567,000), 480,000 enterprise metered + 24,500 Data & Evaluation metered', async () => {
     const { currentUsage } = await assemble('metered');
-    expect(currentUsage.enterprise.meteredCreditsUsed).toBe(300_000);
+    // Pool 100% consumed: every CC sits at its cap, Σ == 567,000.
+    expect(currentUsage.costCenters.reduce((s, cc) => s + cc.poolCreditsUsed, 0)).toBe(567_000);
+    expect(currentUsage.enterprise.meteredCreditsUsed).toBe(480_000);
     const dataEval = currentUsage.costCenters.find((c) => c.costCenterName === 'Data & Evaluation Platform')!;
     expect(dataEval.meteredCreditsUsed).toBe(24_500);
+    expect(dataEval.poolCreditsUsed).toBe(63_000); // == cap, exhausted
     const sam = currentUsage.users.find((u) => u.userLogin === 'sam-kelly')!;
     expect(sam.poolCreditsUsed).toBe(4_900);
     expect(sam.meteredCreditsUsed).toBe(500);
@@ -278,11 +281,11 @@ describe('METERED scenario', () => {
     expect(plan.trigger.conditions.map((c) => c.met)).toEqual([true, true, true]);
     expect(plan.trigger.atRiskCount).toBe(2);
     expect(plan.fundedCount).toBe(2);
-    // envelope: base 500,000, reserve 0, held 0, allocatable 500,000, granted 6,000, slack 494,000
-    expect(plan.envelope.baseRemainingCredits).toBe(500_000);
+    // envelope: base 320,000 (800,000 - 480,000), reserve 0, held 0, allocatable 320,000, granted 6,000, slack 314,000
+    expect(plan.envelope.baseRemainingCredits).toBe(320_000);
     expect(plan.envelope.heldCredits).toBe(0);
     expect(plan.envelope.grantedCredits).toBe(6_000);
-    expect(plan.envelope.slackCredits).toBe(494_000);
+    expect(plan.envelope.slackCredits).toBe(314_000);
 
     const dataEvalGrant = plan.grants.find((g) => g.lever.kind === 'cost_center_budget_raise')!;
     expect(dataEvalGrant.grantedDeltaCredits).toBe(5_000);
@@ -297,8 +300,8 @@ describe('METERED scenario', () => {
     );
     expect(sim.unblockedCount).toBe(2);
     expect(sim.billDeltaCredits).toBe(6_000); // $60
-    expect(sim.projectedTotalMeteredCredits).toBe(306_000);
-    expect(sim.remainingEnterpriseHeadroomCredits).toBe(494_000);
+    expect(sim.projectedTotalMeteredCredits).toBe(486_000); // 480,000 current + 6,000 enterprise-funded bill delta
+    expect(sim.remainingEnterpriseHeadroomCredits).toBe(314_000); // 800,000 - 486,000
     expect(getActiveScenarioSummary().atRiskCount).toBe(2);
   });
 });

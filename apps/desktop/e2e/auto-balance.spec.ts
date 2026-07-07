@@ -354,12 +354,14 @@ test('SURPLUS: fires with a tiny fully-funded cohort in a huge envelope, recompu
 // ============================================================================
 // Task 6.9 -- METERED mode. Every pinned number is an ENGINE literal, the same
 // scenarios.engine.test.ts + rebalance-context.test.ts source the pool test
-// above draws from: envelope base/reserve/held/allocatable/granted/slack
-// 500,000 / 0 / 0 / 500,000 / 6,000 / 494,000 credits ($5,000 / $0 / $0 /
-// $5,000 / $60 / $4,940); 2 grants (Data & Evaluation Platform cc-budget
-// raise +5,000 credits/$50, sam-kelly individual override +1,000 credits/$10,
-// both fully funded); bill delta $60, projected total metered $3,060,
-// remaining headroom $4,940, 2 unblocked.
+// above draws from. Retuned 2026-07-08 (Checkpoint-6): enterprise metered is
+// now 480,000 of 800,000 (60%), so the envelope base/reserve/held/allocatable/
+// granted/slack is 320,000 / 0 / 0 / 320,000 / 6,000 / 314,000 credits ($3,200 /
+// $0 / $0 / $3,200 / $60 / $3,140) -- $3,200 unused, noticeably tighter than the
+// old $5,000. 2 grants (Data & Evaluation Platform cc-budget raise +5,000
+// credits/$50, sam-kelly individual override +1,000 credits/$10, both fully
+// funded); bill delta $60, projected total metered $4,860, remaining headroom
+// $3,140, 2 unblocked.
 // ============================================================================
 
 const DATA_EVAL_KEY = 'cost_center:Data & Evaluation Platform';
@@ -383,7 +385,7 @@ test('METERED: full ①→④ flow renders the engine literals, recomputes live 
 
     // -- ① trigger: fired, engine sentence + truthful chips.
     await expect(window.getByTestId('ab-trigger-sentence')).toHaveText(
-      'Metered phase · enterprise budget $8,000, $5,000 unused · 2 entities at or above a hard-stop metered cap.',
+      'Metered phase · enterprise budget $8,000, $3,200 unused · 2 entities at or above a hard-stop metered cap.',
     );
     const chips = window.locator('.ab-chip');
     await expect(chips).toHaveCount(3);
@@ -392,14 +394,14 @@ test('METERED: full ①→④ flow renders the engine literals, recomputes live 
     await expect(chips.nth(1)).toContainText('2 entities ≥ 95% of a hard-stop metered cap.');
     await expect(chips.nth(2)).toHaveAttribute('data-met', 'true');
     // Engine's own detail template is UNFORMATTED (usd() just divides by 100, no $/comma -- meteredRebalancer.ts's condition builder).
-    await expect(chips.nth(2)).toContainText('Enterprise budget has 5000 allocatable above reserve.');
+    await expect(chips.nth(2)).toContainText('Enterprise budget has 3200 allocatable above reserve.');
 
-    // -- ② envelope: $5,000 allocatable; reserve $0, held absent (0), grants $60, slack $4,940.
-    await expect(window.getByTestId('ab-env-allocatable')).toHaveText('$5,000 allocatable');
+    // -- ② envelope: $3,200 allocatable; reserve $0, held absent (0), grants $60, slack $3,140.
+    await expect(window.getByTestId('ab-env-allocatable')).toHaveText('$3,200 allocatable');
     await expect(window.getByTestId('ab-env-reserve')).toHaveText('$0');
     await expect(window.locator('[data-testid="ab-env-held"]')).toHaveCount(0); // held segment is 0 -- not rendered
     await expect(window.getByTestId('ab-env-grants')).toHaveText('$60');
-    await expect(window.getByTestId('ab-env-slack')).toHaveText('$4,940');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('$3,140');
 
     // -- ③ table: 2 editable grant rows, ranked Data & Evaluation (util 120%) then sam-kelly (util 118.5%).
     await expect(window.locator('.ab-row')).toHaveCount(2);
@@ -420,7 +422,7 @@ test('METERED: full ①→④ flow renders the engine literals, recomputes live 
     await expect(window.getByTestId(`ab-status-${SAM_KEY}`)).toContainText('funded');
 
     await expect(window.getByTestId('ab-footer-funded')).toContainText('2 of 2 funded');
-    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $60 · unallocated $4,940');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $60 · unallocated $3,140');
 
     // No flagged-enterprise-raise row in this scenario (both entities resolve
     // to a grantable ULB/cc-budget binding, per the engine-proof test).
@@ -428,8 +430,8 @@ test('METERED: full ①→④ flow renders the engine literals, recomputes live 
 
     // -- ④ simulate: bill delta hero + engine literals.
     await expect(window.getByTestId('ab-sim-bill-delta')).toHaveText('+$60');
-    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$3,060');
-    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$4,940');
+    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$4,860');
+    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$3,140');
     await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('2');
     await expect(window.getByTestId('ab-assurance')).toContainText('Stays within enterprise headroom');
 
@@ -437,28 +439,28 @@ test('METERED: full ①→④ flow renders the engine literals, recomputes live 
     //    credits) -- new limit 27,000 < demand 30,000 -> STILL blocked, so it
     //    drops out of "unblocked" and its own bill-delta contribution shrinks
     //    to 27,000-25,000=2,000 credits ($20). sam-kelly untouched ($10, $10
-    //    bill, stays unblocked). Envelope: grants $60 -> $30, slack $4,940 ->
-    //    $4,970. Rail: bill delta +$60 -> +$30, projected $3,060 -> $3,030,
-    //    headroom $4,940 -> $4,970, unblocked 2 -> 1. Footer: 2 of 2 -> 1 of 2,
-    //    allocated $30 · unallocated $4,970.
+    //    bill, stays unblocked). Envelope: grants $60 -> $30, slack $3,140 ->
+    //    $3,170. Rail: bill delta +$60 -> +$30, projected $4,860 -> $4,830,
+    //    headroom $3,140 -> $3,170, unblocked 2 -> 1. Footer: 2 of 2 -> 1 of 2,
+    //    allocated $30 · unallocated $3,170.
     await window.getByTestId(`ab-delta-${DATA_EVAL_KEY}`).fill('20');
     await expect(window.getByTestId('ab-env-grants')).toHaveText('$30');
-    await expect(window.getByTestId('ab-env-slack')).toHaveText('$4,970');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('$3,170');
     await expect(window.getByTestId('ab-sim-bill-delta')).toHaveText('+$30');
-    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$3,030');
-    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$4,970');
+    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$4,830');
+    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$3,170');
     await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('1');
     await expect(window.getByTestId(`ab-status-${DATA_EVAL_KEY}`)).toContainText('partial');
     await expect(window.getByTestId('ab-footer-funded')).toContainText('1 of 2 funded');
-    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $30 · unallocated $4,970');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $30 · unallocated $3,170');
 
     // -- OVER-ALLOCATION: sam-kelly -> $6,000 (600,000 credits). Combined with
     //    the still-edited Data & Eval $20 (2,000 credits), granted-from-envelope
-    //    = 602,000 credits > 500,000 allocatable -> slack -102,000 credits
-    //    (-$1,020). Red warning; the (already gated) apply stays disabled.
+    //    = 602,000 credits > 320,000 allocatable -> slack -282,000 credits
+    //    (-$2,820). Red warning; the (already gated) apply stays disabled.
     await window.getByTestId(`ab-delta-${SAM_KEY}`).fill('6000');
     await expect(window.getByTestId('ab-assurance')).toContainText('Allocation exceeds enterprise headroom');
-    await expect(window.getByTestId('ab-footer-alloc')).toContainText('over the envelope by $1,020');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('over the envelope by $2,820');
     await expect(window.getByTestId('ab-apply')).toBeDisabled();
 
     // -- RESET restores the engine's suggested allocation.
