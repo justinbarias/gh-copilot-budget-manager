@@ -238,6 +238,120 @@ test('HEALTHY (default): not-fired trigger with truthful chips, honest empty tab
 });
 
 // ============================================================================
+// Retune (ratified 2026-07-08, Checkpoint-6 review): SURPLUS now FIRES the pool
+// rebalancer. Every pinned number is an ENGINE literal (scenarios.engine.test.ts
+// SURPLUS block): 4 at-risk (2 blocked + 2 approaching); envelope segments
+// 28,350 / 1,000 / 5,000 / 516,650 (sum = remaining pool 551,000; grantable
+// envelope 521,650); 4 funded ULB grants + 0 cap-relax rows; sim 20,000 ->
+// 25,000 (3.5% -> 4.4%), tip 0.0%, 4 unblocked. The surplus-redistribution
+// story: a 5,000 grants sliver in a sea of 516,650 green slack -- the visual
+// inverse of At-risk. Still dry-run only (gated apply, zero mutations).
+// ============================================================================
+
+test('SURPLUS: fires with a tiny fully-funded cohort in a huge envelope, recomputes on edits, no apply path', async () => {
+  const { app, window, cleanup } = await launch();
+  const pageErrors: Error[] = [];
+  window.on('pageerror', (error) => pageErrors.push(error));
+  const mutationRequests: string[] = [];
+  window.on('request', (req: Request) => {
+    if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(req.method())) mutationRequests.push(`${req.method()} ${req.url()}`);
+  });
+
+  try {
+    await forceScenario(window, 'surplus');
+    await openAutoBalance(window);
+
+    // Mode switch defaults to the scenario's phase (pool).
+    await expect(window.getByTestId('ab-mode-pool')).toHaveAttribute('aria-selected', 'true');
+
+    // -- ① trigger: fired, engine sentence + truthful chips (drastic forfeit).
+    await expect(window.getByTestId('ab-trigger-sentence')).toHaveText(
+      'Day 26/30 · pool 2.8% consumed · projected 3.5% at reset → ~96.5% forfeit · 2 blocked, 2 approaching.',
+    );
+    await expect(window.getByTestId('ab-day')).toHaveText('Day 26/30');
+    const chips = window.locator('.ab-chip');
+    await expect(chips).toHaveCount(3);
+    await expect(chips.nth(0)).toHaveAttribute('data-met', 'true');
+    await expect(chips.nth(0)).toContainText('3 day(s) remaining (window: 7)');
+    await expect(chips.nth(1)).toHaveAttribute('data-met', 'true');
+    await expect(chips.nth(2)).toHaveAttribute('data-met', 'true');
+    await expect(chips.nth(2)).toContainText('4 at-risk (2 blocked, 2 approaching)');
+
+    // -- ② envelope: 521,650 redistributable; a 5,000 sliver, 516,650 slack.
+    await expect(window.getByTestId('ab-env-redistributable')).toHaveText('521,650 redistributable');
+    await expect(window.getByTestId('ab-env-reserve')).toHaveText('28,350');
+    await expect(window.getByTestId('ab-env-held')).toHaveText('1,000');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('5,000');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('516,650');
+
+    // -- ③ table: 4 editable ULB grant rows, 0 cap-relax rows (no cap-bound team).
+    await expect(window.locator('.ab-row')).toHaveCount(4);
+    await expect(window.locator('.ab-row__input')).toHaveCount(4);
+    await expect(window.locator('.ab-cap-toggle')).toHaveCount(0);
+    // Blocked-first, then login-asc within the tie (the engine's ranking).
+    await expect(window.locator('.ab-row__entity').first()).toHaveText('user: ext-rknott');
+    // These grants raise an already-individual ULB -> NO "converts from" sub-label.
+    await expect(window.getByTestId('ab-row-ext-rknott')).not.toContainText('converts from');
+    await expect(window.getByTestId('ab-row-ext-rknott')).toContainText('500 ULB now');
+    await expect(window.getByTestId('ab-delta-ext-rknott')).toHaveValue('1500');
+    await expect(window.getByTestId('ab-status-ext-rknott')).toContainText('funded');
+    await expect(window.getByTestId('ab-footer-funded')).toContainText('4 of 4 funded');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated 5,000 · unallocated 516,650');
+
+    // -- ④ simulate: engine literals -- barely moves the pool (surplus world).
+    await expect(window.getByTestId('ab-sim-util')).toHaveText('3.5% → 4.4%');
+    await expect(window.getByTestId('ab-sim-tip')).toHaveText('0.0%');
+    await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('4');
+    await expect(window.getByTestId('ab-assurance')).toContainText(
+      'Stays within the remaining pool — 5,000 of the 521,650 envelope used',
+    );
+
+    // -- LIVE EDIT: unfund ext-rknott (1,500 -> 0). Envelope grants 5,000 ->
+    //    3,500, slack 516,650 -> 518,150; rail after 4.4% -> 4.1%, unblocked
+    //    4 -> 3; footer 3 of 4 funded, allocated 3,500 · unallocated 518,150.
+    await window.getByTestId('ab-delta-ext-rknott').fill('0');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('3,500');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('518,150');
+    await expect(window.getByTestId('ab-sim-util')).toHaveText('3.5% → 4.1%');
+    await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('3');
+    await expect(window.getByTestId('ab-status-ext-rknott')).toContainText('unfunded');
+    await expect(window.getByTestId('ab-footer-funded')).toContainText('3 of 4 funded');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated 3,500 · unallocated 518,150');
+
+    // -- OVER-ALLOCATION only via an unrealistic entry (the 521,650 envelope
+    //    dwarfs any real demand): ext-rknott -> 600,000 (Σ 603,500 > 521,650).
+    //    Red warning; the (already gated) apply stays disabled.
+    await window.getByTestId('ab-delta-ext-rknott').fill('600000');
+    await expect(window.getByTestId('ab-assurance')).toContainText(
+      'Allocation exceeds the envelope — 603,500 granted against 521,650 redistributable',
+    );
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated 603,500 · over the envelope by 81,850');
+    await expect(window.getByTestId('ab-apply')).toBeDisabled();
+
+    // -- RESET restores the engine's suggested allocation.
+    await window.getByRole('button', { name: 'reset to suggested' }).click();
+    await expect(window.getByTestId('ab-delta-ext-rknott')).toHaveValue('1500');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('5,000');
+    await expect(window.getByTestId('ab-assurance')).toContainText('Stays within the remaining pool');
+
+    // -- ⑤ gated apply: permanently disabled dry-run copy; NO mutation issued.
+    const apply = window.getByTestId('ab-apply');
+    await expect(apply).toHaveText('Dry-run only — auto-apply arrives with guardrails');
+    await expect(apply).toBeDisabled();
+    expect(mutationRequests).toEqual([]); // no POST/PATCH/DELETE left the renderer
+    const audit = await window.evaluate(() =>
+      (window as unknown as { api: { getAuditChain(): Promise<unknown[]> } }).api.getAuditChain(),
+    );
+    expect(audit).toEqual([]);
+
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+// ============================================================================
 // Task 6.9 -- METERED mode. Every pinned number is an ENGINE literal, the same
 // scenarios.engine.test.ts + rebalance-context.test.ts source the pool test
 // above draws from: envelope base/reserve/held/allocatable/granted/slack

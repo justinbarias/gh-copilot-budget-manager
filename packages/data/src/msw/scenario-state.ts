@@ -77,11 +77,11 @@ export const SCENARIO_SUMMARIES: readonly ScenarioSummary[] = [
   {
     id: 'surplus',
     label: 'Surplus',
-    description: 'Day 26/30, drastic under-consumption but nobody at risk — large forfeit, no one to redistribute to.',
+    description: 'Day 26/30, drastic under-consumption with a tiny throttled cohort — the pool rebalancer fires and funds them in full with enormous slack left over.',
     asOfDate: '2026-06-27',
     phase: 'pool',
-    triggerFired: false,
-    atRiskCount: 0,
+    triggerFired: true,
+    atRiskCount: 4,
   },
   {
     id: 'metered',

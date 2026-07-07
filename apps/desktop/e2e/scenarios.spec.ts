@@ -11,7 +11,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 //     26/30, so "Day 13 of 30" -> "Day 26 of 30"),
 //   - the Overview burn-down headline (each scenario's own pool draw),
 //   - the Auto-balance nav badge (the firing trigger's at-risk count; absent
-//     for the non-firing Healthy/Surplus states).
+//     for the non-firing Healthy state, present for At risk/Surplus/Metered).
 //
 // FORCE-A-SCENARIO-PER-TEST pattern (documented for future specs): the last
 // block drives the scenario purely through the bridge
@@ -70,11 +70,12 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
     await expect(badge(window)).toHaveText('17');
     await expect(burndownHeadline(window)).toHaveText('511,150');
 
-    // --- SURPLUS: day 26/30, drastic under-consumption, NOBODY at risk (no badge).
+    // --- SURPLUS: day 26/30, drastic under-consumption (16,000 = 2.8% of the
+    // pool) BUT a tiny throttled cohort fires the pool rebalancer (4 at-risk).
     await pickScenario(window, 'Surplus');
     await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 26 of 30');
-    await expect(badge(window)).toHaveCount(0);
-    await expect(burndownHeadline(window)).toHaveText('14,000');
+    await expect(badge(window)).toHaveText('4');
+    await expect(burndownHeadline(window)).toHaveText('16,000');
 
     // --- METERED: metered rebalancer fires (2 at-risk).
     await pickScenario(window, 'Metered');

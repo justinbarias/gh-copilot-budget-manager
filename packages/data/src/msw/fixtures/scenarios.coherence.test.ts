@@ -47,7 +47,7 @@ describe('scenario wire <-> engine-scalar coherence', () => {
   it.each([
     ['healthy', 189_800],
     ['at-risk', 511_150],
-    ['surplus', 14_000],
+    ['surplus', 16_000],
   ] as const)('%s: assembled Σ(per-CC pool) == poolConsumedCredits (%d)', async (id, expected) => {
     const usage = await assembled(id);
     expect(sumCcPool(usage)).toBe(expected);

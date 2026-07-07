@@ -225,7 +225,7 @@ Overview burn-down's cycle-to-date figure, so **burn-down == engine scalar**.
 |---|---|---|---|---|
 | `healthy` | 189,800 | on-pace, all well under cap | 0 (June cycle) | runway ~15d, exhaustion 2026-06-29 |
 | `at-risk` | **511,150** (90.1%) | wf 152k/168k · emp 100k/112k · dataEval 54k/63k · cyber 68k/77k · corp 82.15k/91k · **payments 55k/56k (cap-bound, →61k)** | 0 | runway **~3d**, exhaustion **2026-06-30** |
-| `surplus` | **14,000** (2.5%) | wf 8.6k · cyber 5.4k (both far under cap) | 0 | no exhaustion (drastic under-consumption) |
+| `surplus` | **16,000** (2.8%) | wf 8.6k · cyber 6.4k · corp 1.0k (all far under cap) | 0 | no exhaustion (drastic under-consumption) |
 | `metered` | 67,900 pool | dataEval 63k/63k (== cap, exhausted) · cyber 4.9k | **300,000** (dataEval 24.5k + employer 275k + sam-kelly 0.5k) | cliff exhaustion 2026-09-21 |
 
 - **Daily rows through day 25 (Defect 2(a)):** every alternate's CC-aggregate

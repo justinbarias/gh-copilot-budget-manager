@@ -18,8 +18,10 @@ import { getActiveScenarioId, type ScenarioId } from '../scenario-state.js';
 //     arrays; its rebalancer `currentUsage`/`controls` come from the real
 //     assembleUsageState/fetchLiveControls rollup (the test asserts this).
 //   - The three alternates REUSE the DEWR roster (SEATS), cost centers, and
-//     memberships, and (except 'surplus', which drops the $0 ULB so its at-risk
-//     count can be zero) the DEWR budgets. They differ ONLY in usage + dates,
+//     memberships, and the DEWR budgets ('surplus' drops the $0 ULB so
+//     ext-dmorrow is not a standing block, and APPENDS four scenario-local
+//     500-credit contractor ULBs so its at-risk cohort is exactly those four).
+//     They differ ONLY in usage + dates,
 //     authored as a compact `ScenarioSeed` and expanded to wire by `buildWire`
 //     -- which is the EXACT inverse of live-state.ts's assembleUsageState, so
 //     `assembleUsageState(wire) === currentUsage` round-trips (proven in-test).
@@ -32,9 +34,7 @@ import { getActiveScenarioId, type ScenarioId } from '../scenario-state.js';
 // COHERENCE (per-scenario equations are documented at each seed below).
 // ============================================================================
 
-// --- login -> cost-center id / name, seat id (built once from the roster) ----
-const CC_NAME_BY_ID: Record<string, string> = Object.fromEntries(COST_CENTERS.map((c) => [c.id, c.name]));
-
+// --- login -> cost-center id, seat id (built once from the roster) ----
 const CC_ID_BY_LOGIN: Record<string, string> = (() => {
   const map: Record<string, string> = {};
   for (const [ccId, resources] of Object.entries(COST_CENTER_RESOURCES)) {
@@ -188,6 +188,7 @@ const PAYMENTS = 'Payments Integrity Engineering';
 const DATA_EVAL = 'Data & Evaluation Platform';
 const CYBER = 'Cyber & Identity Services';
 const CORPORATE = 'Corporate Systems';
+const WORKFORCE = 'Workforce Australia Platform';
 
 // ===========================================================================
 // AT-RISK (pool phase, day 26/30 = 2026-06-27, cycleEnd 2026-06-30).
@@ -296,48 +297,114 @@ const AT_RISK_POOL_INPUTS: PoolScenarioInputs = {
 };
 
 // ===========================================================================
-// SURPLUS (pool phase, day 26/30 = 2026-06-27). Drastic under-consumption, but
-// NOBODY at risk -- so the trigger does NOT fire (no one to redistribute to);
-// the story is pure forfeit. Budgets DROP the $0 ULB (BUDGET_IDS.zeroUlb) so
-// ext-dmorrow falls back to the 4,600 universal ULB and is not standing-blocked
-// -- otherwise at-risk >= 1 and the trigger could fire.
+// SURPLUS (pool phase, day 26/30 = 2026-06-27). Drastic under-consumption AND a
+// SMALL at-risk cohort -> the pool trigger FIRES to tell the surplus-
+// redistribution story (retune ratified 2026-07-08, Checkpoint-6 review): a
+// huge forfeit-bound envelope funds a tiny cohort in full, leaving enormous
+// slack -- the visual inverse of At-risk (a thin grants sliver in a sea of green
+// slack). Budgets still DROP the $0 ULB (BUDGET_IDS.zeroUlb) so ext-dmorrow (0
+// usage) is NOT a standing $0-ULB block; the at-risk set is EXACTLY the four
+// authored contractor personas, every one of them fundable.
 //
-//   8 light users at 1,200 pool (26% of 4,600 ULB -> not at-risk).
-//   All CC aggregates far under cap (no cap-bound team).
-//   scalars: total 567,000; consumed 14,000; projected 40,000
-//     -> util 7.05%, FORFEIT 92.95% (527,000 credits). at-risk 0 -> NOT fired.
+// Cohort (four throttled contractors on a tight 500-credit INDIVIDUAL ULB):
+//   BLOCKED   x2 (ext-rknott [Corporate], ext-tlau [Cyber]): used 500 == 500
+//                 ULB -> hard-stopped now; projected 2,000 -> grant 1,500 each.
+//   APPROACH  x2 (aria-fahey [Cyber], seb-rowe [Cyber]): used 480 of 500 (96%
+//                 >= 95% threshold); projected 1,500 -> grant 1,000 each.
+//   -> 4 grants totalling 5,000, ALL fully funded (envelope 521,650 >> 5,000).
+//   (Every grant converts FROM an individual ULB -> the UI shows no
+//   "converts from" sub-label, CONVERTS_FROM['individual'] === null.)
 //
-// WIRE<->ENGINE COHERENCE (Defect 1 fix): the CC-aggregate pool draw now SUMS
-// to the engine's poolConsumedCredits scalar (14,000) so the Overview burn-down
-// reads 14,000, not the old 9,600. Spread daily through day 25 (Defect 2(a)).
-// The 8 named light users' 9,600 metrics burn stays < the 14,000 aggregate --
-// the 4,400 gap is shared draw (both crisis-free CCs, far under cap).
-//   workforce 8,600 / 168,000 ; cyber 5,400 / 77,000 ; Σ = 14,000.
+//   8 light users at 1,200 pool (26% of 4,600 ULB -> not at-risk). Two of them
+//   (rpatel2 [Workforce], ruby-carter [Cyber]) are projected to grow 1,200 ->
+//   1,700, so the envelope's `held` (on-track non-at-risk draw) segment is a
+//   nonzero 2 * 500 = 1,000 (engine-validator hazard #1). No cap-bound team --
+//   this is a surplus world; every CC sits far under its included-usage cap.
+//
+//   scalars: total 567,000; consumed 16,000; projected P50 20,000
+//     -> projected util 3.5%, FORFEIT 96.5% (547,000 credits). at-risk 4 ->
+//     near-cycle-end(3d) + underutil(3.5%<95%) + 4 at-risk -> FIRES [T,T,T].
+//   envelope: remaining_pool 567,000-16,000 = 551,000; reserve round(5% *
+//     567,000) = 28,350; held 1,000; ENVELOPE = 551,000-28,350-1,000 = 521,650.
+//     grants 5,000 (all funded) -> slack 516,650. segments sum to 551,000.
+//   sim: before 20,000 (3.5%) -> after 25,000 (4.4%); 4 unblocked; tip 0.0%
+//     (P90 30,000); verdict ok (5,000 << 521,650). badge = 4.
+//
+// WIRE<->ENGINE COHERENCE: the CC-aggregate pool draw SUMS to the engine's
+// poolConsumedCredits scalar (16,000) so the Overview burn-down reads 16,000.
+// Spread daily through day 25 (splitDaily). Each CC-aggregate stays > its named
+// member burns (the gap is shared draw), and far under its cap:
+//   workforce 8,600 / 168,000  (named 5x1,200 = 6,000; gap 2,600)
+//   cyber      6,400 /  77,000  (named 3x1,200 + 500 + 480 + 480 = 5,060; gap 1,340)
+//   corporate  1,000 /  91,000  (named ext-rknott 500; gap 500)
+//   Σ = 16,000 == poolConsumedCredits (2.8% of the 567,000 pool -- unmistakably
+//   distinct from At-risk's 90.1%).
 // ===========================================================================
-const SURPLUS_USERS = ['rpatel2', 'd-okafor', 'jr-mitchell', 'amir-haddad', 'claire-donnelly', 'ruby-carter', 'omar-farah', 'lucas-meyer'];
+const SURPLUS_LIGHT_USERS = ['rpatel2', 'd-okafor', 'jr-mitchell', 'amir-haddad', 'claire-donnelly', 'ruby-carter', 'omar-farah', 'lucas-meyer'];
+// Throttled contractors on a tight 500-credit individual ULB (scenario-local
+// budgets, appended to SURPLUS_BUDGETS below -- the base roster leaves these
+// four universal-/CCULB-governed, so a surplus-only individual override never
+// touches Healthy/At-risk/Metered). ext-rknott/ext-tlau are the roster's own
+// ext- contractors; aria-fahey/seb-rowe are Cyber seats given the same throttle.
+const SURPLUS_BLOCKED = ['ext-rknott', 'ext-tlau']; // used 500 of 500 -> blocked now
+const SURPLUS_APPROACHING = ['aria-fahey', 'seb-rowe']; // used 480 of 500 (96%)
+const SURPLUS_CONTRACTOR_ULB_CREDITS = 500;
 
 const SURPLUS_SEED: ScenarioSeed = {
   date: '2026-06-15',
-  users: SURPLUS_USERS.map((login) => ({ login, pool: 1_200 })),
-  ccPool: { [COST_CENTER_IDS.workforce]: 8_600, [COST_CENTER_IDS.cyber]: 5_400 },
+  users: [
+    ...SURPLUS_LIGHT_USERS.map((login) => ({ login, pool: 1_200 })),
+    ...SURPLUS_BLOCKED.map((login) => ({ login, pool: 500 })),
+    ...SURPLUS_APPROACHING.map((login) => ({ login, pool: 480 })),
+  ],
+  ccPool: {
+    [COST_CENTER_IDS.workforce]: 8_600,
+    [COST_CENTER_IDS.cyber]: 6_400,
+    [COST_CENTER_IDS.corporate]: 1_000,
+  },
 };
 
-const SURPLUS_BUDGETS: readonly Budget[] = BUDGETS.filter((b) => b.id !== BUDGET_IDS.zeroUlb);
+// A tight individual ULB override for one throttled contractor. Scenario-local:
+// appended ONLY to SURPLUS_BUDGETS, so the base roster (Healthy/At-risk/Metered)
+// is byte-untouched. 500 credits = $5 (above the $1 near-zero warning floor).
+function surplusContractorUlb(login: string): Budget {
+  return {
+    id: `budget-ulb-surplus-${login}`,
+    budget_type: 'BundlePricing',
+    budget_product_sku: 'ai_credits',
+    budget_scope: 'individual',
+    budget_entity_name: login,
+    budget_amount: SURPLUS_CONTRACTOR_ULB_CREDITS / 100,
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: true, alert_recipients: ['copilot-admins@dewr.gov.au'] },
+  };
+}
+
+const SURPLUS_BUDGETS: readonly Budget[] = [
+  ...BUDGETS.filter((b) => b.id !== BUDGET_IDS.zeroUlb),
+  ...[...SURPLUS_BLOCKED, ...SURPLUS_APPROACHING].map(surplusContractorUlb),
+];
 
 const SURPLUS_POOL_INPUTS: PoolScenarioInputs = {
-  // No growth projected (mirror current) -- nobody approaches a ceiling.
   projectedUsage: {
     enterprise: { entityName: ENTERPRISE_SLUG, meteredCreditsUsed: 0 },
-    users: SURPLUS_USERS.map((l) => {
-      const ccId = CC_ID_BY_LOGIN[l];
-      return usr(l, ccId ? (CC_NAME_BY_ID[ccId] ?? null) : null, 1_200);
-    }),
+    users: [
+      // At-risk cohort: projected demand beyond the 500 ULB -> the fundable grant.
+      usr('ext-rknott', CORPORATE, 2_000),
+      usr('ext-tlau', CYBER, 2_000),
+      usr('aria-fahey', CYBER, 1_500),
+      usr('seb-rowe', CYBER, 1_500),
+      // Two non-at-risk light users projected to grow -> the envelope's `held`
+      // (on-track draw the rebalancer must reserve for them, not grant away).
+      usr('rpatel2', WORKFORCE, 1_700),
+      usr('ruby-carter', CYBER, 1_700),
+    ],
     costCenters: [],
   },
   poolTotalCredits: 567_000,
-  poolConsumedCredits: 14_000,
-  projectedPoolConsumedCredits: 40_000,
-  projectedPoolConsumedP90Credits: 60_000,
+  poolConsumedCredits: 16_000,
+  projectedPoolConsumedCredits: 20_000,
+  projectedPoolConsumedP90Credits: 30_000,
   cycleEndDate: '2026-06-30',
 };
 

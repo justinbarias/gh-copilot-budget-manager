@@ -180,21 +180,72 @@ describe('AT-RISK scenario', () => {
 });
 
 // ===========================================================================
-// SURPLUS -- drastic under-consumption, NOBODY at risk -> trigger not fired.
+// SURPLUS -- drastic under-consumption WITH a tiny throttled cohort -> the pool
+// trigger fires and funds all four in full, leaving enormous slack (the retune
+// ratified 2026-07-08). 4 ULB grants (5,000 credits), 0 cap-relax.
 // ===========================================================================
 describe('SURPLUS scenario', () => {
-  it('does NOT fire (0 at-risk) despite near-cycle-end + underutilisation; forfeit ~92.9%', async () => {
+  it('assembles the four-contractor cohort on a tight 500-credit individual ULB', async () => {
+    const { currentUsage } = await assemble('surplus');
+    const pool = (login: string) => currentUsage.users.find((u) => u.userLogin === login)!.poolCreditsUsed;
+    expect(pool('ext-rknott')).toBe(500); // blocked (== 500 individual ULB)
+    expect(pool('ext-tlau')).toBe(500); // blocked
+    expect(pool('aria-fahey')).toBe(480); // approaching (96% of 500)
+    expect(pool('seb-rowe')).toBe(480); // approaching
+    expect(pool('rpatel2')).toBe(1_200); // light, non-at-risk (grown in projection -> held)
+  });
+
+  it('FIRES (4 at-risk) on near-cycle-end + underutilisation; forfeit ~96.5%', async () => {
     const { controls, currentUsage, asOf } = await assemble('surplus');
     const inp = POOL_SCENARIO_INPUTS['surplus']!;
-    expectPoolScalars(inp, { total: 567_000, consumed: 14_000, p50: 40_000, p90: 60_000, cycleEnd: '2026-06-30' });
+    expectPoolScalars(inp, { total: 567_000, consumed: 16_000, p50: 20_000, p90: 30_000, cycleEnd: '2026-06-30' });
     const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
-    expect(plan.trigger.conditions.map((c) => c.met)).toEqual([true, true, false]);
-    expect(plan.trigger.fired).toBe(false);
-    expect(plan.trigger.atRiskCount).toBe(0);
-    expect(plan.trigger.projectedUtilization).toBeCloseTo(0.0705, 4);
-    expect(plan.trigger.projectedForfeitPct).toBeCloseTo(0.9295, 4);
-    expect(plan.allocation.grants.length).toBe(0);
-    expect(getActiveScenarioSummary().atRiskCount).toBe(0);
+    expect(plan.trigger.conditions.map((c) => c.met)).toEqual([true, true, true]);
+    expect(plan.trigger.fired).toBe(true);
+    expect(plan.trigger.daysRemaining).toBe(3);
+    expect(plan.trigger.atRiskCount).toBe(4);
+    expect(plan.trigger.blockedCount).toBe(2); // ext-rknott + ext-tlau (used == 500 ULB)
+    expect(plan.trigger.approachingCount).toBe(2); // aria-fahey + seb-rowe (96%)
+    expect(plan.trigger.projectedUtilization).toBeCloseTo(0.0353, 4);
+    expect(plan.trigger.projectedForfeitPct).toBeCloseTo(0.9647, 4);
+    expect(getActiveScenarioSummary().atRiskCount).toBe(4);
+  });
+
+  it('allocates 4 funded ULB grants (5,000 credits) + 0 cap-relax; envelope 28,350/1,000/5,000/516,650', async () => {
+    const { controls, currentUsage, asOf } = await assemble('surplus');
+    const inp = POOL_SCENARIO_INPUTS['surplus']!;
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
+    const a = plan.allocation;
+    expect(a.grants.length).toBe(4);
+    expect(a.fundedCount).toBe(4);
+    expect(a.totalGrantedCredits).toBe(5_000);
+    expect(a.grants.every((g) => g.status === 'funded')).toBe(true);
+    // Blocked-first, then login-asc within each tier (the engine's ranking).
+    expect(a.grants.map((g) => g.userLogin)).toEqual(['ext-rknott', 'ext-tlau', 'aria-fahey', 'seb-rowe']);
+    // Every grant raises an already-individual ULB (no shared scope to convert from).
+    expect(a.grants.every((g) => g.convertsFrom === 'individual')).toBe(true);
+    expect(a.grants.find((g) => g.userLogin === 'ext-rknott')!.grantCredits).toBe(1_500);
+    expect(a.grants.find((g) => g.userLogin === 'aria-fahey')!.grantCredits).toBe(1_000);
+    // Huge forfeit-bound envelope; a 5,000 sliver in a sea of 516,650 slack.
+    expect(a.envelope.segments).toEqual({ reserve: 28_350, held: 1_000, grants: 5_000, slack: 516_650 });
+    expect(a.envelope.envelopeCredits).toBe(521_650);
+    expect(a.capRelax.length).toBe(0); // surplus world -- no cap-bound team
+  });
+
+  it('simulates 20,000 -> 25,000 (4 unblocked), tip 0.0%, verdict ok', async () => {
+    const { controls, currentUsage, asOf } = await assemble('surplus');
+    const inp = POOL_SCENARIO_INPUTS['surplus']!;
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
+    const s = plan.simulation;
+    expect(s.beforeConsumedCredits).toBe(20_000);
+    expect(s.afterConsumedCredits).toBe(25_000);
+    expect(s.beforeUtilization).toBeCloseTo(0.0353, 4);
+    expect(s.afterUtilization).toBeCloseTo(0.0441, 4);
+    expect(s.usersUnblockedCount).toBe(4);
+    expect(s.verdict).toBe('ok');
+    const expTip = 1 - normalCdf((567_000 - 25_000) / ((30_000 - 20_000) / 1.2816));
+    expect(s.tipProbability).toBeCloseTo(expTip, 6);
+    expect(s.tipProbability).toBeCloseTo(0, 6);
   });
 });
 
