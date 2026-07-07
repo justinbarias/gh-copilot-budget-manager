@@ -63,17 +63,18 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
     await expect(burndownHeadline(window)).toHaveText('189,800');
     await expect(badge(window)).toHaveCount(0); // trigger not fired -> no badge
 
-    // --- AT RISK: day 26/30, pool trigger fires (17 at-risk), pool draw 95,000.
+    // --- AT RISK: day 26/30, pool trigger fires (17 at-risk), pool draw 511,150
+    // (90.1% of 567,000 -- the wire now AGREES with the engine scalar, Defect 1).
     await pickScenario(window, 'At risk');
     await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 26 of 30');
     await expect(badge(window)).toHaveText('17');
-    await expect(burndownHeadline(window)).toHaveText('95,000');
+    await expect(burndownHeadline(window)).toHaveText('511,150');
 
     // --- SURPLUS: day 26/30, drastic under-consumption, NOBODY at risk (no badge).
     await pickScenario(window, 'Surplus');
     await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 26 of 30');
     await expect(badge(window)).toHaveCount(0);
-    await expect(burndownHeadline(window)).toHaveText('9,600');
+    await expect(burndownHeadline(window)).toHaveText('14,000');
 
     // --- METERED: metered rebalancer fires (2 at-risk).
     await pickScenario(window, 'Metered');
@@ -90,6 +91,44 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
     // sim banner is still unmistakable.
     await expect(selector(window)).toContainText('SIM SCENARIO');
     await expect(window.getByText(/simulation mode/i)).toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('the persisted forecast follows scenario switches (Defect 2(b): setScenario re-ingests the new world)', async () => {
+  const { app, window, cleanup } = await launch();
+  const pageErrors: Error[] = [];
+  window.on('pageerror', (error) => pageErrors.push(error));
+  const forecastNav = () => window.locator('.nav').getByRole('button', { name: 'Forecast' });
+  const runway = () => window.locator('.forecast').getByTestId('forecast-runway');
+  const exhaustion = () => window.locator('.forecast').getByTestId('forecast-exhaustion-date');
+
+  try {
+    // Switch to At risk: setScenario re-anchors the sim clock to day 26/30 AND
+    // re-ingests the new world (so the persisted enterprise forecast is the
+    // At-risk world's, not a stale Healthy-world forecast). 90.1% consumed at
+    // day 26 -> exhausts the 567,000 pool by cycle end: runway ~3 days.
+    await pickScenario(window, 'At risk');
+    await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 26 of 30');
+    await forecastNav().click();
+    await expect(window.locator('.forecast__tab--active')).toHaveText('Enterprise');
+    await expect(runway()).toHaveText('runway ~3 days');
+    await expect(exhaustion()).toHaveText('2026-06-30');
+
+    // Switch BACK to Healthy: the re-ingest follows the switch the other way too
+    // -- the forecast returns to the original day-13 world (runway ~15 days,
+    // exhaustion 2026-06-29), proving the read is no longer serving stale
+    // cross-scenario rows.
+    await pickScenario(window, 'Healthy');
+    await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 13 of 30');
+    await forecastNav().click();
+    await expect(window.locator('.forecast__tab--active')).toHaveText('Enterprise');
+    await expect(runway()).toHaveText('runway ~15 days');
+    await expect(exhaustion()).toHaveText('2026-06-29');
 
     expect(pageErrors).toEqual([]);
   } finally {

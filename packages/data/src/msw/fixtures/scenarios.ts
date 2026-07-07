@@ -58,7 +58,7 @@ interface SeedUser {
 }
 
 interface ScenarioSeed {
-  /** In-cycle date all authored rows carry (weekday, inside cycleBounds(asOf)). */
+  /** In-cycle date the per-user metrics/metered rows carry (weekday, inside cycleBounds(asOf)). */
   readonly date: string;
   readonly users: readonly SeedUser[];
   /** Per-CC aggregate POOL draw (billing discount rows, user_login null), by CC id. */
@@ -76,14 +76,47 @@ interface ScenarioWire {
   readonly creditsUsedItems: readonly CreditsUsedItem[];
 }
 
+// ---------------------------------------------------------------------------
+// Defect 2(a) fix (Checkpoint-6 maintainer review): the CC-aggregate BILLING
+// rows -- the ones that drive BOTH the Overview burn-down (Σ discount_amount)
+// AND the persisted enterprise forecast's daily series (Σ quantity) -- are
+// spread across EVERY June weekday from day 1 (Jun 2) through day 25 (Jun 26),
+// not stamped on a single date. Before this fix the alternates carried one
+// Jun-15 (day 14) billing row, so the Forecast screen's last-actual marker
+// stopped at day 14 while the header read "Day 26 of 30" (and runway read a
+// nonsensical ~87 days). With dense daily rows the marker lands at day 25 and
+// runway/exhaustion become story-consistent. Weekends carry no row (the DEWR
+// world's existing convention -- fixtures/README.md coherence eq. #2), and
+// Jun 1 (cycle day 0) is intentionally absent so the burn-down starts at 0.
+// The three alternates all sit at asOfDate 2026-06-27 (day 26/30).
+const ALT_CYCLE_WEEKDAYS: readonly string[] = [
+  '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05',
+  '2026-06-08', '2026-06-09', '2026-06-10', '2026-06-11', '2026-06-12',
+  '2026-06-15', '2026-06-16', '2026-06-17', '2026-06-18', '2026-06-19',
+  '2026-06-22', '2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26',
+];
+
+// Split an exact integer `total` into one non-negative credit amount per
+// weekday, summing to `total` EXACTLY (near-even: the first `remainder` days
+// carry one extra credit). Deterministic -- no rounding drift, no Math.random.
+function splitDaily(total: number, days: readonly string[]): Map<string, number> {
+  const n = days.length;
+  const base = Math.floor(total / n);
+  const remainder = total - base * n;
+  const out = new Map<string, number>();
+  days.forEach((d, i) => out.set(d, base + (i < remainder ? 1 : 0)));
+  return out;
+}
+
 // buildWire is the exact inverse of assembleUsageState (live-state.ts):
 //   per-user TOTAL  = ai_credits_used (metrics report) = pool + metered
 //   per-user METERED= Σ net_amount over that login's billing rows
 //   per-user POOL   = total - metered
-//   per-CC POOL     = Σ discount_amount over that CC's billing rows
+//   per-CC POOL     = Σ discount_amount over that CC's billing rows (Σ daily)
 //   per-CC METERED  = Σ net_amount over that CC's billing rows (shared + per-user)
 //   enterprise METERED = Σ net_amount over all in-cycle billing rows
-// so assembleUsageState(buildWire(seed)) reproduces the seed exactly.
+// so assembleUsageState(buildWire(seed)) reproduces the seed exactly -- the
+// daily split preserves each per-CC total, so the round-trip still holds.
 function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedItems: CreditsUsedItem[] } {
   const { date } = seed;
   const creditsUsedItems: CreditsUsedItem[] = seed.users.map((u) => ({
@@ -94,32 +127,43 @@ function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedIt
   }));
 
   const usageItems: UsageItem[] = [];
+  // CC-aggregate POOL rows: spread daily across the cycle's weekdays so the
+  // burn-down + forecast series are dense through day 25 (Defect 2(a)).
   for (const [ccId, pool] of Object.entries(seed.ccPool)) {
-    usageItems.push({
-      date,
-      product: 'copilot',
-      sku: 'ai_credits',
-      cost_center_id: ccId,
-      user_login: null,
-      quantity: pool,
-      gross_amount: pool / 100,
-      discount_amount: pool / 100,
-      net_amount: 0,
-    });
+    for (const [day, credits] of splitDaily(pool, ALT_CYCLE_WEEKDAYS)) {
+      if (credits <= 0) continue;
+      usageItems.push({
+        date: day,
+        product: 'copilot',
+        sku: 'ai_credits',
+        cost_center_id: ccId,
+        user_login: null,
+        quantity: credits,
+        gross_amount: credits / 100,
+        discount_amount: credits / 100,
+        net_amount: 0,
+      });
+    }
   }
+  // CC-aggregate SHARED metered rows: spread daily too, same reason.
   for (const [ccId, metered] of Object.entries(seed.ccMetered ?? {})) {
-    usageItems.push({
-      date,
-      product: 'copilot',
-      sku: 'ai_credits',
-      cost_center_id: ccId,
-      user_login: null,
-      quantity: metered,
-      gross_amount: metered / 100,
-      discount_amount: 0,
-      net_amount: metered / 100,
-    });
+    for (const [day, credits] of splitDaily(metered, ALT_CYCLE_WEEKDAYS)) {
+      if (credits <= 0) continue;
+      usageItems.push({
+        date: day,
+        product: 'copilot',
+        sku: 'ai_credits',
+        cost_center_id: ccId,
+        user_login: null,
+        quantity: credits,
+        gross_amount: credits / 100,
+        discount_amount: 0,
+        net_amount: credits / 100,
+      });
+    }
   }
+  // Per-user metered rows stay on the single authored date (small, and the
+  // enterprise metered rollup only cares about their Σ, not their daily shape).
   for (const u of seed.users) {
     if (!u.metered) continue;
     usageItems.push({
@@ -160,8 +204,33 @@ const CORPORATE = 'Corporate Systems';
 //   HELD      x5 (blake-ferris, noor-jaber, gina-lombardi, ext-rknott, devi-anand):
 //                                                        1,000 -> 2,500 (held +1,500 each)
 //   ext-dmorrow: $0 ULB, 0 usage -> standing blocked (grant 0, not fundable)
+//   COMFORTABLE x21: 2,500 each (54% of the 4,600 universal ULB -> never at-risk),
+//     drawn from otherwise-idle Workforce/Employer/Cyber seats so the Users
+//     screen reads as a busy month rather than 12 lonely rows. None carries an
+//     individual override or a sub-2,632 ULB, so 2,500 is always < 95% of the
+//     effective ULB -> none enters the at-risk set (engine test pins 17).
 // Cap-bound team Payments Integrity: CC pool 55,000 -> 61,000 vs cap 56,000
 //   (8 members carry 0 individual usage, so each resolves cap-bound; +1 CC entity).
+//
+// WIRE<->ENGINE COHERENCE (Defect 1 fix -- Checkpoint-6 maintainer review).
+// The CC-aggregate pool draw now SUMS to the engine's poolConsumedCredits
+// scalar (511,150) so the Overview burn-down (Σ discount = 511,150 = 90.1% of
+// 567,000) tells the SAME at-risk story the Auto-balance envelope math does --
+// previously the wire summed to only 95,000 ("how is that at risk?"). Every CC
+// stays UNDER its included cap except Payments (the designed cap-bound team),
+// and each non-Payments CC keeps > 8,000 headroom so none reads as amber/
+// cap-bound (utilisation < 95% -> not an at-risk CC entity):
+//   workforce 152,000 / 168,000   (headroom 16,000)
+//   employer  100,000 / 112,000   (headroom 12,000)
+//   dataEval   54,000 /  63,000   (headroom  9,000)
+//   cyber      68,000 /  77,000   (headroom  9,000)
+//   corporate  82,150 /  91,000   (headroom  8,850)
+//   capBound   55,000 /  56,000   (headroom  1,000 -- cap-bound, projected 61,000)
+//   Σ = 511,150 == poolConsumedCredits.   (Σ caps still = pool 567,000.)
+// Per-CC member burns (metrics report) stay < the CC-aggregate draw -- the gap
+// is shared/automated draw (service accounts, CI, code-review Actions), maximal
+// here by design (README.md coherence eq. #3): an at-risk world's 90% draw is
+// dominated by non-attributable consumption, not by the named cohort's 36,400.
 //
 // Pool scalars: total 567,000; consumed 511,150 -> remaining_pool 55,850;
 //   reserve = round(0.05*567,000) = 28,350; held = 5 * 1,500 = 7,500;
@@ -176,6 +245,16 @@ const CORPORATE = 'Corporate Systems';
 const AT_RISK_BLOCKED = ['karen-fox', 'ali-rezaei', 'josh-bright'];
 const AT_RISK_APPROACHING = ['mia-larsson', 'tom-becker', 'wei-sun', 'colin-hurst'];
 const AT_RISK_HELD = ['blake-ferris', 'noor-jaber', 'gina-lombardi', 'ext-rknott', 'devi-anand'];
+// Otherwise-idle seats given a comfortable 2,500 draw so the Users/heavy-user
+// screens are populated. All universal-ULB (4,600) seats -- no individual
+// override, not a Payments member, not one of the controls-scale sub-4,600 ULBs
+// (declan-ryan/tegan-ellis/jomo-mburu/nina-popov/devi-anand) -- so 2,500 is
+// always comfortably below the 95% at-risk threshold (4,370).
+const AT_RISK_COMFORTABLE = [
+  'tania-osei', 'mark-vuong', 'hana-said', 'isaac-cole', 'georgia-pappas', 'dan-mercer', 'ruth-abela', 'kofi-asante',
+  'mona-eldib', 'ravi-krishnan', 'sam-porter', 'beatrix-cho', 'lachlan-reid', 'omar-said', 'freya-nilsson', 'hamish-doyle',
+  'seb-rowe', 'aria-fahey', 'kate-ellery', 'ext-tlau', 'priyanka-nair',
+];
 
 const AT_RISK_SEED: ScenarioSeed = {
   date: '2026-06-15',
@@ -183,8 +262,16 @@ const AT_RISK_SEED: ScenarioSeed = {
     ...AT_RISK_BLOCKED.map((login) => ({ login, pool: 4_600 })),
     ...AT_RISK_APPROACHING.map((login) => ({ login, pool: 4_400 })),
     ...AT_RISK_HELD.map((login) => ({ login, pool: 1_000 })),
+    ...AT_RISK_COMFORTABLE.map((login) => ({ login, pool: 2_500 })),
   ],
-  ccPool: { [COST_CENTER_IDS.corporate]: 40_000, [COST_CENTER_IDS.capBound]: 55_000 },
+  ccPool: {
+    [COST_CENTER_IDS.workforce]: 152_000,
+    [COST_CENTER_IDS.employer]: 100_000,
+    [COST_CENTER_IDS.dataEval]: 54_000,
+    [COST_CENTER_IDS.cyber]: 68_000,
+    [COST_CENTER_IDS.corporate]: 82_150,
+    [COST_CENTER_IDS.capBound]: 55_000,
+  },
 };
 
 function usr(userLogin: string, costCenterName: string | null, pool: number, metered = 0): UsageState['users'][number] {
@@ -219,13 +306,20 @@ const AT_RISK_POOL_INPUTS: PoolScenarioInputs = {
 //   All CC aggregates far under cap (no cap-bound team).
 //   scalars: total 567,000; consumed 14,000; projected 40,000
 //     -> util 7.05%, FORFEIT 92.95% (527,000 credits). at-risk 0 -> NOT fired.
+//
+// WIRE<->ENGINE COHERENCE (Defect 1 fix): the CC-aggregate pool draw now SUMS
+// to the engine's poolConsumedCredits scalar (14,000) so the Overview burn-down
+// reads 14,000, not the old 9,600. Spread daily through day 25 (Defect 2(a)).
+// The 8 named light users' 9,600 metrics burn stays < the 14,000 aggregate --
+// the 4,400 gap is shared draw (both crisis-free CCs, far under cap).
+//   workforce 8,600 / 168,000 ; cyber 5,400 / 77,000 ; Σ = 14,000.
 // ===========================================================================
 const SURPLUS_USERS = ['rpatel2', 'd-okafor', 'jr-mitchell', 'amir-haddad', 'claire-donnelly', 'ruby-carter', 'omar-farah', 'lucas-meyer'];
 
 const SURPLUS_SEED: ScenarioSeed = {
   date: '2026-06-15',
   users: SURPLUS_USERS.map((login) => ({ login, pool: 1_200 })),
-  ccPool: { [COST_CENTER_IDS.workforce]: 6_000, [COST_CENTER_IDS.cyber]: 3_600 },
+  ccPool: { [COST_CENTER_IDS.workforce]: 8_600, [COST_CENTER_IDS.cyber]: 5_400 },
 };
 
 const SURPLUS_BUDGETS: readonly Budget[] = BUDGETS.filter((b) => b.id !== BUDGET_IDS.zeroUlb);
@@ -262,6 +356,9 @@ const SURPLUS_POOL_INPUTS: PoolScenarioInputs = {
 //     slack 494,000. trigger FIRES, at-risk 2. bill delta $60; unblocked 2.
 //   wire: dataEval shared metered 24,500 + Employer shared 275,000 + sam-kelly
 //     500 = 300,000 enterprise metered. dataEval pool 63,000 (== cap, exhausted).
+// COHERENCE: the CC-aggregate pool + shared-metered rows are spread daily
+// through day 25 (Defect 2(a)) so this scenario's forecast series is dense too;
+// each per-CC total is preserved exactly, so every engine literal above holds.
 // ===========================================================================
 const METERED_SEED: ScenarioSeed = {
   date: '2026-06-15',

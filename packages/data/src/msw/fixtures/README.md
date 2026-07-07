@@ -204,3 +204,47 @@ computed exactly as before and is untouched by this file's existence.
 - Live controls: 16 budgets (11 + 5 controls-scale ULBs) + 6 caps; write-engine canonical target
   `budget:cost_center:Workforce Australia Platform` (60,000 credits, id
   `budget-cost-center-workforce-metered`).
+
+## Scenario worlds (Task 6.7 — `scenarios.ts`)
+
+The default `healthy` scenario IS the DEWR world above, byte-identical. The
+three alternates reuse the same roster/cost-centers/budgets and differ only in
+usage + as-of date (all at **2026-06-27, day 26/30**). Each alternate's MSW wire
+is authored so the **assembled state agrees with the engine scalars** the
+rebalancer proofs pin (`scenarios.engine.test.ts`) — the two must never tell
+different stories (the Checkpoint-6 defect: At-risk's wire summed to 95,000
+while its engine scalar said 511,150). `scenarios.coherence.test.ts` is the
+regression guard.
+
+**Wire↔engine coherence equation (per scenario):**
+`assembled Σ(per-CC poolCreditsUsed) == POOL_SCENARIO_INPUTS.poolConsumedCredits`
+— and that Σ (Σ `discount_amount` over the in-cycle CC-aggregate rows) IS the
+Overview burn-down's cycle-to-date figure, so **burn-down == engine scalar**.
+
+| Scenario | Burn-down (= Σ CC pool = scalar) | Per-CC pool draw (of cap) | Enterprise metered | Forecast (enterprise) |
+|---|---|---|---|---|
+| `healthy` | 189,800 | on-pace, all well under cap | 0 (June cycle) | runway ~15d, exhaustion 2026-06-29 |
+| `at-risk` | **511,150** (90.1%) | wf 152k/168k · emp 100k/112k · dataEval 54k/63k · cyber 68k/77k · corp 82.15k/91k · **payments 55k/56k (cap-bound, →61k)** | 0 | runway **~3d**, exhaustion **2026-06-30** |
+| `surplus` | **14,000** (2.5%) | wf 8.6k · cyber 5.4k (both far under cap) | 0 | no exhaustion (drastic under-consumption) |
+| `metered` | 67,900 pool | dataEval 63k/63k (== cap, exhausted) · cyber 4.9k | **300,000** (dataEval 24.5k + employer 275k + sam-kelly 0.5k) | cliff exhaustion 2026-09-21 |
+
+- **Daily rows through day 25 (Defect 2(a)):** every alternate's CC-aggregate
+  billing rows are spread across the June weekdays (Jun 2 → Jun 26, `splitDaily`)
+  so the persisted forecast's last-actual marker lands at **day 25** and runway
+  is story-consistent — not the pre-fix single Jun-15 (day 14) row that stalled
+  the marker at day 14 with a nonsensical ~87-day runway.
+- **Member burns < CC-aggregate** (coherence eq. #3, above) holds in every
+  alternate: the gap is shared/automated draw, maximal in `at-risk` where a 90%
+  pool draw is dominated by non-attributable consumption. At-risk populates the
+  Users screen with the named cohort (blocked/approaching/held) **plus** a
+  21-seat "comfortable" cohort at 2,500 each (54% of the 4,600 universal ULB —
+  never at-risk), so the world reads as a busy month, not 12 lonely rows.
+- **Every non-Payments CC keeps utilisation < 95%** (the `AT_RISK_THRESHOLD_PCT`)
+  so no extra CC/user enters the at-risk set — the engine proof's **17** stays 17.
+
+**Persisted forecasts follow scenario switches (Defect 2(b)):** `setScenario`
+(the `github-impl.ts` bridge) re-runs the same `syncNow` ingestion after
+re-seeding, so the source-scoped-but-scenario-blind `getLatestForecast`/
+`getLastSyncedControls` reads always match the active world (no new bridge
+surface — the existing sync path is reused). The audit-provenance path stays
+sensible: an apply after a switch references the new world's snapshot.

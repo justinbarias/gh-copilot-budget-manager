@@ -937,7 +937,20 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   async function setScenario(id: ScenarioId): Promise<SetScenarioResult> {
     if (config.source === 'github') return { refused: true, reason: 'live mode' };
     if (!isScenarioId(id)) return { refused: true, reason: `unknown scenario: ${String(id)}` };
-    return { refused: false, scenario: setActiveScenarioId(id) };
+    const scenario = setActiveScenarioId(id);
+    // Defect 2(b) fix (Checkpoint-6 maintainer review): persisted snapshots/
+    // forecasts/controls are source-scoped ('msw') but scenario-BLIND, so
+    // getLatestForecast/getLastSyncedControls would keep serving the PREVIOUS
+    // world's rows after a switch (stale cross-scenario data shown as current).
+    // Re-run the SAME ingestion syncNow already runs -- now that the active
+    // scenario (and its clock as-of date) point at the new world, this rewrites
+    // every 'msw'-sourced snapshot/forecast/control, so the latest-sync-wins
+    // reads always match the active scenario. Fast (~sub-200ms against MSW) and
+    // reuses the existing sync path -- NO new bridge surface. The audit-
+    // provenance path (an apply stamps the latest 'msw' snapshot) stays
+    // sensible: an apply after a switch references the NEW world's snapshot.
+    await syncNow();
+    return { refused: false, scenario };
   }
 
   // Task 6.8 (maintainer-ratified 2026-07-07): the Auto-balance screen's ONE
