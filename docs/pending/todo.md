@@ -59,6 +59,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ### Checkpoint 6 — dry-run complete
 - [ ] Both rebalancers explainable on scenario fixtures; every on-screen number traces to unit-tested core; no apply path exists; gate green
 - [ ] **Decision required before Phase 7:** auto-apply appetite, reserve buffer %, rollover default (CLAUDE.md §9 Q5)
+- Q5 decisions recorded 2026-07-07 (approval-gated per run / 5% reserve / revert-at-reset) — see README; checkpoint sign-off pending maintainer review.
 
 ## Phase 7 — Guardrailed auto-apply + grant lifecycle + alerting (FR15–FR17)
 
