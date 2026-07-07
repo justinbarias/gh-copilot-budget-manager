@@ -290,7 +290,15 @@ const METERED_INPUTS: MeteredScenarioInputs = {
 // from the wire at call time; these carry the projection + scalars.
 // ===========================================================================
 export interface PoolScenarioInputs {
-  readonly projectedUsage: UsageState;
+  /**
+   * Forecast end-of-cycle usage per entity. `null` means NO GROWTH: the
+   * consumer mirrors the assembled currentUsage as the projection (the
+   * 'healthy' scenario's on-pace world -- authoring a static duplicate of the
+   * whole 81-seat DEWR rollup here would be a second copy of the wire
+   * fixtures that could drift; the engine's overlay semantics make
+   * `projectedUsage === currentUsage` and an equal-valued copy identical).
+   */
+  readonly projectedUsage: UsageState | null;
   readonly poolTotalCredits: number;
   readonly poolConsumedCredits: number;
   readonly projectedPoolConsumedCredits: number;
@@ -353,8 +361,33 @@ export function getActiveFixtures(): ScenarioWire {
   return SCENARIO_WIRE[getActiveScenarioId()];
 }
 
+// ===========================================================================
+// HEALTHY (pool phase, day 13/30 = 2026-06-14). The DEWR world, on pace.
+// Promoted from scenarios.engine.test.ts's inline literals (Task 6.8,
+// maintainer-ratified 2026-07-07) so the Auto-balance screen's default pane
+// and the engine-proof test read ONE source of truth:
+//   scalars: total 567,000; consumed 189,800 (the Overview burn-down's own
+//   cycle-to-date figure); projected P50 437,800 (annualised on-pace run rate
+//   -> util 77.2%, underutilised) / P90 460,000.
+//   projection: null = no growth (mirror assembled currentUsage). The DEWR
+//   world still carries 10 standing at-risk entities even on a healthy day
+//   (the cap-bound Payments team's 8 members + its CC entity, all pinned at
+//   the 56,000 cap, plus ext-dmorrow's $0-ULB block), so the at-risk chip IS
+//   met; but day 13/30 (16 days out) is OUTSIDE the 7-day near-cycle-end
+//   window, so the trigger does NOT fire (chips: [false, true, true]).
+// ===========================================================================
+const HEALTHY_POOL_INPUTS: PoolScenarioInputs = {
+  projectedUsage: null,
+  poolTotalCredits: 567_000,
+  poolConsumedCredits: 189_800,
+  projectedPoolConsumedCredits: 437_800,
+  projectedPoolConsumedP90Credits: 460_000,
+  cycleEndDate: '2026-06-30',
+};
+
 /** The pool-rebalancer projection + scalars for a scenario (tests / 6.8). */
 export const POOL_SCENARIO_INPUTS: Partial<Record<ScenarioId, PoolScenarioInputs>> = {
+  healthy: HEALTHY_POOL_INPUTS,
   'at-risk': AT_RISK_POOL_INPUTS,
   surplus: SURPLUS_POOL_INPUTS,
 };

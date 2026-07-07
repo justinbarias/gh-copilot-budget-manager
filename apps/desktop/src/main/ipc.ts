@@ -78,4 +78,9 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   ipcMain.handle('apiClient:listScenarios', () => client.listScenarios());
   ipcMain.handle('apiClient:getActiveScenario', () => client.getActiveScenario());
   ipcMain.handle('apiClient:setScenario', (_event, id: ScenarioId) => client.setScenario(id));
+  // Task 6.8: the Auto-balance screen's read-only context assembly (sim-only;
+  // the client refuses in live mode). Same per-method channel pattern as above.
+  ipcMain.handle('apiClient:getRebalanceContext', (_event, mode: 'pool' | 'metered') =>
+    client.getRebalanceContext(mode),
+  );
 }

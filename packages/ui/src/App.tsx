@@ -6,6 +6,7 @@ import { SimBanner } from './components/SimBanner';
 import { ScenarioSelector } from './components/ScenarioSelector';
 import { Nav, type ScreenId } from './components/Nav';
 import { Audit } from './screens/Audit/Audit';
+import { AutoBalance } from './screens/AutoBalance/AutoBalance';
 import { Controls, type FamilyId } from './screens/Controls/Controls';
 import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
 import { Forecast } from './screens/Forecast/Forecast';
@@ -77,6 +78,12 @@ function renderScreen(
       // `initialFamily` is undefined (Controls' own 'userlevel' default) on
       // every entry EXCEPT the Forecast cap-off CTA above.
       return <Controls onNavigateToAutoBalance={() => navigate('autobalance')} initialFamily={controlsInitialFamily} />;
+    case 'autobalance':
+      // Real since Task 6.8 (pool mode, dry-run only: trigger card, the
+      // signature envelope bar, the at-risk grants table with live recompute,
+      // and the simulate rail with the gated ⑤ apply). Metered mode is a
+      // labelled Task 6.9 placeholder inside the screen itself.
+      return <AutoBalance />;
     case 'costcenters':
       return <CostCentersTable />;
     case 'users':

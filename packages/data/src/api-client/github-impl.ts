@@ -34,7 +34,8 @@ import {
   type IngestResourceType,
 } from '../sync/sync-now.js';
 import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
-import { fetchLiveControls } from '../write/live-state.js';
+import { assembleUsageState, fetchLiveControls } from '../write/live-state.js';
+import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS } from '../msw/fixtures/scenarios.js';
 import { runReadSmoke } from '../smoke/read-smoke.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
@@ -60,6 +61,7 @@ import type {
   ListScenariosResult,
   PatValidation,
   ReadSmokeResult,
+  RebalanceContextResult,
   SetScenarioResult,
   StoredForecast,
   SyncStatus,
@@ -938,6 +940,67 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return { refused: false, scenario: setActiveScenarioId(id) };
   }
 
+  // Task 6.8 (maintainer-ratified 2026-07-07): the Auto-balance screen's ONE
+  // bridge addition. Runs the SAME assembly the engine-proof test
+  // (msw/fixtures/scenarios.engine.test.ts) pins the 17 / 55,850-segment /
+  // 12,800 / 532,800 literals against: fetchLiveControls + assembleUsageState
+  // over the ACTIVE scenario's MSW world, plus that scenario's exported
+  // projection + scalars (POOL/METERED_SCENARIO_INPUTS). The read surface's
+  // existing shapes are provably lossy for this (see types.ts's DTO doc
+  // comment), so this is assembled server-side; the renderer runs the pure
+  // core engine over the returned context. SIM-ONLY -- refuses in live mode
+  // before any fetch (same guard direction as the scenario methods above).
+  // READ-ONLY: reads controls/usage; never mutates.
+  async function getRebalanceContext(mode: 'pool' | 'metered'): Promise<RebalanceContextResult> {
+    if (config.source === 'github') return { available: false, reason: 'live mode' };
+    const scenarioId = getActiveScenarioSummary().id;
+
+    if (mode === 'pool') {
+      const inputs = POOL_SCENARIO_INPUTS[scenarioId];
+      if (!inputs) {
+        return { available: false, reason: `the active scenario ("${scenarioId}") carries no pool-rebalancer inputs` };
+      }
+      const live = await fetchLiveControls(octokit, enterprise, currentDateObj());
+      const currentUsage = await assembleUsageState(octokit, enterprise, live.costCenterIdByName, currentDateObj());
+      return {
+        available: true,
+        mode: 'pool',
+        context: {
+          controls: live.controls,
+          currentUsage,
+          // null = the scenario projects no growth -> mirror the assembled
+          // current state (PoolScenarioInputs's documented contract).
+          projectedUsage: inputs.projectedUsage ?? currentUsage,
+          poolTotalCredits: inputs.poolTotalCredits,
+          poolConsumedCredits: inputs.poolConsumedCredits,
+          projectedPoolConsumedCredits: inputs.projectedPoolConsumedCredits,
+          projectedPoolConsumedP90Credits: inputs.projectedPoolConsumedP90Credits,
+          asOfDate: currentDate(),
+          cycleEndDate: inputs.cycleEndDate,
+        },
+      };
+    }
+
+    const inputs = METERED_SCENARIO_INPUTS[scenarioId];
+    if (!inputs) {
+      return { available: false, reason: `the active scenario ("${scenarioId}") carries no metered-rebalancer inputs` };
+    }
+    const live = await fetchLiveControls(octokit, enterprise, currentDateObj());
+    const currentUsage = await assembleUsageState(octokit, enterprise, live.costCenterIdByName, currentDateObj());
+    return {
+      available: true,
+      mode: 'metered',
+      context: {
+        controls: live.controls,
+        currentUsage,
+        projectedUsage: inputs.projectedUsage,
+        entities: [...inputs.entities],
+        meteredPhaseActive: inputs.meteredPhaseActive,
+        reserveCredits: inputs.reserveCredits,
+      },
+    };
+  }
+
   return {
     getUsageSummary,
     listCostCenters,
@@ -959,5 +1022,6 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     listScenarios,
     getActiveScenario,
     setScenario,
+    getRebalanceContext,
   };
 }

@@ -648,17 +648,28 @@ export function normalCdf(z: number): number {
  *   grant, so sigma stays put.
  * - `verdict` flips to `over-allocated` once Sigma applied raises exceed the
  *   grantable envelope (a hand envelope is the over-commit guard, PRD §4.4).
+ * - `extraPoolDrawCredits` (Task 6.8): the CAP-RELAX contribution channel.
+ *   Lifting an included-usage cap unlocks a FIXED pool draw
+ *   (CapRelaxRecommendation.unlockContributionCredits) that shifts the
+ *   projected end-of-cycle draw exactly like a funded grant's applied draw
+ *   does -- but it is NOT a grant (CLAUDE.md §5: a cap has no grantable
+ *   delta), so it is deliberately EXCLUDED from `totalGrantedCredits` and the
+ *   over-allocation `verdict` (a lifted cap doesn't draw from the ULB
+ *   envelope) and from `usersUnblockedCount` (it unblocks a team's cap, not a
+ *   ULB'd user). It feeds only afterConsumed/afterUtilization/tipProbability.
+ *   Defaults to 0, so every pre-6.8 caller (incl. runPoolRebalancer) is
+ *   byte-identical.
  */
 export function simulatePoolRebalance(
   grants: readonly PoolGrant[],
   ctx: PoolRebalanceContext,
   envelope: FundingEnvelope,
+  extraPoolDrawCredits = 0,
 ): PoolRebalanceSimulation {
   const totalGranted = grants.reduce((sum, g) => sum + Math.max(0, g.fundedCredits), 0);
-  const appliedDraw = grants.reduce(
-    (sum, g) => sum + Math.min(Math.max(0, g.fundedCredits), g.grantCredits),
-    0,
-  );
+  const appliedDraw =
+    grants.reduce((sum, g) => sum + Math.min(Math.max(0, g.fundedCredits), g.grantCredits), 0) +
+    Math.max(0, extraPoolDrawCredits);
 
   const before = ctx.projectedPoolConsumedCredits;
   const after = before + appliedDraw;

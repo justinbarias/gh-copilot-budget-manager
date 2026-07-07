@@ -445,6 +445,34 @@ describe('simulatePoolRebalance (Task 6.4, FR10) -- PRD scenario', () => {
     expect(sim.usersUnblockedCount).toBe(16); // b1 now partially funded -> still blocked
     expect(sim.tipProbability).toBeLessThan(base.tipProbability); // lower draw -> lower tip risk
   });
+
+  // Task 6.8: the cap-relax contribution channel. A lifted included-usage cap
+  // adds its fixed unlock to the projected draw WITHOUT being a grant --
+  // totalGranted / verdict / usersUnblocked must be byte-identical to the
+  // no-extra run (CLAUDE.md §5: the cap is never a grantable lever).
+  it('extraPoolDrawCredits shifts after/utilisation/tip only -- never grants, verdict, or unblocked', () => {
+    const ctx = scenarioContext();
+    const alloc = allocatePoolGrants(ctx);
+    const base = simulatePoolRebalance(alloc.grants, ctx, alloc.envelope);
+    const withCap = simulatePoolRebalance(alloc.grants, ctx, alloc.envelope, 5_000);
+
+    expect(withCap.afterConsumedCredits).toBe(base.afterConsumedCredits + 5_000);
+    expect(withCap.afterUtilization).toBeCloseTo((base.afterConsumedCredits + 5_000) / 1_000_000, 10);
+    expect(withCap.tipProbability).toBeGreaterThan(base.tipProbability); // higher draw -> higher tip risk
+    // NOT a grant: envelope accounting and unblock counts are untouched.
+    expect(withCap.totalGrantedCredits).toBe(base.totalGrantedCredits);
+    expect(withCap.verdict).toBe(base.verdict);
+    expect(withCap.usersUnblockedCount).toBe(base.usersUnblockedCount);
+    expect(withCap.beforeConsumedCredits).toBe(base.beforeConsumedCredits);
+  });
+
+  it('extraPoolDrawCredits defaults to 0 and clamps negatives (a lift can never reduce draw)', () => {
+    const ctx = scenarioContext();
+    const alloc = allocatePoolGrants(ctx);
+    const base = simulatePoolRebalance(alloc.grants, ctx, alloc.envelope);
+    expect(simulatePoolRebalance(alloc.grants, ctx, alloc.envelope, 0)).toEqual(base);
+    expect(simulatePoolRebalance(alloc.grants, ctx, alloc.envelope, -3_000)).toEqual(base);
+  });
 });
 
 describe('normalCdf', () => {

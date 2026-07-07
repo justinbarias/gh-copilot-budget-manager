@@ -1,4 +1,4 @@
-import type { AuditChainVerification, ControlState, EffectiveUlb, ForecastResult, ModelMix, Plan } from '@copilot-budget/core';
+import type { AuditChainVerification, ControlState, EffectiveUlb, EntityRef, ForecastResult, ModelMix, Plan, UsageState } from '@copilot-budget/core';
 import type { ApplyPlanResult, DryRunResult } from '../write/engine.js';
 import type { ForecastScope, StoredForecast } from '../sync/sync-now.js';
 import type { TenantConfig } from '../tenant/types.js';
@@ -41,6 +41,64 @@ export type ActiveScenarioResult =
 export type SetScenarioResult =
   | { refused: true; reason: string }
   | { refused: false; scenario: ScenarioSummary };
+
+/**
+ * Task 6.8 (maintainer-ratified 2026-07-07): the Auto-balance screen's ONE
+ * bridge addition. The renderer cannot faithfully assemble a rebalancer
+ * context itself -- the read surface's shapes are lossy for this purpose
+ * (listHeavyUsers carries only a TOTAL per user, no pool/metered split;
+ * listCostCenters folds pool+metered into one mtdBurnCredits; and the
+ * scenario's projection + pool scalars are packages/data fixture internals
+ * with no bridge surface at all). getRebalanceContext therefore runs the
+ * SAME server-side assembly the engine-proof test (scenarios.engine.test.ts)
+ * proves the literals against -- fetchLiveControls + assembleUsageState +
+ * the active scenario's exported POOL/METERED_SCENARIO_INPUTS -- and hands
+ * the renderer a serializable context. The renderer then runs the PURE core
+ * engine (runPoolRebalancer / computeFundingEnvelope / simulatePoolRebalance)
+ * locally, so grant edits recompute live without an IPC round-trip.
+ *
+ * SIM-ONLY: refuses in live mode (`{ available: false, reason: 'live mode' }`,
+ * the mirror image of runLiveReadSmoke's guard, same as the scenario methods)
+ * -- in live mode the projection must come from a real forecast run, which is
+ * later work. Dates cross the boundary as ISO YYYY-MM-DD strings (the same
+ * convention as UsageSummary.cycleAsOfDate); the renderer rehydrates them
+ * with `new Date(`${s}T00:00:00.000Z`)` before calling core.
+ */
+export interface PoolRebalanceContextDto {
+  controls: ControlState[];
+  /** Cycle-to-date usage, assembled server-side (assembleUsageState's two-report reconciliation). */
+  currentUsage: UsageState;
+  /** Forecast end-of-cycle usage per entity (the scenario's authored projection; mirrors currentUsage when the scenario projects no growth). */
+  projectedUsage: UsageState;
+  poolTotalCredits: number;
+  poolConsumedCredits: number;
+  projectedPoolConsumedCredits: number;
+  projectedPoolConsumedP90Credits: number;
+  /** YYYY-MM-DD -- the sim clock's active as-of date. */
+  asOfDate: string;
+  /** YYYY-MM-DD -- the pool trigger's near-cycle-end reference. */
+  cycleEndDate: string;
+}
+
+/**
+ * Task 6.8 (shape decided now; Task 6.9 consumes it): the metered-mode
+ * counterpart, mirroring core's MeteredRebalanceInput minus nothing -- the
+ * metered engine takes no Dates, so this DTO is already fully serializable.
+ */
+export interface MeteredRebalanceContextDto {
+  controls: ControlState[];
+  currentUsage: UsageState;
+  projectedUsage: UsageState;
+  /** The curated at-risk candidate entities (see METERED_SCENARIO_INPUTS's curation hazard note). */
+  entities: EntityRef[];
+  meteredPhaseActive: boolean;
+  reserveCredits: number;
+}
+
+export type RebalanceContextResult =
+  | { available: false; reason: string }
+  | { available: true; mode: 'pool'; context: PoolRebalanceContextDto }
+  | { available: true; mode: 'metered'; context: MeteredRebalanceContextDto };
 
 /**
  * Task 9.1: the result of classifying the stored PAT against GitHub's
@@ -342,4 +400,15 @@ export interface ApiClient {
    * REFUSES in live mode. Returns the now-active scenario.
    */
   setScenario(id: ScenarioId): Promise<SetScenarioResult>;
+  /**
+   * Task 6.8 (maintainer-ratified 2026-07-07): assemble the Auto-balance
+   * screen's rebalancer context server-side (the same assembly the
+   * engine-proof test pins its literals against) and hand it to the renderer,
+   * which runs the pure core engine locally. SIM-ONLY (refuses in live mode);
+   * also unavailable when the active scenario carries no inputs for the
+   * requested mode (e.g. `mode: 'pool'` on the metered scenario). READ-ONLY:
+   * this method cannot mutate anything, and the dry-run-only Auto-balance
+   * screen (Checkpoint 6) has no other bridge surface.
+   */
+  getRebalanceContext(mode: 'pool' | 'metered'): Promise<RebalanceContextResult>;
 }

@@ -14,7 +14,7 @@ const NAV_ITEMS: Array<{ label: string; kind: 'functional' | 'stub' }> = [
   { label: 'Overview', kind: 'functional' },
   { label: 'Forecast', kind: 'functional' }, // real since Task 5.5 (scope tabs, burn-down forecast layers, metered spend, backtest)
   { label: 'Controls', kind: 'functional' }, // real since Task 4.9 (Spending-limits family + plan/simulate/apply rail)
-  { label: 'Auto-balance', kind: 'stub' },
+  { label: 'Auto-balance', kind: 'functional' }, // real since Task 6.8 (pool mode, dry-run only: trigger card, envelope bar, editable grants, simulate rail)
   { label: 'Cost centers', kind: 'functional' },
   { label: 'Users', kind: 'functional' },
   { label: 'Chargeback', kind: 'stub' },
@@ -40,6 +40,13 @@ async function assertFunctionalScreen(window: Page, label: string): Promise<void
       // Scope tabs are the screen's stable spine, present whether or not a
       // sync has ever run (forecast-screen.spec.ts covers the real content).
       await expect(window.locator('.forecast__tab--active')).toHaveText('Enterprise');
+      break;
+    case 'Auto-balance':
+      // The Pool/Metered mode switch is the screen's stable spine, rendered
+      // unconditionally before the async rebalancer-context fetch resolves
+      // (auto-balance.spec.ts covers the trigger card, envelope bar, grants
+      // table and simulate rail against the engine literals).
+      await expect(window.getByTestId('ab-mode-pool')).toBeVisible();
       break;
     case 'Cost centers':
       await expect(window.getByText(/cost centers · mapped to the DEWR financial structure/)).toBeVisible();

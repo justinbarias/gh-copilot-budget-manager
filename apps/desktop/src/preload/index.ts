@@ -28,6 +28,7 @@ const apiClientBridge: ApiClient = {
   listScenarios: () => ipcRenderer.invoke('apiClient:listScenarios'),
   getActiveScenario: () => ipcRenderer.invoke('apiClient:getActiveScenario'),
   setScenario: (id) => ipcRenderer.invoke('apiClient:setScenario', id),
+  getRebalanceContext: (mode) => ipcRenderer.invoke('apiClient:getRebalanceContext', mode),
 };
 
 // The PAT itself never crosses this bridge: only set/clear/hasPat are exposed,

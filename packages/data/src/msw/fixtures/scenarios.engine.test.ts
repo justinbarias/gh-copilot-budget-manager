@@ -12,7 +12,7 @@ import {
 import { assembleUsageState, fetchLiveControls } from '../../write/live-state.js';
 import { server } from '../server.js';
 import { ENTERPRISE_SLUG, GITHUB_API_BASE } from './constants.js';
-import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS } from './scenarios.js';
+import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS, type PoolScenarioInputs } from './scenarios.js';
 import {
   SCENARIO_SUMMARIES,
   getActiveScenarioSummary,
@@ -46,24 +46,42 @@ async function assemble(id: ScenarioId) {
   return { controls: live.controls, currentUsage, asOf };
 }
 
+// Task 6.8 (maintainer-ratified 2026-07-07): the context is built from the
+// scenario's EXPORTED PoolScenarioInputs (fixtures/scenarios.ts) -- the same
+// source getRebalanceContext (the Auto-balance screen's bridge assembly)
+// reads -- rather than inline copies of the same scalars. Each scenario block
+// still PINS the scalar literals via `expectPoolScalars`, so a fixture edit
+// can't silently move the goalposts. `projectedUsage: null` = no growth ->
+// mirror the assembled currentUsage (see PoolScenarioInputs's doc comment).
 function poolCtx(
   controls: PoolRebalanceContext['controls'],
   currentUsage: UsageState,
-  projectedUsage: UsageState,
-  scalars: { total: number; consumed: number; p50: number; p90: number; cycleEnd: string },
+  inp: PoolScenarioInputs,
   asOf: Date,
 ): PoolRebalanceContext {
   return {
     controls,
     currentUsage,
-    projectedUsage,
-    poolTotalCredits: scalars.total,
-    poolConsumedCredits: scalars.consumed,
-    projectedPoolConsumedCredits: scalars.p50,
-    projectedPoolConsumedP90Credits: scalars.p90,
+    projectedUsage: inp.projectedUsage ?? currentUsage,
+    poolTotalCredits: inp.poolTotalCredits,
+    poolConsumedCredits: inp.poolConsumedCredits,
+    projectedPoolConsumedCredits: inp.projectedPoolConsumedCredits,
+    projectedPoolConsumedP90Credits: inp.projectedPoolConsumedP90Credits,
     asOfDate: asOf,
-    cycleEndDate: new Date(`${scalars.cycleEnd}T00:00:00.000Z`),
+    cycleEndDate: new Date(`${inp.cycleEndDate}T00:00:00.000Z`),
   };
+}
+
+/** Pin a scenario's fixture scalars to their ratified literals (drift guard). */
+function expectPoolScalars(
+  inp: PoolScenarioInputs,
+  expected: { total: number; consumed: number; p50: number; p90: number; cycleEnd: string },
+): void {
+  expect(inp.poolTotalCredits).toBe(expected.total);
+  expect(inp.poolConsumedCredits).toBe(expected.consumed);
+  expect(inp.projectedPoolConsumedCredits).toBe(expected.p50);
+  expect(inp.projectedPoolConsumedP90Credits).toBe(expected.p90);
+  expect(inp.cycleEndDate).toBe(expected.cycleEnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,15 +101,18 @@ describe('HEALTHY scenario', () => {
   it('assembles the byte-identical DEWR rollup (81 seats, 189,800 not needed here) and does NOT fire', async () => {
     const { controls, currentUsage, asOf } = await assemble('healthy');
     expect(currentUsage.users.length).toBe(81);
-    // No projected growth -> effective basis == current. Scalars: on-pace
-    // (annualised ~437,800 of 567,000 -> 77.2% util, underutilised) but day
-    // 13/30 (16 days out) is OUTSIDE the 7-day near-cycle-end window.
-    const plan = runPoolRebalancer(
-      poolCtx(controls, currentUsage, currentUsage, { total: 567_000, consumed: 189_800, p50: 437_800, p90: 460_000, cycleEnd: '2026-06-30' }, asOf),
-    );
+    // No projected growth (projectedUsage: null -> mirror current). Scalars:
+    // on-pace (annualised ~437,800 of 567,000 -> 77.2% util, underutilised)
+    // but day 13/30 (16 days out) is OUTSIDE the 7-day near-cycle-end window.
+    const inp = POOL_SCENARIO_INPUTS['healthy']!;
+    expectPoolScalars(inp, { total: 567_000, consumed: 189_800, p50: 437_800, p90: 460_000, cycleEnd: '2026-06-30' });
+    expect(inp.projectedUsage).toBeNull(); // no growth -- the promoted fixture's contract
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
     expect(plan.trigger.fired).toBe(false);
-    expect(plan.trigger.conditions[0].met).toBe(false); // near-cycle-end: 16 days out
-    expect(plan.trigger.conditions[1].met).toBe(true); // underutilised
+    // near-cycle-end UNMET (16 days out); underutilised MET; at-risk MET (the
+    // DEWR world's standing cap-bound Payments team + ext-dmorrow's $0-ULB
+    // block) -- truthful chips, pinned in full by rebalance-context.test.ts.
+    expect(plan.trigger.conditions.map((c) => c.met)).toEqual([false, true, true]);
     expect(plan.trigger.daysRemaining).toBe(16);
     expect(getActiveScenarioSummary().atRiskCount).toBe(0); // badge: trigger not fired
   });
@@ -114,9 +135,8 @@ describe('AT-RISK scenario', () => {
   it('fires the pool trigger with truthful chips', async () => {
     const { controls, currentUsage, asOf } = await assemble('at-risk');
     const inp = POOL_SCENARIO_INPUTS['at-risk']!;
-    const plan = runPoolRebalancer(
-      poolCtx(controls, currentUsage, inp.projectedUsage, { total: 567_000, consumed: 511_150, p50: 520_000, p90: 545_000, cycleEnd: '2026-06-30' }, asOf),
-    );
+    expectPoolScalars(inp, { total: 567_000, consumed: 511_150, p50: 520_000, p90: 545_000, cycleEnd: '2026-06-30' });
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
     expect(plan.trigger.fired).toBe(true);
     expect(plan.trigger.conditions.map((c) => c.met)).toEqual([true, true, true]);
     expect(plan.trigger.daysRemaining).toBe(3);
@@ -129,9 +149,7 @@ describe('AT-RISK scenario', () => {
   it('allocates 7 funded ULB grants (12,800 credits) + 9 cap-relax rows; envelope 28,350/7,500/12,800/7,200', async () => {
     const { controls, currentUsage, asOf } = await assemble('at-risk');
     const inp = POOL_SCENARIO_INPUTS['at-risk']!;
-    const plan = runPoolRebalancer(
-      poolCtx(controls, currentUsage, inp.projectedUsage, { total: 567_000, consumed: 511_150, p50: 520_000, p90: 545_000, cycleEnd: '2026-06-30' }, asOf),
-    );
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
     const a = plan.allocation;
     expect(a.grants.length).toBe(7);
     expect(a.fundedCount).toBe(7);
@@ -149,9 +167,7 @@ describe('AT-RISK scenario', () => {
   it('simulates 520,000 -> 532,800 (7 unblocked), verdict ok', async () => {
     const { controls, currentUsage, asOf } = await assemble('at-risk');
     const inp = POOL_SCENARIO_INPUTS['at-risk']!;
-    const plan = runPoolRebalancer(
-      poolCtx(controls, currentUsage, inp.projectedUsage, { total: 567_000, consumed: 511_150, p50: 520_000, p90: 545_000, cycleEnd: '2026-06-30' }, asOf),
-    );
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
     const s = plan.simulation;
     expect(s.beforeConsumedCredits).toBe(520_000);
     expect(s.afterConsumedCredits).toBe(532_800);
@@ -170,9 +186,8 @@ describe('SURPLUS scenario', () => {
   it('does NOT fire (0 at-risk) despite near-cycle-end + underutilisation; forfeit ~92.9%', async () => {
     const { controls, currentUsage, asOf } = await assemble('surplus');
     const inp = POOL_SCENARIO_INPUTS['surplus']!;
-    const plan = runPoolRebalancer(
-      poolCtx(controls, currentUsage, inp.projectedUsage, { total: 567_000, consumed: 14_000, p50: 40_000, p90: 60_000, cycleEnd: '2026-06-30' }, asOf),
-    );
+    expectPoolScalars(inp, { total: 567_000, consumed: 14_000, p50: 40_000, p90: 60_000, cycleEnd: '2026-06-30' });
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
     expect(plan.trigger.conditions.map((c) => c.met)).toEqual([true, true, false]);
     expect(plan.trigger.fired).toBe(false);
     expect(plan.trigger.atRiskCount).toBe(0);
