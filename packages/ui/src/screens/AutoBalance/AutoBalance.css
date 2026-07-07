@@ -406,6 +406,28 @@
   border: 1px solid rgba(141, 214, 255, 0.33);
 }
 
+/* Task 6.9 -- metered mode's cost-center-budget-raise lever (same blue family as ULB/cap; kept as its own class for semantic distinction, not a visual one). */
+.ab-lever--cc {
+  color: var(--blue);
+  border: 1px solid rgba(141, 214, 255, 0.33);
+}
+
+/* Task 6.9 -- the flagged-enterprise-raise advisory lever + row (amber, distinct from the blue grantable levers -- CLAUDE.md §5/FR13: policy+approval-only, never an auto-grant). */
+.ab-lever--flagged {
+  color: var(--amber);
+  border: 1px solid rgba(227, 179, 65, 0.4);
+}
+
+.ab-row--flagged {
+  background: rgba(227, 179, 65, 0.04);
+}
+
+.ab-row__flagged-note {
+  font-size: 11px;
+  color: var(--amber);
+  line-height: 1.4;
+}
+
 .ab-row__sub {
   font-size: 10px;
   color: var(--text-neutral);
@@ -610,6 +632,16 @@
 
 .ab-sim__value--bad {
   color: var(--red);
+}
+
+/* Task 6.9 -- metered mode's hero card (the Bill delta -- "the number FinOps signs off on", design §4 Mode B). */
+.ab-sim__card--hero {
+  border-color: var(--blue);
+  background: rgba(141, 214, 255, 0.05);
+}
+
+.ab-sim__value--hero {
+  font-size: 30px;
 }
 
 .ab-note {

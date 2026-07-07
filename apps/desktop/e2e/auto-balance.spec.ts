@@ -219,13 +219,215 @@ test('HEALTHY (default): not-fired trigger with truthful chips, honest empty tab
     await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('0');
     await expect(window.getByTestId('ab-apply')).toBeDisabled();
 
-    // Metered pane is a clearly-labelled Task 6.9 placeholder.
+    // Metered pane: HEALTHY carries no metered-rebalancer inputs (a pool-phase
+    // scenario) -- the bridge honestly refuses ({ available: false }, Task 6.9's
+    // getRebalanceContext('metered') branch), rendered as the same unavailable
+    // card pattern the pool pane already uses for its own refusal shape.
     await window.getByTestId('ab-mode-metered').click();
-    await expect(window.getByText('Arrives with Task 6.9', { exact: false })).toBeVisible();
+    await expect(window.getByTestId('ab-unavailable')).toContainText(
+      'the active scenario ("healthy") carries no metered-rebalancer inputs',
+    );
     await window.getByTestId('ab-mode-pool').click();
     await expect(window.getByTestId('ab-trigger-sentence')).toBeVisible();
 
     expect(pageErrors).toEqual([]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+// ============================================================================
+// Task 6.9 -- METERED mode. Every pinned number is an ENGINE literal, the same
+// scenarios.engine.test.ts + rebalance-context.test.ts source the pool test
+// above draws from: envelope base/reserve/held/allocatable/granted/slack
+// 500,000 / 0 / 0 / 500,000 / 6,000 / 494,000 credits ($5,000 / $0 / $0 /
+// $5,000 / $60 / $4,940); 2 grants (Data & Evaluation Platform cc-budget
+// raise +5,000 credits/$50, sam-kelly individual override +1,000 credits/$10,
+// both fully funded); bill delta $60, projected total metered $3,060,
+// remaining headroom $4,940, 2 unblocked.
+// ============================================================================
+
+const DATA_EVAL_KEY = 'cost_center:Data & Evaluation Platform';
+const SAM_KEY = 'user:sam-kelly';
+
+test('METERED: full ①→④ flow renders the engine literals, recomputes live on edits, and exposes no apply path', async () => {
+  const { app, window, cleanup } = await launch();
+  const pageErrors: Error[] = [];
+  window.on('pageerror', (error) => pageErrors.push(error));
+  const mutationRequests: string[] = [];
+  window.on('request', (req: Request) => {
+    if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(req.method())) mutationRequests.push(`${req.method()} ${req.url()}`);
+  });
+
+  try {
+    await forceScenario(window, 'metered');
+    await openAutoBalance(window);
+
+    // Mode switch defaults to the scenario's phase (metered).
+    await expect(window.getByTestId('ab-mode-metered')).toHaveAttribute('aria-selected', 'true');
+
+    // -- ① trigger: fired, engine sentence + truthful chips.
+    await expect(window.getByTestId('ab-trigger-sentence')).toHaveText(
+      'Metered phase · enterprise budget $8,000, $5,000 unused · 2 entities at or above a hard-stop metered cap.',
+    );
+    const chips = window.locator('.ab-chip');
+    await expect(chips).toHaveCount(3);
+    await expect(chips.nth(0)).toHaveAttribute('data-met', 'true');
+    await expect(chips.nth(1)).toHaveAttribute('data-met', 'true');
+    await expect(chips.nth(1)).toContainText('2 entities ≥ 95% of a hard-stop metered cap.');
+    await expect(chips.nth(2)).toHaveAttribute('data-met', 'true');
+    // Engine's own detail template is UNFORMATTED (usd() just divides by 100, no $/comma -- meteredRebalancer.ts's condition builder).
+    await expect(chips.nth(2)).toContainText('Enterprise budget has 5000 allocatable above reserve.');
+
+    // -- ② envelope: $5,000 allocatable; reserve $0, held absent (0), grants $60, slack $4,940.
+    await expect(window.getByTestId('ab-env-allocatable')).toHaveText('$5,000 allocatable');
+    await expect(window.getByTestId('ab-env-reserve')).toHaveText('$0');
+    await expect(window.locator('[data-testid="ab-env-held"]')).toHaveCount(0); // held segment is 0 -- not rendered
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('$60');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('$4,940');
+
+    // -- ③ table: 2 editable grant rows, ranked Data & Evaluation (util 120%) then sam-kelly (util 118.5%).
+    await expect(window.locator('.ab-row')).toHaveCount(2);
+    await expect(window.locator('.ab-row__input')).toHaveCount(2);
+    await expect(window.locator('.ab-row').first()).toHaveAttribute('data-testid', `ab-row-${DATA_EVAL_KEY}`);
+    await expect(window.getByTestId(`ab-row-${DATA_EVAL_KEY}`)).toContainText('CC: Data & Evaluation Platform');
+    await expect(window.getByTestId(`ab-row-${DATA_EVAL_KEY}`)).toContainText('Cost-center budget');
+    await expect(window.getByTestId(`ab-row-${DATA_EVAL_KEY}`)).toContainText('120.0%');
+    await expect(window.getByTestId(`ab-row-${DATA_EVAL_KEY}`)).toContainText('~$50 remaining demand');
+    await expect(window.getByTestId(`ab-delta-${DATA_EVAL_KEY}`)).toHaveValue('50');
+    await expect(window.getByTestId(`ab-status-${DATA_EVAL_KEY}`)).toContainText('funded');
+
+    await expect(window.getByTestId(`ab-row-${SAM_KEY}`)).toContainText('user: sam-kelly');
+    await expect(window.getByTestId(`ab-row-${SAM_KEY}`)).toContainText('Individual ULB');
+    await expect(window.getByTestId(`ab-row-${SAM_KEY}`)).toContainText('118.5%');
+    await expect(window.getByTestId(`ab-row-${SAM_KEY}`)).toContainText('~$10 remaining demand');
+    await expect(window.getByTestId(`ab-delta-${SAM_KEY}`)).toHaveValue('10');
+    await expect(window.getByTestId(`ab-status-${SAM_KEY}`)).toContainText('funded');
+
+    await expect(window.getByTestId('ab-footer-funded')).toContainText('2 of 2 funded');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $60 · unallocated $4,940');
+
+    // No flagged-enterprise-raise row in this scenario (both entities resolve
+    // to a grantable ULB/cc-budget binding, per the engine-proof test).
+    await expect(window.locator('.ab-row--flagged')).toHaveCount(0);
+
+    // -- ④ simulate: bill delta hero + engine literals.
+    await expect(window.getByTestId('ab-sim-bill-delta')).toHaveText('+$60');
+    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$3,060');
+    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$4,940');
+    await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('2');
+    await expect(window.getByTestId('ab-assurance')).toContainText('Stays within enterprise headroom');
+
+    // -- LIVE EDIT (pinned before/after pair): Data & Eval $50 -> $20 (2,000
+    //    credits) -- new limit 27,000 < demand 30,000 -> STILL blocked, so it
+    //    drops out of "unblocked" and its own bill-delta contribution shrinks
+    //    to 27,000-25,000=2,000 credits ($20). sam-kelly untouched ($10, $10
+    //    bill, stays unblocked). Envelope: grants $60 -> $30, slack $4,940 ->
+    //    $4,970. Rail: bill delta +$60 -> +$30, projected $3,060 -> $3,030,
+    //    headroom $4,940 -> $4,970, unblocked 2 -> 1. Footer: 2 of 2 -> 1 of 2,
+    //    allocated $30 · unallocated $4,970.
+    await window.getByTestId(`ab-delta-${DATA_EVAL_KEY}`).fill('20');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('$30');
+    await expect(window.getByTestId('ab-env-slack')).toHaveText('$4,970');
+    await expect(window.getByTestId('ab-sim-bill-delta')).toHaveText('+$30');
+    await expect(window.getByTestId('ab-sim-projected')).toHaveText('$3,030');
+    await expect(window.getByTestId('ab-sim-headroom')).toHaveText('$4,970');
+    await expect(window.getByTestId('ab-sim-unblocked')).toHaveText('1');
+    await expect(window.getByTestId(`ab-status-${DATA_EVAL_KEY}`)).toContainText('partial');
+    await expect(window.getByTestId('ab-footer-funded')).toContainText('1 of 2 funded');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('allocated $30 · unallocated $4,970');
+
+    // -- OVER-ALLOCATION: sam-kelly -> $6,000 (600,000 credits). Combined with
+    //    the still-edited Data & Eval $20 (2,000 credits), granted-from-envelope
+    //    = 602,000 credits > 500,000 allocatable -> slack -102,000 credits
+    //    (-$1,020). Red warning; the (already gated) apply stays disabled.
+    await window.getByTestId(`ab-delta-${SAM_KEY}`).fill('6000');
+    await expect(window.getByTestId('ab-assurance')).toContainText('Allocation exceeds enterprise headroom');
+    await expect(window.getByTestId('ab-footer-alloc')).toContainText('over the envelope by $1,020');
+    await expect(window.getByTestId('ab-apply')).toBeDisabled();
+
+    // -- RESET restores the engine's suggested allocation.
+    await window.getByRole('button', { name: 'reset to suggested' }).click();
+    await expect(window.getByTestId(`ab-delta-${DATA_EVAL_KEY}`)).toHaveValue('50');
+    await expect(window.getByTestId(`ab-delta-${SAM_KEY}`)).toHaveValue('10');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('$60');
+    await expect(window.getByTestId('ab-assurance')).toContainText('Stays within enterprise headroom');
+
+    // -- ⑤ gated apply: permanently disabled dry-run copy; NO mutation issued.
+    const apply = window.getByTestId('ab-apply');
+    await expect(apply).toHaveText('Dry-run only — auto-apply arrives with guardrails');
+    await expect(apply).toBeDisabled();
+    expect(mutationRequests).toEqual([]); // no POST/PATCH/DELETE left the renderer
+    const audit = await window.evaluate(() =>
+      (window as unknown as { api: { getAuditChain(): Promise<unknown[]> } }).api.getAuditChain(),
+    );
+    expect(audit).toEqual([]);
+
+    // Pool pane: METERED carries no pool-rebalancer inputs -- the bridge
+    // honestly refuses, same unavailable-card treatment as the reverse case.
+    await window.getByTestId('ab-mode-pool').click();
+    await expect(window.getByTestId('ab-unavailable')).toContainText(
+      'the active scenario ("metered") carries no pool-rebalancer inputs',
+    );
+
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+// ============================================================================
+// Task 6.9 -- per-mode edit retention (design state note: `abAlloc` keyed
+// `mode:entityId`). No single scenario fires BOTH rebalancers with editable
+// rows at once (a fixture-set property, not a UI one -- METERED_SCENARIO_INPUTS
+// only covers the 'metered' scenario id, POOL_SCENARIO_INPUTS only covers the
+// pool-phase ids), so this is proven as two round-trips -- an edit in the
+// AVAILABLE mode must survive a detour through the OTHER mode's (unavailable,
+// for this scenario) pane and back, which is exactly what "switching modes
+// doesn't unmount-and-lose state" requires: the abAlloc map lives above both
+// mode subtrees regardless of which pane is currently mounted.
+// ============================================================================
+
+test('mode-switch retention: a pool-mode edit survives a detour through the metered pane and back', async () => {
+  const { app, window, cleanup } = await launch();
+
+  try {
+    await forceScenario(window, 'at-risk');
+    await openAutoBalance(window);
+
+    await window.getByTestId('ab-delta-ali-rezaei').fill('1000');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('11,400');
+
+    await window.getByTestId('ab-mode-metered').click();
+    await expect(window.getByTestId('ab-unavailable')).toBeVisible(); // at-risk carries no metered inputs
+
+    await window.getByTestId('ab-mode-pool').click();
+    await expect(window.getByTestId('ab-delta-ali-rezaei')).toHaveValue('1000'); // edit preserved
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('11,400');
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('mode-switch retention: a metered-mode edit survives a detour through the pool pane and back', async () => {
+  const { app, window, cleanup } = await launch();
+
+  try {
+    await forceScenario(window, 'metered');
+    await openAutoBalance(window);
+
+    await window.getByTestId(`ab-delta-${SAM_KEY}`).fill('20');
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('$70'); // 5,000 + 2,000 credits
+
+    await window.getByTestId('ab-mode-pool').click();
+    await expect(window.getByTestId('ab-unavailable')).toBeVisible(); // metered carries no pool inputs
+
+    await window.getByTestId('ab-mode-metered').click();
+    await expect(window.getByTestId(`ab-delta-${SAM_KEY}`)).toHaveValue('20'); // edit preserved
+    await expect(window.getByTestId('ab-env-grants')).toHaveText('$70');
   } finally {
     await app.close();
     cleanup();

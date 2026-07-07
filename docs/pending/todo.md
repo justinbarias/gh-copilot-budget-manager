@@ -54,7 +54,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 6.6 `core`: metered simulation — bill delta, projected total, remaining headroom [S]
 - [x] 6.7 Scenario fixtures (Healthy / At risk / Surplus / metered) + sim-mode-only scenario selector + nav badges [M]
 - [x] 6.8 Auto-balance screen, pool mode — trigger card, envelope bar, editable grants table, live recompute, simulate rail (apply gated) [L]
-- [ ] 6.9 Auto-balance screen, metered mode — bill-delta hero rail, per-mode allocation state [M]
+- [x] 6.9 Auto-balance screen, metered mode — bill-delta hero rail, per-mode allocation state [M]
 
 ### Checkpoint 6 — dry-run complete
 - [ ] Both rebalancers explainable on scenario fixtures; every on-screen number traces to unit-tested core; no apply path exists; gate green

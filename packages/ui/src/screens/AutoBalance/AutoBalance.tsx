@@ -1,43 +1,78 @@
-import { useEffect, useMemo, useState } from 'react';
-import { runPoolRebalancer, type PoolRebalanceContext, type PoolRebalancePlan } from '@copilot-budget/core';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import {
+  evaluateMeteredRebalance,
+  runPoolRebalancer,
+  type MeteredRebalanceInput,
+  type MeteredRebalancePlan,
+  type PoolRebalanceContext,
+  type PoolRebalancePlan,
+} from '@copilot-budget/core';
 import type { RebalanceContextResult } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
-import { ComingSoon } from '../_stubs/ComingSoon';
 import { TriggerCard } from './TriggerCard';
 import { EnvelopeBar } from './components/EnvelopeBar';
 import { GrantsTable } from './GrantsTable';
 import { SimulateRail } from './SimulateRail';
+import { MeteredTriggerCard } from './MeteredTriggerCard';
+import { MeteredGrantsTable } from './MeteredGrantsTable';
+import { MeteredSimulateRail } from './MeteredSimulateRail';
 import { derivePool, fmt, hydratePoolContext, type PoolEdits } from './poolViewModel';
+import { deriveMetered, enterpriseBudgetTotalUsd, fmtUsd, hydrateMeteredContext, type MeteredEdits } from './meteredViewModel';
 import './AutoBalance.css';
 
 // ============================================================================
-// Task 6.8 -- the Auto-balance screen, POOL mode, DRY-RUN ONLY (design §4).
+// Task 6.8/6.9 -- the Auto-balance screen, both rebalancer modes, DRY-RUN
+// ONLY (design §4).
 //
-// Data path: ONE bridge read (getRebalanceContext -- the same server-side
-// assembly the engine-proof tests pin their literals against), then the PURE
-// core engine runs in the renderer: runPoolRebalancer for the baseline plan,
-// and derivePool (simulatePoolRebalance + computeFundingEnvelope) re-runs on
-// every grant edit / cap toggle, so the envelope bar, footer, and simulate
-// rail recompute live with no IPC.
+// Data path (both modes): ONE bridge read each (getRebalanceContext('pool' /
+// 'metered') -- the same server-side assembly the engine-proof tests pin
+// their literals against), then the PURE core engine runs in the renderer:
+// runPoolRebalancer / evaluateMeteredRebalance for the baseline plan, and
+// derivePool / deriveMetered (which re-invoke simulatePoolRebalance+
+// computeFundingEnvelope / simulateMeteredGrants) re-run on every grant edit
+// / cap toggle, so the envelope bar, footer, and simulate rail recompute live
+// with no IPC.
 //
-// Checkpoint 6 invariant: NO mutation path exists from this screen. Neither
-// this module nor anything under screens/AutoBalance/ imports dryRunPlan /
-// applyPlan (or any other writing bridge method); the ⑤ apply button renders
-// permanently disabled in its gated pre-apply state.
+// PER-MODE EDIT RETENTION (design state note, Task 6.9's acceptance
+// criterion): `abAlloc` is a SINGLE map lifted to THIS component (not owned
+// by either mode's loaded subtree), keyed `${mode}:${entityId}` -- so
+// switching Pool -> Metered -> Pool does not unmount-and-lose either mode's
+// edits (each mode's subtree only ever reads/writes its own `${mode}:`-
+// prefixed slice). `liftedCaps` stays a SEPARATE boolean map, pool-only: the
+// included-usage cap structurally carries no settable delta (CLAUDE.md §5),
+// so it is never folded into the numeric abAlloc map the way the raw design
+// prototype's HTML mock does (see poolViewModel.ts's PoolEdits doc comment).
+//
+// Checkpoint 6 invariant: NO mutation path exists from this screen, in
+// EITHER mode. Neither this module nor anything under screens/AutoBalance/
+// imports dryRunPlan / applyPlan (or any other writing bridge method); the
+// ⑤ apply button renders permanently disabled in its gated pre-apply state.
 // ============================================================================
 
 type AbMode = 'pool' | 'metered';
 
-/** Parse a proposed-Δ input: digits only, empty -> 0 (matches the design's numeric field behaviour). */
+/** Parse a proposed-Δ CREDITS input: digits only, empty -> 0 (matches the design's numeric field behaviour). Pool mode's rows are credit-denominated. */
 function parseDelta(raw: string): number {
   const digits = raw.replace(/[^0-9]/g, '');
   return digits === '' ? 0 : Math.min(Number.parseInt(digits, 10), 999_999_999);
+}
+
+/** Parse a proposed-Δ DOLLAR input (metered mode is $-denominated, design §4 Mode B): digits only, whole dollars, converted to credits ($1 = 100 credits, CLAUDE.md §5). */
+function parseDeltaUsd(raw: string): number {
+  const digits = raw.replace(/[^0-9]/g, '');
+  const dollars = digits === '' ? 0 : Math.min(Number.parseInt(digits, 10), 999_999_999);
+  return dollars * 100;
 }
 
 export function AutoBalance() {
   const api = useApiClient();
   const [mode, setMode] = useState<AbMode | null>(null); // null until the phase default resolves
   const [poolResult, setPoolResult] = useState<RebalanceContextResult | null>(null);
+  const [meteredResult, setMeteredResult] = useState<RebalanceContextResult | null>(null);
+
+  // Per-mode edit retention (see module doc comment above).
+  const [abAlloc, setAbAlloc] = useState<Record<string, string>>({});
+  const [liftedCaps, setLiftedCaps] = useState<Record<string, boolean>>({});
 
   // Default the mode switch to the current phase (design §4): the active
   // scenario carries which rebalancer it exercises; outside simulation (or
@@ -55,8 +90,10 @@ export function AutoBalance() {
 
   useEffect(() => {
     let cancelled = false;
-    api.getRebalanceContext('pool').then((res) => {
-      if (!cancelled) setPoolResult(res);
+    Promise.all([api.getRebalanceContext('pool'), api.getRebalanceContext('metered')]).then(([pool, metered]) => {
+      if (cancelled) return;
+      setPoolResult(pool);
+      setMeteredResult(metered);
     });
     return () => {
       cancelled = true;
@@ -97,12 +134,15 @@ export function AutoBalance() {
       </div>
 
       {mode === 'metered' ? (
-        <ComingSoon
-          screenName="Metered redistributor"
-          message="Arrives with Task 6.9 — the same ①→④ dry-run flow with a $-denominated envelope, binding-budget grant rows, and the bill-delta hero."
-        />
+        <MeteredMode result={meteredResult} abAlloc={abAlloc} setAbAlloc={setAbAlloc} />
       ) : (
-        <PoolMode result={poolResult} />
+        <PoolMode
+          result={poolResult}
+          abAlloc={abAlloc}
+          setAbAlloc={setAbAlloc}
+          liftedCaps={liftedCaps}
+          setLiftedCaps={setLiftedCaps}
+        />
       )}
     </section>
   );
@@ -112,7 +152,15 @@ export function AutoBalance() {
 // Pool mode -- ①→④ from real engine outputs.
 // ---------------------------------------------------------------------------
 
-function PoolMode({ result }: { result: RebalanceContextResult | null }) {
+interface PoolModeProps {
+  result: RebalanceContextResult | null;
+  abAlloc: Record<string, string>;
+  setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
+  liftedCaps: Record<string, boolean>;
+  setLiftedCaps: Dispatch<SetStateAction<Record<string, boolean>>>;
+}
+
+function PoolMode({ result, abAlloc, setAbAlloc, liftedCaps, setLiftedCaps }: PoolModeProps) {
   if (result === null) {
     return <div className="ab-loading">Loading rebalancer context…</div>;
   }
@@ -131,17 +179,44 @@ function PoolMode({ result }: { result: RebalanceContextResult | null }) {
     // Unreachable by construction (we only ever request 'pool' here).
     return null;
   }
-  return <PoolModeLoaded ctx={hydratePoolContext(result.context)} />;
+  return (
+    <PoolModeLoaded
+      ctx={hydratePoolContext(result.context)}
+      abAlloc={abAlloc}
+      setAbAlloc={setAbAlloc}
+      liftedCaps={liftedCaps}
+      setLiftedCaps={setLiftedCaps}
+    />
+  );
 }
 
-function PoolModeLoaded({ ctx }: { ctx: PoolRebalanceContext }) {
+function PoolModeLoaded({
+  ctx,
+  abAlloc,
+  setAbAlloc,
+  liftedCaps,
+  setLiftedCaps,
+}: {
+  ctx: PoolRebalanceContext;
+  abAlloc: Record<string, string>;
+  setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
+  liftedCaps: Record<string, boolean>;
+  setLiftedCaps: Dispatch<SetStateAction<Record<string, boolean>>>;
+}) {
   // The whole dry-run, resolved once per context (the baseline "suggested" plan).
   const plan: PoolRebalancePlan = useMemo(() => runPoolRebalancer(ctx), [ctx]);
 
-  // Staged edits (design's abAlloc, pool slice): raw input text per grant row
-  // (so typing stays natural) + lifted-cap booleans. Reset restores suggested.
-  const [grantValues, setGrantValues] = useState<Record<string, string>>({});
-  const [liftedCaps, setLiftedCaps] = useState<Record<string, boolean>>({});
+  // This mode's slice of the shared abAlloc map (keyed `pool:${userLogin}`),
+  // unprefixed for GrantsTable's own userLogin-keyed lookup.
+  const grantValues = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(abAlloc)
+          .filter(([k]) => k.startsWith('pool:'))
+          .map(([k, v]) => [k.slice('pool:'.length), v]),
+      ),
+    [abAlloc],
+  );
 
   const edits: PoolEdits = useMemo(
     () => ({
@@ -174,7 +249,17 @@ function PoolModeLoaded({ ctx }: { ctx: PoolRebalanceContext }) {
               <span className="mono">remaining pool − reserve − Σ projected(on-track)</span> — reserve{' '}
               {fmt(derived.envelope.reserveCredits)} carved out explicitly.
             </div>
-            <EnvelopeBar envelope={derived.envelope} />
+            <EnvelopeBar
+              total={derived.envelope.remainingPoolCredits}
+              reserve={derived.envelope.segments.reserve}
+              held={derived.envelope.segments.held}
+              grants={derived.envelope.segments.grants}
+              slack={derived.envelope.segments.slack}
+              formatValue={fmt}
+              totalLabel="Remaining pool"
+              captionLeft={`remaining shared pool · unconsumed ${fmt(derived.envelope.remainingPoolCredits)}`}
+              captionRight="0 → tip into metered"
+            />
           </div>
 
           {fired ? (
@@ -183,10 +268,12 @@ function PoolModeLoaded({ ctx }: { ctx: PoolRebalanceContext }) {
               capRelax={plan.allocation.capRelax}
               grantValues={grantValues}
               liftedCaps={liftedCaps}
-              onEditGrant={(login, raw) => setGrantValues((v) => ({ ...v, [login]: raw.replace(/[^0-9]/g, '') }))}
+              onEditGrant={(login, raw) =>
+                setAbAlloc((v) => ({ ...v, [`pool:${login}`]: raw.replace(/[^0-9]/g, '') }))
+              }
               onToggleCap={(key) => setLiftedCaps((c) => ({ ...c, [key]: !c[key] }))}
               onReset={() => {
-                setGrantValues({});
+                setAbAlloc((v) => Object.fromEntries(Object.entries(v).filter(([k]) => !k.startsWith('pool:'))));
                 setLiftedCaps({});
               }}
               fundedCount={derived.fundedCount}
@@ -206,6 +293,131 @@ function PoolModeLoaded({ ctx }: { ctx: PoolRebalanceContext }) {
         </div>
 
         <SimulateRail sim={derived.sim} />
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Metered mode -- ①→④ from real engine outputs (Task 6.9).
+// ---------------------------------------------------------------------------
+
+interface MeteredModeProps {
+  result: RebalanceContextResult | null;
+  abAlloc: Record<string, string>;
+  setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
+}
+
+function MeteredMode({ result, abAlloc, setAbAlloc }: MeteredModeProps) {
+  if (result === null) {
+    return <div className="ab-loading">Loading rebalancer context…</div>;
+  }
+  if (!result.available) {
+    return (
+      <div className="ab-card ab-unavailable" data-testid="ab-unavailable">
+        <div className="ab-eyebrow">Metered redistributor</div>
+        <p>
+          The metered dry-run isn't available here: {result.reason}. This scenario has no metered-phase story to
+          redistribute — switch to a metered scenario (or the Pool rebalancer mode) to see a proposal.
+        </p>
+      </div>
+    );
+  }
+  if (result.mode !== 'metered') {
+    // Unreachable by construction (we only ever request 'metered' here).
+    return null;
+  }
+  return <MeteredModeLoaded ctx={hydrateMeteredContext(result.context)} abAlloc={abAlloc} setAbAlloc={setAbAlloc} />;
+}
+
+function MeteredModeLoaded({
+  ctx,
+  abAlloc,
+  setAbAlloc,
+}: {
+  ctx: MeteredRebalanceInput;
+  abAlloc: Record<string, string>;
+  setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
+}) {
+  const plan: MeteredRebalancePlan = useMemo(() => evaluateMeteredRebalance(ctx), [ctx]);
+
+  // This mode's slice of the shared abAlloc map (keyed `metered:${entityKey}`).
+  const grantValues = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(abAlloc)
+          .filter(([k]) => k.startsWith('metered:'))
+          .map(([k, v]) => [k.slice('metered:'.length), v]),
+      ),
+    [abAlloc],
+  );
+
+  const edits: MeteredEdits = useMemo(
+    () => ({ grantEdits: Object.fromEntries(Object.entries(grantValues).map(([key, raw]) => [key, parseDeltaUsd(raw)])) }),
+    [grantValues],
+  );
+
+  const derived = useMemo(() => deriveMetered(plan, ctx, edits), [plan, ctx, edits]);
+  const enterpriseTotalUsd = useMemo(() => enterpriseBudgetTotalUsd(ctx), [ctx]);
+
+  const fired = plan.trigger.fired;
+
+  return (
+    <>
+      <MeteredTriggerCard trigger={plan.trigger} enterpriseTotalUsd={enterpriseTotalUsd} baseRemainingUsd={plan.envelope.baseRemainingUsd} />
+
+      <div className="ab-columns">
+        <div className="ab-columns__main">
+          <div className="ab-card ab-envcard">
+            <div className="ab-envcard__head">
+              <div className="ab-eyebrow">② Funding envelope</div>
+              <div className="ab-envcard__headline mono" data-testid="ab-env-allocatable">
+                {fmtUsd(derived.envelope.allocatableUsd)} allocatable
+              </div>
+            </div>
+            <div className="ab-envcard__formula">
+              <span className="mono">remaining enterprise budget − reserve − Σ projected metered(on-track)</span> — reserve{' '}
+              {fmtUsd(derived.envelope.reserveUsd)} carved out explicitly.
+            </div>
+            <EnvelopeBar
+              total={derived.envelope.baseRemainingUsd}
+              reserve={derived.envelope.reserveUsd}
+              held={derived.envelope.heldUsd}
+              grants={derived.envelope.grantedUsd}
+              slack={derived.envelope.slackUsd}
+              formatValue={fmtUsd}
+              totalLabel="Remaining enterprise budget"
+              captionLeft={`remaining enterprise budget · unused ${fmtUsd(derived.envelope.baseRemainingUsd)}`}
+              captionRight="0 → over enterprise budget"
+            />
+          </div>
+
+          {fired ? (
+            <MeteredGrantsTable
+              grants={derived.grants}
+              flagged={plan.flaggedEnterpriseRaises}
+              grantValues={grantValues}
+              onEditGrant={(key, raw) =>
+                setAbAlloc((v) => ({ ...v, [`metered:${key}`]: raw.replace(/[^0-9]/g, '') }))
+              }
+              onReset={() => setAbAlloc((v) => Object.fromEntries(Object.entries(v).filter(([k]) => !k.startsWith('metered:'))))}
+              fundedCount={derived.fundedCount}
+              allocatedUsd={derived.envelope.grantedUsd}
+              unallocatedUsd={derived.envelope.slackUsd}
+              overAllocated={derived.overAllocated}
+            />
+          ) : (
+            <div className="ab-card ab-empty" data-testid="ab-empty">
+              <div className="ab-eyebrow">③ At-risk entities · proposed grants</div>
+              <p className="ab-empty__body">
+                Trigger conditions not met — no redistribution proposed. This table populates with proposed budget
+                raises when the metered rebalancer fires (all three trigger conditions above hold).
+              </p>
+            </div>
+          )}
+        </div>
+
+        <MeteredSimulateRail sim={derived.sim} overAllocated={derived.overAllocated} allocatableUsd={derived.envelope.allocatableUsd} />
       </div>
     </>
   );
