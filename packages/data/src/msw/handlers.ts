@@ -1,7 +1,9 @@
 import { http, HttpResponse } from 'msw';
 import { buildLinkHeader, paginate } from './pagination.js';
+import { getActiveAsOfDate } from './scenario-state.js';
 import {
   DEFAULT_ENTERPRISE_TEAM_SEATS,
+  DOWNLOAD_HOST,
   ENTERPRISE_TEAM_SEAT_COUNTS,
   GITHUB_API_BASE,
   HISTORICAL_CREDITS_USED_ITEMS,
@@ -11,6 +13,8 @@ import {
   type BudgetScope,
   type BudgetType,
   type CostCenterResource,
+  type CreditsUsedItem,
+  type UsageItem,
 } from './fixtures/index.js';
 
 // Task 6.7: every READ + canonical-lookup below resolves the ACTIVE scenario's
@@ -434,6 +438,107 @@ function rateLimitBody() {
   return { resources: {}, rate: { limit: 5000, remaining: 4999, reset: 0, used: 1 } };
 }
 
+// ---------------------------------------------------------------------------
+// R5 (wire-contract-r3-r5-r6.md): the enhanced-billing usage report's real
+// wire is camelCase and never carries user_login/cost_center_id -- those stay
+// FIXTURE-INTERNAL (UsageItem, fixtures/usage.ts) for filtering only and are
+// PROJECTED OUT here. unitType/pricePerUnit/organizationName are additions
+// the live smoke's item required but our old parse never emitted.
+// ---------------------------------------------------------------------------
+
+interface WireUsageItem {
+  date: string;
+  product: string;
+  sku: string;
+  quantity: number;
+  unitType: string;
+  pricePerUnit: number;
+  grossAmount: number;
+  discountAmount: number;
+  netAmount: number;
+  organizationName: string;
+}
+
+// GitHub's enhanced-billing usage docs don't pin a `unitType` value for
+// Copilot ai_credits rows -- 'Unit' is a defensible placeholder (same
+// "pending the next live smoke" treatment as R6's report-file format below).
+// `pricePerUnit` is NOT a guess: 1 AI credit = $0.01 exactly (CLAUDE.md §5),
+// and every fixture row already satisfies gross_amount === quantity * 0.01.
+const USAGE_UNIT_TYPE = 'Unit';
+const USAGE_PRICE_PER_UNIT_USD = 0.01;
+// DEWR's enterprise-owned GitHub organization -- reused from budgets.ts's
+// `organization`-scope spending-limit fixture (budget_entity_name:
+// 'dewr-digital') rather than inventing a second org name, since the fixture
+// model doesn't otherwise track a per-usage-item organization.
+const USAGE_ORGANIZATION_NAME = 'dewr-digital';
+
+function toWireUsageItem(item: UsageItem): WireUsageItem {
+  return {
+    date: item.date,
+    product: item.product,
+    sku: item.sku,
+    quantity: item.quantity,
+    unitType: USAGE_UNIT_TYPE,
+    pricePerUnit: USAGE_PRICE_PER_UNIT_USD,
+    grossAmount: item.gross_amount,
+    discountAmount: item.discount_amount,
+    netAmount: item.net_amount,
+    organizationName: USAGE_ORGANIZATION_NAME,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// R6 (wire-contract-r3-r5-r6.md): users-1-day / users-28-day/latest return an
+// async report ENVELOPE; the per-user rows live in a file behind
+// `download_links`, served below by a companion handler on DOWNLOAD_HOST.
+// Format is a JSON array of records -- "pick ONE format ... leave a comment
+// that the real format gets pinned by the maintainer's live smoke" (R6):
+// this is that placeholder, not a confirmed live shape.
+// ---------------------------------------------------------------------------
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidCalendarDate(value: string): boolean {
+  if (!ISO_DATE_RE.test(value)) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(y!, m! - 1, d!));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m! - 1 && date.getUTCDate() === d;
+}
+
+// Inclusive [start, end] window of `days` calendar days ending at `endDate`
+// (UTC, no wall-clock -- endDate is always a fixture/scenario "now", never
+// `new Date()`). days=28 matches the real users-28-day report's trailing
+// window; the mock computes it once here so both the envelope's
+// report_start_day/report_end_day and the file-serving handler agree.
+function trailingWindow(endDate: string, days: number): { start: string; end: string } {
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  return { start: start.toISOString().slice(0, 10), end: endDate };
+}
+
+interface UsersReportRecord {
+  user_id: string;
+  user_login: string;
+  ai_credits_used: number;
+  date: string;
+  model?: string;
+}
+
+function toReportRecord(item: CreditsUsedItem): UsersReportRecord {
+  return {
+    user_id: item.user_id,
+    user_login: item.user_login,
+    ai_credits_used: item.ai_credits_used,
+    date: item.date,
+    ...(item.model ? { model: item.model } : {}),
+  };
+}
+
+function allCreditsUsedItems(): CreditsUsedItem[] {
+  return [...getActiveFixtures().creditsUsedItems, ...HISTORICAL_CREDITS_USED_ITEMS];
+}
+
 export const handlers = [
   http.get(`${GITHUB_API_BASE}/rate_limit`, ({ request }) => {
     const token = bearerToken(request);
@@ -458,18 +563,28 @@ export const handlers = [
     );
   }),
 
+  // R3 (wire-contract-r3-r5-r6.md): real GitHub has no `resources` sub-array
+  // endpoint at list time either -- but the list response DOES embed each
+  // cost center's `resources[]` (see the GET-one handler's comment below for
+  // the full endpoint-list citation). Membership DATA is unchanged
+  // (costCenterResources, fixtures/costCenters.ts) -- only where it rides.
   http.get(`${ENTERPRISE_BASE}/settings/billing/cost-centers`, () => {
-    return HttpResponse.json({ costCenters: getActiveFixtures().costCenters });
+    const fx = getActiveFixtures();
+    const costCenters = fx.costCenters.map((cc) => ({ ...cc, resources: fx.costCenterResources[cc.id] ?? [] }));
+    return HttpResponse.json({ costCenters });
   }),
 
-  http.get(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, ({ request, params }) => {
-    const url = new URL(request.url);
-    const { page, perPage } = pageParams(url);
-    const all = getActiveFixtures().costCenterResources[params.costCenterId as string] ?? [];
-    return HttpResponse.json(
-      { resources: paginate(all, page, perPage) },
-      { headers: linkHeaders(request.url, page, perPage, all.length) },
-    );
+  // R3 (wire-contract-r3-r5-r6.md, live smoke 2026-07-08): `GET .../resource`
+  // 404s live -- it never existed. The real, confirmed endpoint list is
+  // LIST / POST / GET-one / PATCH / DELETE on `.../cost-centers[/{id}]` plus
+  // POST/DELETE (mutations only) on `.../cost-centers/{id}/resource`. This is
+  // that GET-one endpoint (previously missing entirely), embedding the same
+  // `resources[]` the list handler above now carries.
+  http.get(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId`, ({ params }) => {
+    const fx = getActiveFixtures();
+    const canonical = fx.costCenters.find((c) => c.id === params.costCenterId);
+    if (!canonical) return githubError(404, 'Not Found');
+    return HttpResponse.json({ ...canonical, resources: fx.costCenterResources[canonical.id] ?? [] });
   }),
 
   // ---- Task 4.2: cost-center create / delete / edit (incl. included-usage-cap toggle) ----
@@ -541,6 +656,10 @@ export const handlers = [
         overflow: value.included_usage_cap?.overflow ?? canonical.included_usage_cap.overflow,
         computed_limit_credits: includedUsageCapLimitForSeats(seatCount),
       },
+      // R3: the PATCH echo embeds resources too (list/get-one/create/patch --
+      // every place a cost-center object rides) -- canonical membership,
+      // never the request body (edit never touches membership).
+      resources: fx.costCenterResources[canonical.id] ?? [],
     });
   }),
 
@@ -675,13 +794,16 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 });
   }),
 
-  // Task 5.1: `year`/`month`/`day` (real GitHub's enhanced-billing usage
-  // report query params -- docs/api-surface-validation.md R5) additionally
-  // search the historical closed-cycle rows (fixtures/usage-history.ts). The
-  // DEFAULT response (no `year` given) is UNCHANGED from before Task 5.1:
-  // exactly USAGE_ITEMS, optionally cost-center-filtered -- every current-
-  // cycle pin (189,800 burn, 193,036 totalQuantity, etc.) is computed from a
-  // no-param fetch and never touches this branch.
+  // R5 (wire-contract-r3-r5-r6.md, live smoke 2026-07-08): real GitHub emits
+  // camelCase fields and NEVER user_login/cost_center_id on the item itself
+  // (both stay fixture-internal, projected out by toWireUsageItem below).
+  // Docs verbatim: "By default this endpoint will return usage that does not
+  // have a cost center" -- so no `cost_center_id` param means ONLY rows whose
+  // fixture cost_center_id is null/absent; every DEWR fixture row IS
+  // CC-attributed, so that default call legitimately returns an empty page
+  // (handlers.test.ts asserts this explicitly). `cost_center_id=<id>` still
+  // returns exactly that CC's rows, byte-identical to the pre-fix filter.
+  // Task 5.1's `year`/`month`/`day` historical-cycle behavior is unchanged.
   http.get(`${ENTERPRISE_BASE}/settings/billing/usage`, ({ request }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
@@ -692,7 +814,9 @@ export const handlers = [
 
     const { usageItems: USAGE_ITEMS } = getActiveFixtures();
     const source = year ? [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS] : USAGE_ITEMS;
-    let filtered = costCenterId ? source.filter((item) => item.cost_center_id === costCenterId) : source;
+    let filtered = costCenterId
+      ? source.filter((item) => item.cost_center_id === costCenterId)
+      : source.filter((item) => item.cost_center_id === null || item.cost_center_id === undefined);
     if (year) {
       const paddedMonth = month ? month.padStart(2, '0') : null;
       const paddedDay = day ? day.padStart(2, '0') : null;
@@ -706,31 +830,72 @@ export const handlers = [
     }
 
     return HttpResponse.json(
-      { usageItems: paginate(filtered, page, perPage) },
+      { usageItems: paginate(filtered, page, perPage).map(toWireUsageItem) },
       { headers: linkHeaders(request.url, page, perPage, filtered.length) },
     );
   }),
 
-  // Task 5.1: `since`/`until` (YYYY-MM-DD, inclusive) additionally search the
-  // historical per-user rows (fixtures/usage-history.ts). The DEFAULT
-  // response (neither param given) is UNCHANGED from before Task 5.1: exactly
-  // CREDITS_USED_ITEMS -- every existing consumer (listHeavyUsers,
-  // listCostCenters' member burn) fetches with no params and applies its own
-  // cycleBounds filter downstream, so this default is what every current pin
-  // is still computed from.
-  http.get(`${ENTERPRISE_BASE}/copilot/metrics/reports/users-28-day`, ({ request }) => {
-    const url = new URL(request.url);
-    const { page, perPage } = pageParams(url);
-    const since = url.searchParams.get('since');
-    const until = url.searchParams.get('until');
+  // R6 (wire-contract-r3-r5-r6.md, live smoke 2026-07-08): the OLD bare path
+  // 404s live (missing `/latest` was the actual live 404) -- reproduce that
+  // 404 here too, deliberately, so drift back to "bare path returns rows"
+  // can never silently reappear.
+  http.get(`${ENTERPRISE_BASE}/copilot/metrics/reports/users-28-day`, () => githubError(404, 'Not Found')),
 
-    const { creditsUsedItems: CREDITS_USED_ITEMS } = getActiveFixtures();
-    const source = since || until ? [...CREDITS_USED_ITEMS, ...HISTORICAL_CREDITS_USED_ITEMS] : CREDITS_USED_ITEMS;
-    const filtered =
-      since || until ? source.filter((item) => (!since || item.date >= since) && (!until || item.date <= until)) : source;
-
-    return HttpResponse.json(paginate(filtered, page, perPage), {
-      headers: linkHeaders(request.url, page, perPage, filtered.length),
+  // R6: `users-28-day/latest` returns an async report ENVELOPE
+  // (`download_links`/`report_start_day`/`report_end_day`), not rows. The
+  // real per-user file is a TRAILING 28-day aggregate ending at the active
+  // scenario's "now" (getActiveAsOfDate -- SIM_CURRENT_DATE for the default
+  // 'healthy' scenario), one record per user, never filterable to the
+  // billing cycle (CLAUDE.md-brief's cycle-accuracy ruling) -- callers that
+  // need cycle-accurate per-user totals must fan out over users-1-day
+  // instead (below).
+  http.get(`${ENTERPRISE_BASE}/copilot/metrics/reports/users-28-day/latest`, () => {
+    const { start, end } = trailingWindow(getActiveAsOfDate(), 28);
+    return HttpResponse.json({
+      download_links: [`${DOWNLOAD_HOST}/reports/users-28-day/latest.json`],
+      report_start_day: start,
+      report_end_day: end,
     });
+  }),
+
+  // R6: `users-1-day?day=YYYY-MM-DD` -- same envelope shape, one calendar
+  // day. A day with no fixture rows still 200s with an EMPTY file (not a
+  // 404); a malformed/missing `day` is the one case that 400s.
+  http.get(`${ENTERPRISE_BASE}/copilot/metrics/reports/users-1-day`, ({ request }) => {
+    const url = new URL(request.url);
+    const day = url.searchParams.get('day');
+    if (!day || !isValidCalendarDate(day)) {
+      return githubError(400, "Invalid 'day' parameter -- expected YYYY-MM-DD");
+    }
+    return HttpResponse.json({
+      download_links: [`${DOWNLOAD_HOST}/reports/users-1-day/${day}.json`],
+      report_start_day: day,
+      report_end_day: day,
+    });
+  }),
+
+  // Companion file host for the two envelopes above (R6): a stateless,
+  // deterministic re-derivation from the SAME CREDITS_USED_ITEMS /
+  // HISTORICAL_CREDITS_USED_ITEMS fixtures the old bare-array endpoint read,
+  // so every committed per-user sum survives the reshape. Two distinct route
+  // patterns (not one shared `:report/:file`) because the two files need
+  // different aggregation, not just different filenames.
+  http.get(`${DOWNLOAD_HOST}/reports/users-1-day/:dayFile`, ({ params }) => {
+    const day = (params.dayFile as string).replace(/\.json$/, '');
+    const rows = allCreditsUsedItems().filter((item) => item.date === day);
+    return HttpResponse.json(rows.map(toReportRecord));
+  }),
+
+  http.get(`${DOWNLOAD_HOST}/reports/users-28-day/latest.json`, () => {
+    const { start, end } = trailingWindow(getActiveAsOfDate(), 28);
+    const inWindow = allCreditsUsedItems().filter((item) => item.date >= start && item.date <= end);
+
+    const totals = new Map<string, { user_id: string; user_login: string; ai_credits_used: number }>();
+    for (const row of inWindow) {
+      const existing = totals.get(row.user_login);
+      if (existing) existing.ai_credits_used += row.ai_credits_used;
+      else totals.set(row.user_login, { user_id: row.user_id, user_login: row.user_login, ai_credits_used: row.ai_credits_used });
+    }
+    return HttpResponse.json(Array.from(totals.values()));
   }),
 ];

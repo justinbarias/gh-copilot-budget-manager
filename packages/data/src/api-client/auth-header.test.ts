@@ -19,11 +19,12 @@ import { createGitHubApiClient } from './github-impl.js';
 // `config.auth` reaching `createGitHubApiClient` really does attach an
 // Authorization header to every request the client issues. This is that
 // proof: the same request:start interception technique as
-// version-header.test.ts, across a wide fan-out (syncNow) that includes the
-// Task 5.4 historical year=/since= fetches specifically, since those are
-// hand-wrapped reads issued by a second/third octokit.request call site each
-// (fetchHistoricalUsageItems/fetchHistoricalCreditsUsedItems) and could in
-// principle drift from the plain reads.
+// version-header.test.ts, across a wide fan-out (syncNow) that includes the R5
+// `year` usage fan-out and the R6 users-1-day cycle fan-out specifically, since
+// those are hand-wrapped reads issued by their own octokit.request call sites
+// and could in principle drift from the plain reads. (The R6 download-link file
+// fetch is a plain non-GitHub-host fetch to a signed URL -- it carries no auth
+// by design and is correctly excluded by the isGitHubApiHost filter.)
 //
 // Note on scheme: @octokit/auth-token's default token strategy
 // (with-authorization-prefix.js) emits `token <PAT>` for a classic/
@@ -60,10 +61,10 @@ describe('Authorization header', () => {
 
     try {
       const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw', auth });
-      // syncNow fans out to seats, cost-centers (+ per-cc resources), budgets,
-      // usage, users-28-day, AND the Task 5.4 historical year=/since= fetches
-      // -- the widest single read fan-out in the data layer, same rationale
-      // as version-header.test.ts's use of it.
+      // syncNow fans out to seats, cost-centers (embedded resources), budgets,
+      // the per-cost-center usage fan-out (current + `year` history), and the
+      // users-1-day cycle fan-out -- the widest single read fan-out in the data
+      // layer, same rationale as version-header.test.ts's use of it.
       await client.syncNow();
     } finally {
       server.events.removeListener('request:start', listener);
@@ -81,13 +82,13 @@ describe('Authorization header', () => {
       expect(req.authorization, `missing/incorrect Authorization header on ${req.url}`).toMatch(expected);
     }
 
-    // Explicitly assert the Task 5.4 historical fetches (year= on usage,
-    // since= on the metrics report) carried it too -- these are the two
-    // hand-wrapped call sites least likely to be caught by a spot-check.
+    // Explicitly assert the newest hand-wrapped reads carried it too: the R5
+    // `year` usage fan-out and the R6 users-1-day cycle fan-out -- the call
+    // sites least likely to be caught by a spot-check.
     const yearFetch = seen.find((r) => r.url.includes('/settings/billing/usage') && r.url.includes('year='));
-    const sinceFetch = seen.find((r) => r.url.includes('/copilot/metrics/reports/users-28-day') && r.url.includes('since='));
+    const oneDayFetch = seen.find((r) => r.url.includes('/copilot/metrics/reports/users-1-day') && r.url.includes('day='));
     expect(yearFetch?.authorization).toMatch(expected);
-    expect(sinceFetch?.authorization).toMatch(expected);
+    expect(oneDayFetch?.authorization).toMatch(expected);
   });
 
   it('sends no Authorization header when the client is constructed without auth (simulation/no-PAT)', async () => {

@@ -357,6 +357,33 @@ describe('createGitHubApiClient', () => {
       await client.syncNow();
       expect(await client.getForecast('cost_center', 'cc-does-not-exist')).toBeNull();
     });
+
+    // R6 backfill restoration (maintainer decision 2026-07-08): the user-scope
+    // forecast trains on the 3 prior closed cycles (users-1-day daily backfill,
+    // 2026-03-01..2026-05-31 as-of the 2026-06-14 anchor) + the current cycle
+    // -- the SAME window the old `since`-based fetch targeted. emily-zhao
+    // (user 5182) is a backfilled persona: with prior-cycle history her
+    // backtest MAPE is computable (non-null -- May is the eval window,
+    // March/April the earlier training data) and her run-rate projects
+    // exhaustion of her 6,000-credit Data & Evaluation CCULB on 2026-06-15
+    // (~1 day of runway) -- the exact values the committed forecast e2e pins
+    // assert, which went null/earlier when the backfill was briefly cut.
+    it('user-scope forecasts train on the prior-3-closed-cycle backfill: emily-zhao has a non-null MAPE and a 2026-06-15 block date', async () => {
+      await client.syncNow();
+
+      const emily = await client.getForecast('user', '5182');
+      expect(emily).not.toBeNull();
+      expect(emily!.mape).not.toBeNull();
+      expect(emily!.result.exhaustionDate).toBe('2026-06-15');
+      expect(emily!.result.runwayDays).toBe(1);
+
+      // Contrast: sarah-huang (6218) has current-cycle rows but NO prior-cycle
+      // backfill rows (not one of the 5 historical personas) -> insufficient
+      // history for a backtest window -> mape stays honestly null.
+      const sarah = await client.getForecast('user', '6218');
+      expect(sarah).not.toBeNull();
+      expect(sarah!.mape).toBeNull();
+    });
   });
 
   // --- Task 4.8: write engine wiring through the real ApiClient surface ---

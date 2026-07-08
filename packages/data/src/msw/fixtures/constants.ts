@@ -7,6 +7,15 @@ export const ENTERPRISE_SLUG = 'dewr';
 export const GITHUB_API_BASE = 'https://api.github.com';
 export const API_VERSION = '2026-03-10';
 
+// Wire-contract R6 (wire-contract-r3-r5-r6.md): the copilot/metrics/reports
+// users-1-day / users-28-day/latest endpoints return an async report
+// ENVELOPE (`download_links`), not rows -- the real per-user records live in
+// a file behind the link. A fake, obviously-non-GitHub host so a companion
+// MSW `http.get` can serve those files deterministically from the same
+// fixture arrays (CREDITS_USED_ITEMS / HISTORICAL_CREDITS_USED_ITEMS) the old
+// (disproven) bare-array endpoint used to return directly.
+export const DOWNLOAD_HOST = 'https://results.download.github.test';
+
 // Simulation-mode "now" for cycle-relative math (Overview runway tiles/burn-down).
 // Deliberately NOT the max date across all usage items: the 1 Sep 2026 cliff
 // rows in usage.ts are future-dated edge fixtures for Phase-4 forecast/backtest

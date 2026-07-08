@@ -17,14 +17,32 @@ function client(): Octokit {
 }
 
 describe('runReadSmoke', () => {
+  // 2026-06-12 is a June-cycle day the CREDITS_USED fixtures carry rows for, so
+  // the R6 users-1-day probe exercises a non-empty per-day report file.
+  const PROBE_DAY = '2026-06-12';
+
   it('reconciles every §6.9 read row (R1-R6) as ok against MSW', async () => {
-    const results = await runReadSmoke(client(), ENTERPRISE_SLUG);
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
 
     // One result per §6.9 read row, in inventory order (R3 slotted after R2).
     expect(results.map((r) => r.docRef)).toEqual([...SMOKE_ENDPOINT_DOC_REFS]);
     for (const r of results) {
       expect(r.status, `${r.docRef} ${r.endpoint}: ${r.details}`).toBe('ok');
     }
+  });
+
+  // The R6 row's job is to PIN the (undocumented) downloaded report file
+  // format for the maintainer's next live run: it follows the first
+  // download_link and reports the sniffed format + first-record keys.
+  it('R6 follows the download-link envelope and reports the report file format + first-record keys', async () => {
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r6 = results.find((r) => r.docRef === 'R6');
+    expect(r6?.status, r6?.details).toBe('ok');
+    // Format is one of the three sniffed kinds, and the per-user record keys
+    // are surfaced (ai_credits_used is the money-affecting field we depend on).
+    expect(r6?.details).toMatch(/users-28-day\/latest: format=(json|jsonl|csv)/);
+    expect(r6?.details).toMatch(/ai_credits_used/);
+    expect(r6?.details).toMatch(/users-1-day\?day=2026-06-12/);
   });
 
   it('catches a wrong shape (missing required field) as shape_mismatch', async () => {

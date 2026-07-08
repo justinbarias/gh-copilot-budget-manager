@@ -67,8 +67,8 @@ export interface AssembleUsageRow {
 }
 
 // Enterprise-scope series: total credits burned per day across every cost
-// center (both pool-covered AND metered draw -- `quantity`, not
-// `discount_amount`-derived pool-only credits; see this module's README note
+// center (both pool-covered AND metered draw -- `quantity`, not the
+// `discountAmount`-derived pool-only credits; see this module's README note
 // below). A cost center that's already tipped into metered keeps contributing
 // to this series, which is exactly what lets forecast()'s own cycleMetered
 // bookkeeping (not this fold) decide, per PROJECTED day, whether the

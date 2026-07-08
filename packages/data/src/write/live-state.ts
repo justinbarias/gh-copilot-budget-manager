@@ -12,6 +12,8 @@ import {
   type UserUsage,
 } from '@copilot-budget/core';
 import { paginateAll } from '../api-client/paginate.js';
+import { fetchUsageFanout } from '../api-client/usage-fetch.js';
+import { fetchCycleUserCredits } from '../api-client/users-report.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -56,10 +58,13 @@ interface WireCostCenter {
   dewr_project: string;
   excluded_from_enterprise_budget: boolean;
   included_usage_cap: { enabled: boolean; computed_limit_credits: number; overflow: 'block' | 'metered' };
+  // R3 (disproven live 2026-07-08, 404 on GET .../resource): members are
+  // EMBEDDED on the cost-center object returned by the list/get-one endpoints.
+  resources: WireCostCenterResource[];
 }
 
-// The cost-center resource endpoint's row shape (Task 4.2 handler). `via_ent_team`
-// is a simulation-only provenance enrichment (msw/fixtures/costCenters.ts); the
+// The embedded cost-center resource row shape. `via_ent_team` is a
+// simulation-only provenance enrichment (msw/fixtures/costCenters.ts); the
 // diff basis only uses type + name, so it is deliberately dropped here.
 interface WireCostCenterResource {
   type: CostCenterResourceRef['type'];
@@ -166,25 +171,13 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string, _a
     })(),
   ]);
 
-  // Task 4.13: the write engine now diffs/executes cost-center membership too,
-  // so the re-read fetches each cost center's resource roster (the SAME
-  // paginated endpoint listCostCenters/assembleUsageState already read). One
-  // request per cost center; the mock is stateless so this stays deterministic.
+  // Task 4.13 / R3: the write engine diffs/executes cost-center membership, so
+  // the re-read needs each cost center's resource roster. R3 (disproven live
+  // 2026-07-08): that roster is EMBEDDED on the cost-center object -- no GET
+  // .../resource endpoint exists -- so this is a map off the already-fetched
+  // list, not a per-cost-center fan-out.
   const resourcesByCostCenterId = new Map<string, WireCostCenterResource[]>(
-    await Promise.all(
-      rawCostCenters.map(
-        async (cc) =>
-          [
-            cc.id,
-            await paginateAll<WireCostCenterResource>(
-              octokit,
-              '/enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource',
-              { enterprise, cost_center_id: cc.id },
-              (data) => (data as { resources: WireCostCenterResource[] }).resources,
-            ),
-          ] as const,
-      ),
-    ),
+    rawCostCenters.map((cc) => [cc.id, cc.resources ?? []] as const),
   );
 
   // `repository`-scope budgets are excluded from ControlState's BudgetScope
@@ -220,146 +213,101 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string, _a
 // path keeps the money-critical re-read -> diff -> validate -> mutate -> audit
 // pipeline lean and independent of usage-aggregation correctness.
 //
-// Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix; docs/pending/todo.md's
-// REQUIRED pre-Checkpoint-4 line): v1 built usageState.users from the
-// enterprise billing-usage report ALONE, which itemises per-user rows for
-// exactly two logins in the whole fixture world (faisal-noor, noah-tanaka) --
-// every other user's burn lives only in the per-user metrics/CREDITS_USED
-// report, so a preview for any other user (e.g. a $0 ULB staged for a heavy
-// user the billing report never names) honestly-but-misleadingly showed "0
-// newly blocked". This version folds in that metrics report -- the SAME one
-// api-client/github-impl.ts's listHeavyUsers/listCostCenters already read --
-// using the SAME cycleBounds(SIM_CURRENT_DATE) window and the SAME
-// full-seat-roster seeding those two read paths use, so simulatePlan now
-// evaluates every licensed seat, not just the two billing-report standouts.
+// Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix): usageState.users is seeded
+// from the full licensed seat roster and each user's cross-phase TOTAL is the
+// per-user metrics report figure (the meter a ULB, which caps total
+// consumption, must be compared against), so simulatePlan evaluates every
+// licensed seat -- not just the handful a single report happens to itemise.
 //
-// Two-report reconciliation rule (msw/fixtures/README.md's coherence-equation
-// §3: "Billing (USAGE_ITEMS) and per-user metrics (CREDITS_USED_ITEMS) are
-// different GitHub APIs"; CLAUDE.md §5: "ULBs cap a person's TOTAL across
-// both phases"): for a user attributed in BOTH reports (e.g. faisal-noor:
-// 4,180-credit metrics-report total vs. a 2,300-credit billing-report metered
-// row), the two are NEVER summed --
-//   - TOTAL comes from the metrics report: the one per-user meter that
-//     actually spans both phases, so it's what a ULB (which caps total
-//     consumption) must be compared against.
-//   - METERED comes from the billing report's per-user attribution where
-//     present, else 0: this is specifically the metered-phase signal
-//     simulatePlan's resolveUserBlockStatus keys spending-limit applicability
-//     off of (`meteredCreditsUsed > 0` == "already tipped into metered").
-//   - POOL is the remainder (total − metered), floored at 0 -- metered should
-//     never legitimately exceed total, but a report-skew defensively clamps
-//     to a non-negative pool credit count rather than surfacing a nonsensical
-//     negative one.
-// (Flagged judgment call, untestable against the current fixture set: a user
-// the metrics report doesn't carry AT ALL but the billing report attributes
-// as metered would fall back to the billing figure as their total rather than
-// silently reading as zero usage -- no such user exists in this fixture
-// world, so this branch is conservative-but-unexercised.)
+// R5/R6 reconciliation (wire-contract-r3-r5-r6.md, 2026-07-08 live smoke) --
+// the per-user pool-vs-metered SPLIT is no longer derivable from the real wire:
+//   - The enterprise billing usage report (R5) carries NO user_login, so a
+//     metered charge can no longer be attributed to a specific user. It still
+//     gives us the ENTERPRISE-wide and PER-COST-CENTER pool/metered totals
+//     (attribution by the fan-out query), which stay exact.
+//   - The per-user metrics report (R6) carries only ai_credits_used (a single
+//     cross-phase total per user), with no pool/metered breakdown.
+// So UserUsage.meteredCreditsUsed is set to 0 for every user (the honest
+// "unattributable" value), and poolCreditsUsed carries the whole per-user
+// total. TOTAL (pool + metered) is preserved and correct; only the per-user
+// SPLIT is lost. **FLAGGED**: simulatePlan.resolveUserBlockStatus keys
+// spending-limit applicability off `meteredCreditsUsed > 0` ("already tipped
+// into metered") -- with no per-user metered signal, that per-user branch now
+// reads as "not yet metered" for everyone. Recovering it needs the documented
+// `GET .../settings/billing/ai_credit/usage` endpoint's `user` filter
+// (contract's "recorded, not adopted" note), deferred to Phase 4+. ULB binding
+// (on the per-user TOTAL) is unaffected -- that is what the pool rebalancer and
+// the $0-ULB block preview actually depend on.
 export async function assembleUsageState(
   octokit: Octokit,
   enterprise: string,
   costCenterIdByName: ReadonlyMap<string, string>,
   asOfDate: Date,
 ): Promise<UsageState> {
-  interface WireUsageItem {
-    date: string;
-    cost_center_id: string | null;
-    user_login: string | null;
-    discount_amount: number;
-    net_amount: number;
-  }
-  interface WireCreditsUsedItem {
-    date: string;
-    user_login: string;
-    ai_credits_used: number;
-  }
   interface WireSeat {
     assignee: { login: string };
   }
-  interface WireCostCenterResource {
-    type: 'User' | 'Org' | 'Repo' | 'EnterpriseTeam';
+  interface WireCostCenter {
+    id: string;
     name: string;
+    resources?: Array<{ type: 'User' | 'Org' | 'Repo' | 'EnterpriseTeam'; name: string }>;
   }
 
   const costCenterNameById = new Map([...costCenterIdByName.entries()].map(([name, id]) => [id, name]));
+  const costCenterIds = [...costCenterIdByName.values()];
+  const bounds = cycleBounds(asOfDate);
 
-  const [usageItems, creditsUsedItems, seats, resourcesByCostCenter] = await Promise.all([
-    paginateAll<WireUsageItem>(
-      octokit,
-      '/enterprises/{enterprise}/settings/billing/usage',
-      { enterprise },
-      (data) => (data as { usageItems: WireUsageItem[] }).usageItems,
-    ),
-    // Same route api-client/github-impl.ts's fetchCreditsUsedItems reads for
-    // listHeavyUsers/listCostCenters -- not a new endpoint this task adds.
-    paginateAll<WireCreditsUsedItem>(
-      octokit,
-      '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
-      { enterprise },
-      (data) => data as WireCreditsUsedItem[],
-    ),
-    // Full licensed roster, so the fold seeds every seat (below), not just
-    // the users either report happens to carry a row for.
+  const [usageItems, creditRecords, seats, costCenterList] = await Promise.all([
+    // R5: enterprise usage via the default + per-cost-center fan-out (the only
+    // correct enterprise-wide read now the default call excludes CC usage).
+    fetchUsageFanout(octokit, enterprise, costCenterIds),
+    // R6: cycle-accurate per-user totals via the users-1-day fan-out over the
+    // elapsed cycle days -- the SAME source github-impl's read paths now use.
+    fetchCycleUserCredits(octokit, enterprise, bounds.cycleStart, bounds.daysElapsed),
+    // Full licensed roster, so the fold seeds every seat (below).
     paginateAll<WireSeat>(
       octokit,
       '/enterprises/{enterprise}/copilot/billing/seats',
       { enterprise },
       (data) => (data as { seats: WireSeat[] }).seats,
     ),
-    Promise.all(
-      [...costCenterIdByName.values()].map(async (costCenterId) => ({
-        costCenterId,
-        resources: await paginateAll<WireCostCenterResource>(
-          octokit,
-          '/enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource',
-          { enterprise, cost_center_id: costCenterId },
-          (data) => (data as { resources: WireCostCenterResource[] }).resources,
-        ),
-      })),
-    ),
+    // R3: cost-center members are embedded on the list response -- one call,
+    // no per-CC GET /resource fan-out.
+    (async () => {
+      const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', { enterprise });
+      return (response.data as { costCenters: WireCostCenter[] }).costCenters;
+    })(),
   ]);
 
   const costCenterNameByLogin = new Map<string, string>();
-  for (const { costCenterId, resources } of resourcesByCostCenter) {
-    const costCenterName = costCenterNameById.get(costCenterId);
-    if (!costCenterName) continue;
-    for (const r of resources) {
-      if (r.type === 'User') costCenterNameByLogin.set(r.name, costCenterName);
+  for (const cc of costCenterList) {
+    for (const r of cc.resources ?? []) {
+      if (r.type === 'User') costCenterNameByLogin.set(r.name, cc.name);
     }
   }
 
   const toCredits = (amountUsd: number): number => Math.round(amountUsd * 100);
 
-  // Same cycle window as listHeavyUsers/listCostCenters (api-client/
-  // github-impl.ts) -- anchored to the caller-supplied `asOfDate` clock seam
-  // (the deterministic fixture "now" in simulation, the real wall clock in
-  // live mode -- api-client/clock.ts). Applied uniformly to BOTH reports and every rollup below
-  // (per-user, per-cost-center, enterprise): the latent bug this task fixes
-  // is that v1 applied NO cycle filter at all, so noah-tanaka's Aug 31/Sep 1
-  // allowance-cliff rows (both outside the June cycle, attributed to the
-  // Workforce Australia Platform cost center) leaked into every sum that
-  // touched them.
-  const bounds = cycleBounds(asOfDate);
+  // Same cycle window as listHeavyUsers/listCostCenters -- anchored to the
+  // caller-supplied `asOfDate` clock seam (never wall-clock in sim). The
+  // per-user report (R6) is already cycle-scoped by the fan-out; the usage
+  // report (R5) is not, so its rows are cycle-filtered here (e.g. noah-tanaka's
+  // Aug 31/Sep 1 allowance-cliff rows fall outside the June cycle).
   const inCycle = (date: string): boolean => {
     const dayIndex = Math.floor((Date.parse(`${date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
     return dayIndex >= 0 && dayIndex <= bounds.daysElapsed;
   };
 
-  const meteredCreditsByLogin = new Map<string, number>();
   const costCenterTotals = new Map<string, { poolCreditsUsed: number; meteredCreditsUsed: number }>();
   let enterpriseMeteredCreditsUsed = 0;
 
   for (const item of usageItems) {
     if (!inCycle(item.date)) continue;
-    const pool = toCredits(item.discount_amount);
-    const metered = toCredits(item.net_amount);
+    const pool = toCredits(item.discountAmount);
+    const metered = toCredits(item.netAmount);
     enterpriseMeteredCreditsUsed += metered;
 
-    if (item.user_login) {
-      meteredCreditsByLogin.set(item.user_login, (meteredCreditsByLogin.get(item.user_login) ?? 0) + metered);
-    }
-
-    const ccName = item.cost_center_id ? costCenterNameById.get(item.cost_center_id) : undefined;
+    const ccName = item.costCenterId ? costCenterNameById.get(item.costCenterId) : undefined;
     if (ccName) {
       const t = costCenterTotals.get(ccName) ?? { poolCreditsUsed: 0, meteredCreditsUsed: 0 };
       t.poolCreditsUsed += pool;
@@ -369,29 +317,24 @@ export async function assembleUsageState(
   }
 
   const totalCreditsByLogin = new Map<string, number>();
-  for (const item of creditsUsedItems) {
-    if (!inCycle(item.date)) continue;
-    totalCreditsByLogin.set(item.user_login, (totalCreditsByLogin.get(item.user_login) ?? 0) + item.ai_credits_used);
+  for (const record of creditRecords) {
+    totalCreditsByLogin.set(record.user_login, (totalCreditsByLogin.get(record.user_login) ?? 0) + record.ai_credits_used);
   }
 
   // Seeded from the full licensed roster (mirrors listHeavyUsers' "every seat
   // appears, even at 0 credits" convention) -- a $0/near-zero ULB must
-  // correctly preview as blocking a user with NO usage at all (0 used <= 0
-  // cap headroom IS a block, CLAUDE.md §5/§6.4's near-zero-ULB validation),
-  // which a usageState that only carries rows for users WITH usage could
-  // never surface.
+  // correctly preview as blocking a user with NO usage at all (0 used <= 0 cap
+  // headroom IS a block, CLAUDE.md §5/§6.4). meteredCreditsUsed is 0 for every
+  // user: no per-user metered signal survives the real wire (see doc comment),
+  // so the whole per-user TOTAL is reported as pool.
   const users: UserUsage[] = seats.map((seat) => {
     const userLogin = seat.assignee.login;
-    const meteredCreditsUsed = meteredCreditsByLogin.get(userLogin) ?? 0;
-    // See the function doc comment's reconciliation rule: total is the
-    // metrics-report figure; the billing-report metered figure is only a
-    // fallback total for a login the metrics report doesn't carry at all.
-    const totalCreditsUsed = totalCreditsByLogin.get(userLogin) ?? meteredCreditsByLogin.get(userLogin) ?? 0;
+    const totalCreditsUsed = totalCreditsByLogin.get(userLogin) ?? 0;
     return {
       userLogin,
       costCenterName: costCenterNameByLogin.get(userLogin) ?? null,
-      poolCreditsUsed: Math.max(0, totalCreditsUsed - meteredCreditsUsed),
-      meteredCreditsUsed,
+      poolCreditsUsed: totalCreditsUsed,
+      meteredCreditsUsed: 0,
     };
   });
 

@@ -40,6 +40,8 @@ import { runReadSmoke } from '../smoke/read-smoke.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
+import { fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
+import { fetchCycleUserCredits, fetchUserCreditsForDays } from './users-report.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
 import type {
@@ -105,16 +107,11 @@ export interface GitHubApiClientConfig {
   nowDate?: string;
 }
 
-interface UsageItem {
-  date: string;
-  cost_center_id: string | null;
-  user_login: string | null;
-  sku: string;
-  quantity: number;
-  gross_amount: number;
-  discount_amount: number;
-  net_amount: number;
-}
+// R5: the usage item is now the camelCase wire shape (usage-fetch.ts's
+// WireUsageItem), tagged with the cost center it was attributed to by the
+// fan-out query (never a wire field). No `user_login` -- per-user attribution
+// moved to R6's users reports (see fetchCycleCredits below).
+type UsageItem = AttributedUsageItem;
 
 interface CostCenter {
   id: string;
@@ -127,6 +124,10 @@ interface CostCenter {
   // Read-only upstream: the limit is license-derived by GitHub, never settable (CLAUDE.md §5).
   included_usage_cap: { enabled: boolean; computed_limit_credits: number; overflow: 'block' | 'metered' };
   excluded_from_enterprise_budget: boolean;
+  // R3: cost-center members are EMBEDDED on the cost-center objects the list /
+  // get-one endpoints return -- there is no GET .../resource endpoint (that
+  // path only accepts POST/DELETE mutations). Disproven live 2026-07-08 (404).
+  resources: CostCenterResource[];
 }
 
 interface CostCenterResource {
@@ -190,13 +191,14 @@ const ENTERPRISE_PAID_USAGE_ENABLED = true;
 // documents *why* it's always false, not just that it is.
 const USER_ULB_NEVER_METERS = false;
 
-// discount_amount is the $ portion of a usage row covered by the shared pool
-// (vs. net_amount, the metered portion) -- dividing by $0.01/credit converts
+// discountAmount is the $ portion of a usage row covered by the shared pool
+// (vs. netAmount, the metered portion) -- dividing by $0.01/credit converts
 // it back to the pool-phase credit count the Overview burn-down needs, so a
 // cost center that's tipped into metered (discount 0) doesn't inflate the
-// enterprise-wide pool-consumed figure it never actually drew from.
-function poolCreditsForItem(item: Pick<UsageItem, 'discount_amount'>): number {
-  return Math.round(item.discount_amount * 100);
+// enterprise-wide pool-consumed figure it never actually drew from. (R5:
+// camelCase `discountAmount`, not the old snake_case that read as undefined.)
+function poolCreditsForItem(item: Pick<UsageItem, 'discountAmount'>): number {
+  return Math.round(item.discountAmount * 100);
 }
 
 // budget_amount is USD (PRD §2.3); ULBs cap a person's *credit* consumption
@@ -248,7 +250,13 @@ interface ComputeSyncForecastsParams {
   /** The clock-seam "now" (api-client/clock.ts) recorded as each forecast's computedAt -- the fixture date in sim, wall clock in live. */
   computedAt: string;
   historicalUsageItems: UsageItem[];
-  historicalCreditsUsedItems: CreditsUsedItem[];
+  // R6 + maintainer decision (2026-07-08): the user-scope forecast's training
+  // window is the 3 prior closed cycles + the current cycle -- the SAME window
+  // the old `since`-based fetch targeted -- now assembled as
+  // fetchHistoricalCreditsUsedItems (users-1-day daily backfill) concatenated
+  // with the current-cycle fan-out. Run-rate + backtest MAPE genuinely consume
+  // prior-cycle per-user history (the committed forecast e2e pins prove it).
+  userCreditItems: CreditsUsedItem[];
   costCentersRaw: CostCenter[];
   resourcesByCostCenter: Array<{ costCenterId: string; resources: CostCenterResource[] }>;
   seats: Seat[];
@@ -271,10 +279,10 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
   const computedAt = params.computedAt;
   const usageRows: AssembleUsageRow[] = params.historicalUsageItems.map((i) => ({
     date: i.date,
-    costCenterId: i.cost_center_id,
+    costCenterId: i.costCenterId,
     quantity: i.quantity,
   }));
-  const creditRows: AssembleCreditsUsedRow[] = params.historicalCreditsUsedItems.map((i) => ({
+  const creditRows: AssembleCreditsUsedRow[] = params.userCreditItems.map((i) => ({
     date: i.date,
     userId: i.user_id,
     creditsUsed: i.ai_credits_used,
@@ -380,79 +388,77 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     options.headers['x-github-api-version'] = API_VERSION;
   });
 
-  async function fetchUsageItems(params: UsageSummaryParams = {}): Promise<UsageItem[]> {
-    return paginateAll<UsageItem>(
-      octokit,
-      '/enterprises/{enterprise}/settings/billing/usage',
-      { enterprise, cost_center_id: params.costCenterId },
-      (data) => (data as { usageItems: UsageItem[] }).usageItems,
-    );
-  }
-
-  async function fetchCreditsUsedItems(): Promise<CreditsUsedItem[]> {
-    return paginateAll<CreditsUsedItem>(
-      octokit,
-      '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
-      { enterprise },
-      (data) => data as CreditsUsedItem[],
-    );
-  }
-
-  // Task 5.4: `year` (real GitHub's documented enhanced-billing usage-report
-  // query parameter -- docs/api-surface-validation.md's R5 row + its Task 5.1
-  // note) fetches the WHOLE current year, which the MSW handler resolves as
-  // USAGE_ITEMS (the open cycle) UNIONED with HISTORICAL_USAGE_ITEMS (the 3
-  // prior closed cycles) -- i.e. this ALREADY IS the current-cycle + history
-  // superset (github-impl's plain fetchUsageItems() above must NOT also be
-  // concatenated with this -- it would double-count the current cycle's
-  // rows). Derives the year from the clock seam's currentDate() (the fixture
-  // date in sim, wall clock in live) rather than hardcoding '2026' so this
-  // keeps working if the fixture's as-of date ever moves to a different year.
-  async function fetchHistoricalUsageItems(): Promise<UsageItem[]> {
-    return paginateAll<UsageItem>(
-      octokit,
-      '/enterprises/{enterprise}/settings/billing/usage',
-      { enterprise, year: currentDate().slice(0, 4) },
-      (data) => (data as { usageItems: UsageItem[] }).usageItems,
-    );
-  }
-
-  // Task 5.4: `since` (real GitHub's documented metrics-report query
-  // parameter -- R6's Task 5.1 note) fetches from 3 calendar months before
-  // the current cycle's start, which the MSW handler resolves as the SAME
-  // current-cycle + history superset fetchHistoricalUsageItems() gets above
-  // (CREDITS_USED_ITEMS unioned with HISTORICAL_CREDITS_USED_ITEMS) -- do not
-  // additionally concatenate the plain fetchCreditsUsedItems() call for the
-  // same reason. Computed from cycleBounds (not hardcoded to the fixture's
-  // exact March date) so this keeps working if the fixture's as-of date ever
-  // moves.
-  async function fetchHistoricalCreditsUsedItems(): Promise<CreditsUsedItem[]> {
-    const { cycleStart } = cycleBounds(currentDateObj());
-    const since = new Date(Date.UTC(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth() - 3, 1))
-      .toISOString()
-      .slice(0, 10);
-    return paginateAll<CreditsUsedItem>(
-      octokit,
-      '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
-      { enterprise, since },
-      (data) => data as CreditsUsedItem[],
-    );
-  }
-
   async function fetchCostCentersRaw(): Promise<CostCenter[]> {
     const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', {
       enterprise,
     });
-    return (response.data as { costCenters: CostCenter[] }).costCenters;
+    // R3: `resources` is embedded on each cost-center object; default it to []
+    // defensively so a cost center with no members never yields undefined.
+    return (response.data as { costCenters: CostCenter[] }).costCenters.map((cc) => ({
+      ...cc,
+      resources: cc.resources ?? [],
+    }));
   }
 
-  async function fetchCostCenterResources(costCenterId: string): Promise<CostCenterResource[]> {
-    return paginateAll<CostCenterResource>(
-      octokit,
-      '/enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource',
-      { enterprise, cost_center_id: costCenterId },
-      (data) => (data as { resources: CostCenterResource[] }).resources,
-    );
+  // R5: enterprise usage is a fan-out (default/unassociated + one call per
+  // cost center -- usage-fetch.ts). A single `cost_center_id` filter is the
+  // one-call path; the unfiltered read must enumerate cost centers first, since
+  // the default call returns ONLY cost-center-unassociated usage.
+  async function fetchUsageItems(params: UsageSummaryParams = {}): Promise<UsageItem[]> {
+    if (params.costCenterId) {
+      const raw = await paginateAll<AttributedUsageItem>(
+        octokit,
+        '/enterprises/{enterprise}/settings/billing/usage',
+        { enterprise, cost_center_id: params.costCenterId },
+        (data) => (data as { usageItems?: AttributedUsageItem[] }).usageItems ?? [],
+      );
+      return raw.map((item) => ({ ...item, costCenterId: params.costCenterId! }));
+    }
+    const costCenters = await fetchCostCentersRaw();
+    return fetchUsageFanout(octokit, enterprise, costCenters.map((cc) => cc.id));
+  }
+
+  // Task 5.4 / R5: `year` (real, documented enhanced-billing query param)
+  // fetches the whole current year, which the MSW handler resolves as the open
+  // cycle UNIONED with the 3 prior closed cycles -- the current-cycle + history
+  // superset the enterprise/cost-center forecasts train on (do NOT additionally
+  // concatenate the plain current-cycle fetch -- it would double-count). Now a
+  // fan-out too (the default call still excludes cost-center usage), so it takes
+  // the already-fetched cost-center ids to avoid re-listing them.
+  async function fetchHistoricalUsageItems(costCenterIds: readonly string[]): Promise<UsageItem[]> {
+    return fetchUsageFanout(octokit, enterprise, costCenterIds, { year: currentDate().slice(0, 4) });
+  }
+
+  // R6: cycle-accurate per-user credits via the users-1-day fan-out over the
+  // elapsed cycle days (users-report.ts). Replaces the old bare users-28-day
+  // array read; the fan-out is inherently cycle-scoped, so downstream cycle
+  // filters remain correct (and redundant) rather than needing a trailing-28d
+  // window trimmed by hand.
+  async function fetchCycleCredits(): Promise<CreditsUsedItem[]> {
+    const { cycleStart, daysElapsed } = cycleBounds(currentDateObj());
+    return fetchCycleUserCredits(octokit, enterprise, cycleStart, daysElapsed);
+  }
+
+  // R6 + maintainer decision (2026-07-08): per-user PRIOR-CYCLE history for
+  // the user-scope forecast (run-rate training + backtest MAPE), restored as a
+  // users-1-day daily backfill over the 3 prior closed cycles -- the SAME
+  // window the old (fictional, `since`-parameterised) fetch targeted: from the
+  // 1st of the month 3 calendar months before the current cycle's start,
+  // through the day before cycleStart. Dates come from the cycleBounds/clock
+  // seam (2026-06-14 anchor -> 2026-03-01..2026-05-31, 92 days), never
+  // wall-clock in sim. ~92 users-1-day calls (envelope + file each), chunked
+  // by fetchUserCreditsForDays; Sync-only, per the maintainer's cost ruling.
+  // Returns HISTORY ONLY (strictly pre-cycle) -- callers concatenate it with
+  // fetchCycleCredits' current-cycle rows to reconstruct the full training
+  // window without double-counting.
+  async function fetchHistoricalCreditsUsedItems(): Promise<CreditsUsedItem[]> {
+    const { cycleStart } = cycleBounds(currentDateObj());
+    const windowStart = new Date(Date.UTC(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth() - 3, 1));
+    const days: string[] = [];
+    for (let t = windowStart.getTime(); t < cycleStart.getTime(); t += DAY_MS) {
+      days.push(new Date(t).toISOString().slice(0, 10));
+    }
+    return fetchUserCreditsForDays(octokit, enterprise, days);
   }
 
   // Hand-wrapped (not in Octokit's typed catalog -- same CLAUDE.md §6.9 note as
@@ -492,9 +498,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return {
       asOfDate,
       totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
-      totalGrossAmountUsd: items.reduce((sum, item) => sum + item.gross_amount, 0),
-      totalDiscountAmountUsd: items.reduce((sum, item) => sum + item.discount_amount, 0),
-      totalNetAmountUsd: items.reduce((sum, item) => sum + item.net_amount, 0),
+      totalGrossAmountUsd: items.reduce((sum, item) => sum + item.grossAmount, 0),
+      totalDiscountAmountUsd: items.reduce((sum, item) => sum + item.discountAmount, 0),
+      totalNetAmountUsd: items.reduce((sum, item) => sum + item.netAmount, 0),
       licenseCount: seats.length,
       cycleAsOfDate,
       dailyBurn,
@@ -502,7 +508,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listCostCenters(): Promise<CostCenterSummary[]> {
-    const [costCenters, creditsUsedItems] = await Promise.all([fetchCostCentersRaw(), fetchCreditsUsedItems()]);
+    const [costCenters, creditsUsedItems] = await Promise.all([fetchCostCentersRaw(), fetchCycleCredits()]);
 
     // Per-member cycle-to-date burn: same cycle window as getUsageSummary
     // (anchored to the deterministic fixture date, never wall-clock), so a
@@ -515,9 +521,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       burnByLogin.set(item.user_login, (burnByLogin.get(item.user_login) ?? 0) + item.ai_credits_used);
     }
 
-    return Promise.all(
-      costCenters.map(async (cc) => {
-        const resources = await fetchCostCenterResources(cc.id);
+    return costCenters.map((cc) => {
+        // R3: members read off the embedded `resources`, not a GET /resource call.
+        const resources = cc.resources;
         const members: CostCenterMemberSummary[] = resources
           .filter((r) => r.type === 'User')
           .map((r) => ({
@@ -543,24 +549,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
           excludedFromEnterpriseBudget: cc.excluded_from_enterprise_budget,
           members,
         };
-      }),
-    );
+      });
   }
 
   async function listHeavyUsers(): Promise<HeavyUser[]> {
     const [creditsUsedItems, seats, costCentersRaw, budgetsRaw] = await Promise.all([
-      fetchCreditsUsedItems(),
+      fetchCycleCredits(),
       fetchSeats(),
       fetchCostCentersRaw(),
       fetchBudgetsRaw(),
     ]);
 
-    const resourcesByCostCenter = await Promise.all(
-      costCentersRaw.map(async (cc) => ({ cc, resources: await fetchCostCenterResources(cc.id) })),
-    );
+    // R3: login -> cost-center name from the embedded resources, not a per-CC
+    // GET /resource fan-out.
     const costCenterNameByLogin = new Map<string, string>();
-    for (const { cc, resources } of resourcesByCostCenter) {
-      for (const r of resources) {
+    for (const cc of costCentersRaw) {
+      for (const r of cc.resources) {
         if (r.type === 'User') costCenterNameByLogin.set(r.name, cc.name);
       }
     }
@@ -654,26 +658,28 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // paginated reads); acceptable against MSW/a handful of live cost
     // centers, and keeps the controls-ingestion path structurally identical
     // to every other getControls() caller.
-    // Task 5.4: the two historical fetches (year/since-parameterised) run
-    // alongside the existing current-cycle-only reads -- see
-    // fetchHistoricalUsageItems/fetchHistoricalCreditsUsedItems's doc
-    // comments for why these are NOT concatenated with usageItems/
-    // creditsUsedItems below (they're already supersets of them).
-    const [usageItems, creditsUsedItems, costCentersRaw, seats, live, historicalUsageItems, historicalCreditsUsedItems, budgetsRaw] =
-      await Promise.all([
-        fetchUsageItems(),
-        fetchCreditsUsedItems(),
-        fetchCostCentersRaw(),
-        fetchSeats(),
-        fetchLiveControls(octokit, enterprise, currentDateObj()),
-        fetchHistoricalUsageItems(),
-        fetchHistoricalCreditsUsedItems(),
-        fetchBudgetsRaw(),
-      ]);
+    // R3/R5/R6: cost centers are fetched first (they carry embedded resources
+    // AND supply the ids the usage fan-out queries per cost center); the usage
+    // reads (current-cycle + `year` history superset) and the users-1-day cycle
+    // fan-out then run together. The `year` historical read is NOT concatenated
+    // with the current-cycle usage read -- it is already a superset of it.
+    const [costCentersRaw, seats, live, budgetsRaw] = await Promise.all([
+      fetchCostCentersRaw(),
+      fetchSeats(),
+      fetchLiveControls(octokit, enterprise, currentDateObj()),
+      fetchBudgetsRaw(),
+    ]);
+    const costCenterIds = costCentersRaw.map((cc) => cc.id);
+    const [usageItems, historicalUsageItems, cycleCredits, historicalCredits] = await Promise.all([
+      fetchUsageFanout(octokit, enterprise, costCenterIds),
+      fetchHistoricalUsageItems(costCenterIds),
+      fetchCycleCredits(),
+      fetchHistoricalCreditsUsedItems(),
+    ]);
 
-    const resourcesByCostCenter = await Promise.all(
-      costCentersRaw.map(async (cc) => ({ costCenterId: cc.id, resources: await fetchCostCenterResources(cc.id) })),
-    );
+    // R3: resource rosters come off the embedded cost-center objects, not a
+    // per-CC GET /resource fan-out.
+    const resourcesByCostCenter = costCentersRaw.map((cc) => ({ costCenterId: cc.id, resources: cc.resources }));
 
     const costCenterMembers: IngestCostCenterMember[] = resourcesByCostCenter.flatMap(({ costCenterId, resources }) =>
       resources.map((r) => ({ costCenterId, resourceType: RESOURCE_TYPE_MAP[r.type], resourceId: r.name })),
@@ -696,7 +702,10 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       asOfDate: currentDateObj(),
       computedAt: currentDate(),
       historicalUsageItems,
-      historicalCreditsUsedItems,
+      // Prior-cycle backfill + current cycle -- the full user-scope training
+      // window (disjoint by construction: the backfill ends the day before
+      // cycleStart, so this concatenation never double-counts a day).
+      userCreditItems: [...historicalCredits, ...cycleCredits],
       costCentersRaw,
       resourcesByCostCenter,
       seats,
@@ -708,13 +717,17 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       entity: enterprise,
       usageItems: usageItems.map((item) => ({
         date: item.date,
-        costCenterId: item.cost_center_id,
-        userLogin: item.user_login,
+        costCenterId: item.costCenterId,
+        // R5: usage items no longer carry user_login on the wire -- per-user
+        // usage attribution is genuinely unavailable from this endpoint (moved
+        // to the R6 users reports, which carry no cost-center/metered split).
+        // Persisted null rather than a fabricated attribution. (FLAGGED.)
+        userLogin: null,
         sku: item.sku,
         quantity: item.quantity,
-        netAmountUsd: item.net_amount,
+        netAmountUsd: item.netAmount,
       })),
-      creditsUsedItems: creditsUsedItems.map((item) => ({
+      creditsUsedItems: cycleCredits.map((item) => ({
         date: item.date,
         userId: item.user_id,
         creditsUsed: item.ai_credits_used,
@@ -917,7 +930,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     if (config.source === 'msw') {
       return { refused: true, reason: 'simulation mode' };
     }
-    const results = await runReadSmoke(octokit, enterprise);
+    // R6's users-1-day probe needs an elapsed cycle day -- the clock seam's
+    // as-of date is one by construction (never wall-clock in sim).
+    const results = await runReadSmoke(octokit, enterprise, currentDate());
     return { refused: false, ranAt: new Date().toISOString(), results };
   }
 

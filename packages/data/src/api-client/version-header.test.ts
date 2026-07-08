@@ -12,8 +12,10 @@ import { createGitHubApiClient } from './github-impl.js';
 // issues must carry `X-GitHub-Api-Version: 2026-03-10` (CLAUDE.md §2). The
 // octokit.hook.before('request') pin covers octokit.request(); this test proves
 // it empirically by intercepting the header on the actual wire, across a
-// representative sampling of endpoints -- crucially INCLUDING the Task 5.4
-// historical year/since fetches, which are the newest hand-wrapped reads.
+// representative sampling of endpoints -- crucially INCLUDING the R5 `year`
+// usage fan-out and the R6 users-1-day cycle fan-out, the newest hand-wrapped
+// reads (the download-link file fetch is a plain non-GitHub-host fetch, so it
+// is correctly excluded here).
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
@@ -43,9 +45,10 @@ describe('X-GitHub-Api-Version header', () => {
 
     try {
       const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw' });
-      // syncNow fans out to seats, cost-centers (+ per-cc resources), budgets,
-      // usage, users-28-day, AND the Task 5.4 historical year/since fetches --
-      // the widest single read fan-out in the data layer.
+      // syncNow fans out to seats, cost-centers (embedded resources), budgets,
+      // the per-cost-center usage fan-out (current + `year` history), and the
+      // users-1-day cycle fan-out -- the widest single read fan-out in the data
+      // layer.
       await client.syncNow();
     } finally {
       server.events.removeListener('request:start', listener);
@@ -56,11 +59,12 @@ describe('X-GitHub-Api-Version header', () => {
       expect(req.version, `missing/incorrect version header on ${req.url}`).toBe(API_VERSION);
     }
 
-    // Explicitly assert the Task 5.4 historical fetches were among them (year=
-    // on usage, since= on the metrics report) and carried the header.
+    // Explicitly assert the newest hand-wrapped reads were among them: the R5
+    // `year` usage fan-out and the R6 users-1-day cycle fan-out, both carrying
+    // the header.
     const yearFetch = seen.find((r) => r.url.includes('/settings/billing/usage') && r.url.includes('year='));
-    const sinceFetch = seen.find((r) => r.url.includes('/copilot/metrics/reports/users-28-day') && r.url.includes('since='));
+    const oneDayFetch = seen.find((r) => r.url.includes('/copilot/metrics/reports/users-1-day') && r.url.includes('day='));
     expect(yearFetch?.version).toBe(API_VERSION);
-    expect(sinceFetch?.version).toBe(API_VERSION);
+    expect(oneDayFetch?.version).toBe(API_VERSION);
   });
 });

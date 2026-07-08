@@ -38,16 +38,19 @@ describe('assembleUsageState', () => {
     const emily = byLogin.get('emily-zhao');
     expect(emily).toMatchObject({ costCenterName: 'Data & Evaluation Platform', poolCreditsUsed: 5_480, meteredCreditsUsed: 0 });
 
-    // faisal-noor: the two-report reconciliation proof (subtlety 1). Metrics
-    // report June total: 1,393+1,161+929+697 = 4,180 (his TOTAL, per the
-    // reconciliation rule -- never summed with the billing figure). Billing
-    // report's per-user row (2026-06-12, net_amount $23) attributes his
-    // METERED portion: 2,300. Pool is the remainder: 4,180 − 2,300 = 1,880.
+    // faisal-noor: R5/R6 reconciliation after the live-wire fix. His CROSS-PHASE
+    // TOTAL is the users-report figure: 1,393+1,161+929+697 = 4,180 (the ULB-
+    // binding meter). The per-user pool-vs-metered SPLIT is GONE from the real
+    // wire (R5 usage items carry no user_login, R6 records carry no split), so
+    // meteredCreditsUsed is the honest 0 and the whole 4,180 reads as pool.
+    // (His 2,300-credit metered draw still shows up in the ENTERPRISE and
+    // Payments Integrity cost-center metered totals below -- just not
+    // attributed back to him personally. See assembleUsageState's FLAGGED note.)
     const faisal = byLogin.get('faisal-noor');
     expect(faisal).toMatchObject({
       costCenterName: 'Payments Integrity Engineering',
-      meteredCreditsUsed: 2_300,
-      poolCreditsUsed: 1_880,
+      meteredCreditsUsed: 0,
+      poolCreditsUsed: 4_180,
     });
     expect((faisal!.poolCreditsUsed ?? 0) + (faisal!.meteredCreditsUsed ?? 0)).toBe(4_180);
 
@@ -80,6 +83,14 @@ describe('assembleUsageState', () => {
     // cliff rows contribute to lifetime aggregates only, never this cycle's.
     const workforce = usage.costCenters.find((cc) => cc.costCenterName === 'Workforce Australia Platform');
     expect(workforce).toMatchObject({ poolCreditsUsed: 30_200, meteredCreditsUsed: 0 });
+
+    // Payments Integrity Engineering (cap-bound): its June pool rows sum to
+    // 56,000 (53.33+80+80+106.67+133.33+106.67 = $560.00) and faisal-noor's
+    // 2,300-credit metered overflow row is attributed to it by the fan-out
+    // query -- this is where his metered draw now lives (no longer on his
+    // per-user row). Proves per-CC metered attribution survives the wire fix.
+    const payments = usage.costCenters.find((cc) => cc.costCenterName === 'Payments Integrity Engineering');
+    expect(payments).toMatchObject({ poolCreditsUsed: 56_000, meteredCreditsUsed: 2_300 });
 
     // Enterprise-wide metered total: only faisal-noor's in-cycle 2,300 --
     // noah-tanaka's Sep 1 metered row (234) is cycle-filtered out too.

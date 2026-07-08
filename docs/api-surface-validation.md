@@ -54,6 +54,8 @@ and therefore none are exempt).
 |---|---|
 | `documented-confirmed` | Corroborated across ≥2 independent retrievals; safe to rely on. |
 | `docs-indicated (summarizer)` | Single-source page-summary; plausible but unverified exact string/shape — **pin at 9.2**. |
+| `live-confirmed` | Proven against a real authenticated tenant (2026-07-08 live smoke) **and** pinned against docs.github.com `enterprise-cloud@latest` `apiVersion=2026-03-10`; the strongest grade this doc issues. |
+| `docs-confirmed, unadopted` | Endpoint confirmed real against the docs but deliberately **not** integrated — recorded so a later phase can adopt it without re-research. |
 | `simulation-enrichment` | Deliberate MSW-only shape the task requires; known to diverge from live — **reconcile in github-impl at 9.2**, do not "correct" in MSW. |
 | `PRD-authority` | Real docs inconclusive/contradictory; MSW follows the PRD (standing authority) — **pin at 9.2**. |
 
@@ -67,10 +69,17 @@ and therefore none are exempt).
 |---|---|---|---|---|---|
 | R1 | `GET /enterprises/{enterprise}/copilot/billing/seats` | `github-impl` seats | Copilot seat-management REST (established) | `documented-confirmed` (path) | Response `{total_seats, seats[]}` + Link paging — conventional; pin exact fields at 9.2. |
 | R2 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | `github-impl` cost centers | Cost centers REST `2026-03-10` | `docs-indicated (summarizer)` | Real cost-center object carries `ai_credit_pool_enabled` + `ai_credit_pool_state{target_amount,current_amount}`; MSW returns the internal `included_usage_cap{enabled,overflow,computed_limit_credits}` model (see inference #2). Reconcile in github-impl at 9.2. |
-| R3 | `GET /enterprises/{enterprise}/settings/billing/cost-centers/{id}/resource` | `github-impl` members | Cost centers REST `2026-03-10` | `docs-indicated (summarizer)` | Real list shape/pagination not pinned; MSW `{resources[]}` + Link header. Pin at 9.2. |
+| R3 | `GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (get-one; members embedded) | `github-impl` members | Cost centers REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **The old `GET …/{id}/resource` path DOES NOT EXIST** (live `404`, 2026-07-08; the docs' full endpoint list has `/resource` as POST/DELETE only — mutations, already modeled by M8/M9). Members/resources are **embedded** as `resources: [{type, name}]` on the cost-center objects returned by list/get-one/create/patch. `github-impl`/`live-state` now read `resources` off the already-fetched objects (net code deletion); the smoke's R3 row exercises get-one and structurally checks the embedded `resources[]`. |
 | R4 | `GET /enterprises/{enterprise}/settings/billing/budgets` | `github-impl` budgets | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | **Pagination divergence:** real list returns in-body `{budgets[], total_count, has_next_page, user?, effective_budget?}`; MSW returns `{budgets[]}` + a `Link` header. Read-path change with github-impl blast radius → **defer to 9.2** (pagination reconciliation is an explicit 9.2 task). |
-| R5 | `GET /enterprises/{enterprise}/settings/billing/usage` | `github-impl` usage | Billing usage REST `2026-03-10` | `docs-indicated (summarizer)` | **Path naming:** PRD §2.3 lists `…/settings/billing/ai_credit/usage` and `…/settings/billing/usage/summary`; MSW/github-impl use `…/settings/billing/usage`. Confirm the exact live path/segments at 9.2. |
-| R6 | `GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day` | `github-impl` credits-used | Copilot usage-metrics REST | `docs-indicated (summarizer)` | PRD §2.3: metrics `users-1-day`/`users-28-day` carry `ai_credits_used` (per-user daily total). Exact report path/shape pinned at 9.2. |
+| R5 | `GET /enterprises/{enterprise}/settings/billing/usage` (`?year/month/day/cost_center_id`) | `github-impl` usage (via `api-client/usage-fetch.ts`) | Billing usage REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **Items are camelCase** — `{date, product, sku, quantity, unitType, pricePerUnit, grossAmount, discountAmount, netAmount, organizationName, repositoryName?}`. Our old snake_case parse (`net_amount`/`discount_amount`) was why the live smoke reported `SHAPE_MISMATCH` (reading them live yields `NaN` through every money rollup). **No `user_login` and no `cost_center_id` on items** — both were our invention; per-user attribution moved to R6, per-cost-center attribution to the `cost_center_id` query param. **Default call EXCLUDES cost-center-attributed usage** (docs verbatim: "By default this endpoint will return usage that does not have a cost center"), so the correct enterprise-wide read is a **fan-out**: 1 default (unassociated) call + 1 call per known cost-center id, attributing items by WHICH query returned them (`usage-fetch.ts` `fetchUsageFanout`). MSW keeps `user_login`/`cost_center_id` as fixture-internal keys only (used to implement the query filtering) and projects both out of every emitted response; its `unitType: 'Unit'` and `organizationName: 'dewr-digital'` are **placeholder values** (docs pin the fields' existence, not their values — `pricePerUnit: 0.01` is exact per CLAUDE.md §5); pin real values on a live run. |
+| R6 | `GET …/copilot/metrics/reports/users-28-day/latest` + `GET …/copilot/metrics/reports/users-1-day?day=YYYY-MM-DD` | `github-impl` credits-used (via `api-client/users-report.ts`) | Copilot metrics-reports REST + 2026-07-08 live smoke | `live-confirmed` (envelope; **file format pin pending live**) | Our `404` was the missing `/latest` suffix on the bare `users-28-day` path. Deeper: the response is **NOT a row array** but an async report **envelope** `{download_links: string[], report_start_day, report_end_day}`; per-user records (`user_id`, `user_login`, `ai_credits_used` [added 2026-06-19 per changelog], `used_*`, `ai_adoption_phase`) live in the file behind the link (see R7). **Cycle-accuracy ruling (money-affecting):** `users-28-day/latest` is a TRAILING-28-day aggregate crossing the cycle boundary, so it is never the cycle-total source; cycle-accurate per-user totals come from `users-1-day?day=` fanned out over elapsed cycle days (Sync-only). The smoke's R6 row follows the first link and reports `format=<json\|jsonl\|csv>` + first-record keys — **that output IS the file-format pin** for the maintainer's next live run. |
+| R7 | `GET <download_links[0]>` (opaque signed URL, plain `fetch`, non-Octokit) | `users-report.ts` `fetchUsersReport` | GitHub docs describe the link as a short-lived signed URL; file format **undocumented** | `docs-indicated (summarizer)` — **format pin pending live** | **NEW hand-wrapped HTTP call (§6.9):** the only non-Octokit request in the codebase — a bare `fetch` following the R6 envelope's first download link. The file's format (JSON array vs JSONL vs CSV) could not be pinned from any reachable doc, so `parseUsersReportFile` sniffs defensively (leading `[` → JSON array, `{` → JSONL, else CSV-with-header); the MSW twin serves JSON arrays of `{user_id, user_login, ai_credits_used}` from a fake host (`results.download.github.test`) as the simplest defensible guess. The maintainer's next live smoke prints the real format + first-record keys (R6 row) — update this row and the mock's file shape from that output. **Call volume:** each users-1-day day costs an envelope request + a file download; `syncNow` fans out over elapsed cycle days (~15 at the June-14 anchor) **plus a 92-day prior-3-closed-cycle backfill** (2026-03-01..2026-05-31, from the clock seam) for per-user forecast history — ~214 HTTP requests per Sync, chunked at `USERS_REPORT_CONCURRENCY = 10` in-flight (`users-report.ts`) to stay under secondary rate limits; acceptable because Sync is an explicit job (CLAUDE.md §2), tune the knob if live rate-limiting bites. |
+
+### Recorded, not adopted (docs-confirmed alternates)
+
+| # | Method + path | Doc source | Verdict | Note |
+|---|---|---|---|---|
+| N1 | `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` (+ siblings `…/premium_request/usage`, `…/usage/summary`) | Billing usage REST `2026-03-10` (docs, 2026-07-08) | `docs-confirmed, unadopted` | **Resolves old checklist item #7 — the PRD §2.3 paths are real.** Per-call filters: `user`, `organization`, `model`, `product`, `cost_center_id`. Response: `{timePeriod, enterprise, user, organization, product, model, costCenter, usageItems[]}` with items `{product, sku, model, unitType, pricePerUnit, grossQuantity, grossAmount, discountQuantity, discountAmount, netQuantity, netAmount}` — note **no per-item date**; the top-level `timePeriod` carries year/month/day. Deliberately NOT integrated in the R5 reconciliation; recorded so Phase 4+ can reach for the `user`/`model` filters when per-user/per-model drill-down is needed — in particular the `user` filter is the **recovery path for the per-user pool-vs-metered split limitation** (see "Live-wire limitations" below). |
 
 ### Mutations (new — Tasks 4.1/4.2; MSW-only today, consumed by the write engine in Task 4.8)
 
@@ -102,28 +111,65 @@ endpoints do **not** publish an exact 422 schema in the docs, so this is
 ### Read smoke runner (new — Task 9.2-prep)
 
 `packages/data/src/smoke/read-smoke.ts` (`runReadSmoke`) issues one read against
-each of the **existing** §6.9 read rows **R1–R6** above (no new endpoints — it is
-the shape-reconciliation harness the 9.2 checklist is executed *through*) and
-structurally checks each response against the shapes `github-impl.ts` parses. It
-is refused in simulation mode at the `ApiClient.runLiveReadSmoke()` bridge
-(never contacts GitHub); its per-endpoint `{status, details}` report is the
-concrete Task 9.2 work order. The endpoint list lives in one place
-(`INDEPENDENT_ENDPOINTS` + the R3 dependent read) with the `docRef` on each row
+each of the §6.9 read rows **R1–R6** above (it is the shape-reconciliation
+harness the 9.2 checklist is executed *through*) and structurally checks each
+response against the shapes `github-impl.ts` parses. Post-reconciliation, the
+R3 row exercises cost-center get-one + the embedded `resources[]`; the R5 row
+checks camelCase fields on the default call **and** the first cost-center
+fan-out call; the R6 row checks the report envelope, follows the download link
+(R7), probes `users-1-day?day=<elapsed cycle day>`, and **reports the file's
+real format + first-record keys** — the format pin the R7 row awaits. It is
+refused in simulation mode at the `ApiClient.runLiveReadSmoke()` bridge (never
+contacts GitHub); its per-endpoint `{status, details}` report is the concrete
+Task 9.2 work order. The endpoint list lives in one place
+(`INDEPENDENT_ENDPOINTS` + the dependent reads) with the `docRef` on each row
 pointing back at this table.
 
-**First live-contact finding (2026-07-08 smoke).** The maintainer's first real
-live read smoke returned **`401 "Requires authentication"` on every read
-(R1–R6)** — a wiring bug, not a shape divergence: `apps/desktop/src/main/ipc.ts`
-built the routed-to `ApiClient` **without `auth`**, so its Octokit issued
-unauthenticated requests (only `validatePat`'s dedicated probe ever read the
-live PAT). Fixed by wiring the stored PAT + tenant pointer into the client and
-rebuilding on credential/tenant change. **R1–R5 `401` resolved by this fix**
-(the reads now carry the `Authorization` header — proven on the wire by
-`packages/data/src/api-client/auth-header.test.ts`). **R6
-(`copilot/metrics/reports/users-28-day`) `404` still unconfirmed** — the
-`401` masked whether the path/report shape is correct; **awaiting an authed
-re-run** against a real tenant to distinguish a genuine path miss from the prior
-auth failure. All R1–R6 shape reconciliations remain 9.2 items regardless.
+**First live-contact finding (2026-07-08 smoke, unauthenticated).** The
+maintainer's first real live read smoke returned **`401 "Requires
+authentication"` on every read (R1–R6)** — a wiring bug, not a shape
+divergence: `apps/desktop/src/main/ipc.ts` built the routed-to `ApiClient`
+**without `auth`**, so its Octokit issued unauthenticated requests (only
+`validatePat`'s dedicated probe ever read the live PAT). Fixed by wiring the
+stored PAT + tenant pointer into the client and rebuilding on
+credential/tenant change (proven on the wire by
+`packages/data/src/api-client/auth-header.test.ts`).
+
+**First AUTHENTICATED live smoke (2026-07-08) — the R3/R5/R6 reconciliation.**
+The authed re-run returned: R1 OK (50 seats) · R2 OK (6 cost centers) · **R3
+`404`** (the `GET …/resource` path does not exist) · R4 OK (10 budgets) ·
+**R5 `SHAPE_MISMATCH`** (15 items, first item missing `net_amount`/
+`discount_amount` — because the real fields are camelCase) · **R6 `404`** (the
+bare `users-28-day` path lacks `/latest`). All three divergences were pinned
+against docs.github.com `enterprise-cloud@latest` `apiVersion=2026-03-10` and
+reconciled in one pass (this doc's R3/R5/R6 rows, upgraded to
+`live-confirmed`, carry the corrected shapes; the wire contract that drove the
+fix is `wire-contract-r3-r5-r6.md`, scratchpad-only). The rewritten smoke rows
+now exercise the corrected surfaces — R3 via get-one + embedded `resources[]`,
+R5 via camelCase field checks on the default + first-CC fan-out calls, R6 via
+the envelope + download-link follow (whose output pins the file format, R7).
+
+### Live-wire limitations (documented, not deferred)
+
+- **Per-user pool-vs-metered split is NOT derivable from the real wire.** The
+  R6 metrics reports give one `ai_credits_used` TOTAL per user per day (no
+  pool/metered breakdown), and the R5 billing usage report carries no
+  `user_login` — so `assembleUsageState` (live-state.ts) derives every user's
+  `meteredCreditsUsed` as `0` and `poolCreditsUsed` as the full cycle total.
+  Totals (what ULBs bind on — CLAUDE.md §5's cross-phase ULB semantics) are
+  exact; only the per-user split collapsed. **Blast radius:**
+  `packages/core/src/simulate.ts`'s `resolveUserBlockStatus` gates its
+  per-user *spending-limit* candidates behind `meteredCreditsUsed > 0`, so on
+  live-derived state that branch never fires from ingested data (engine tests
+  and the rebalancer still exercise it via curated `projectedUsage`/scenario
+  entities, which set per-user metered directly — all pins remain green).
+  **Recovery path:** the recorded-not-adopted N1 endpoint
+  (`ai_credit/usage?user=`) can attribute metered spend per user when a later
+  phase needs the real split.
+- **`usage_fact.user_id` now persists `NULL` for live-ingested rows** (R5
+  items carry no user). The Drizzle column was already nullable
+  (`db/schema.ts` — no `.notNull()`), so no schema/migration change; per-user
+  facts continue to flow through `credits_used_fact` (R6) instead.
 
 ---
 
@@ -262,52 +308,74 @@ re-confirm the gap still exists (or note if GitHub ever adds a real signal).
   real GitHub's documented enhanced-billing usage-report query parameters
   (`year`/`month`/`day`/`hour`) — request-side only, no new response field,
   so this doesn't change either row's read-shape verdict above.
-- **Task 5.4 — `github-impl.ts` now SENDS `year`/`since`.** The Task 5.1 note
-  above ("github-impl.ts does not send them yet") is superseded: Task 5.4's
-  forecast-on-sync consumer (`fetchHistoricalUsageItems`/
-  `fetchHistoricalCreditsUsedItems`, `packages/data/src/api-client/
-  github-impl.ts`) now sends `year` (R5, whole current year — MSW resolves
-  this as the open cycle unioned with the 3 prior closed cycles) and `since`
-  (R6, 3 calendar months before the current cycle start, computed from
-  `cycleBounds`, never hardcoded) on every `syncNow`. Both remain request-side
-  only — the response wire shape these two calls parse is byte-identical to
-  R5/R6's existing (no-param) shape, so neither row's read-shape verdict
-  changes. Confirm the exact parameter set (and that real GitHub accepts a
-  bare `year` with no `month`, and `since` with no `until`) against the
-  OpenAPI schema at 9.2 alongside R5/R6's existing "pin at 9.2" items.
+- **Task 5.4 — `github-impl.ts` sends `year` (R5); the R6 `since` param is
+  DEAD (it was fictional).** Superseding the Task 5.1 note above: Task 5.4's
+  forecast-on-sync consumer sends `year` on the R5 usage read (whole current
+  year — MSW resolves this as the open cycle unioned with the 3 prior closed
+  cycles; `year` is a real, documented enhanced-billing query param, now also
+  a per-CC fan-out per the R5 row). Task 5.4's original R6 historical fetch
+  sent `since` — **that parameter does not exist on the real metrics-reports
+  surface** (disproven in the 2026-07-08 reconciliation) and was deleted.
+  Per-user forecast history is instead a **users-1-day daily backfill** over
+  the 3 prior closed cycles (`fetchHistoricalCreditsUsedItems`, github-impl:
+  from the 1st of the month 3 calendar months before cycleStart through the
+  day before cycleStart — 2026-03-01..2026-05-31, 92 days at the June-14
+  anchor — dates from the `cycleBounds` clock seam, never wall-clock; strictly
+  pre-cycle, so concatenation with the current-cycle fan-out cannot
+  double-count a day). See R7 for the resulting Sync call volume and the
+  `USERS_REPORT_CONCURRENCY` knob. Confirm at 9.2 that real GitHub accepts a
+  bare `year` with no `month`.
 
 ---
 
 ## Task 9.2 reconcile checklist (carry-forward)
 
-When a live tenant + classic PAT (`manage_billing:enterprise`) exist, upgrade the
-rows above to "confirmed against live" and fix github-impl (and MSW fixtures where
-sim truthfulness needs it) for:
+**Status as of the 2026-07-08 R3/R5/R6 live reconciliation** (pulled forward
+from Task 9.2): the READ surface is now `live-confirmed` (R3/R5/R6 rewritten;
+R1/R2/R4 proven OK on the authed smoke, exact field pins still summarizer-grade).
+Remaining items, when the live tenant + classic PAT
+(`manage_billing:enterprise`) is next available:
 
 1. **Cap wire shape** — `ai_credit_pool_enabled` + `ai_credit_pool_state` ↔ internal
    `included_usage_cap{enabled, overflow, computed_limit_credits}`; **resolve the
-   block-vs-overflow field name** (undocumented today).
+   block-vs-overflow field name** (undocumented today). *(Still pending — writes
+   were out of the 2026-07-08 read-reconciliation's scope.)*
 2. **Resource mutations** — four-array request body `{users, organizations,
    repositories, enterprise_teams}`; real `200 {message, reassigned_resources}`.
+   *(Still pending.)*
 3. **Budget success envelopes** — `200 {message, budget}` (create/patch),
-   `200 {message, id}` (delete) vs MSW `201`/flat/`204`.
+   `200 {message, id}` (delete) vs MSW `201`/flat/`204`. *(Still pending.)*
 4. **User-scope model** — single `user` scope + `user` field vs MSW
-   `universal`/`individual`.
+   `universal`/`individual`. *(Still pending.)*
 5. **CCULB enum** — `multi_user_cost_center` vs `multi_user_customer` (also gates
-   Task 4.10's verbatim payload).
+   Task 4.10's verbatim payload). *(Still pending.)*
 6. **Budget list pagination** — in-body `{total_count, has_next_page}` vs MSW `Link`
-   header.
-7. **Usage path** — `…/billing/ai_credit/usage` / `…/usage/summary` (PRD §2.3) vs
-   MSW `…/billing/usage`.
-8. **Error/422 body** — pin the real validation-error schema.
+   header. *(Still pending.)*
+7. ~~**Usage path** — `…/billing/ai_credit/usage` / `…/usage/summary` (PRD §2.3) vs
+   MSW `…/billing/usage`.~~ **RESOLVED 2026-07-08:** both path families are real
+   and coexist. `…/settings/billing/usage` (R5, adopted) is the enterprise
+   usage report; the PRD §2.3 paths (`ai_credit/usage`, `premium_request/usage`,
+   `usage/summary`) are the filterable per-product reports — recorded as N1,
+   `docs-confirmed, unadopted`.
+8. **Error/422 body** — pin the real validation-error schema. *(Still pending —
+   the 2026-07-08 smoke exercised happy-path reads only.)*
 9. **OpenAPI pass** — parse `github/rest-api-description` for the `2026-03-10`
-   billing schemas to replace every `docs-indicated (summarizer)` grade above with
-   machine-verified shapes.
+   billing schemas to replace every remaining `docs-indicated (summarizer)` grade
+   above with machine-verified shapes. *(Still pending; R3/R5/R6 no longer need
+   it — live + docs already pinned them.)*
 10. **Auth surface (A1)** — confirm against a live classic PAT that `/rate_limit`
     returns `X-OAuth-Scopes`, that fine-grained tokens omit it, and that the
-    required scope string is exactly `manage_billing:enterprise`. Then run
-    `runLiveReadSmoke()` for real and upgrade R1–R6 from `docs-indicated
-    (summarizer)` to "confirmed against live" using its report.
+    required scope string is exactly `manage_billing:enterprise`. *(Still
+    pending an explicit A1 check on the next authed run — the 2026-07-08 smoke
+    proved the PAT authenticates the R1–R6 surface, which is necessary but not
+    the header-mechanism pin.)*
+11. **R6 file-format pin (NEW)** — the download-link file's format (JSON array /
+    JSONL / CSV) and exact record keys are a defensive guess (R7). The rewritten
+    smoke's R6 row prints `format=…, first-record keys=[…]` on the next live
+    run — fold that output into R7 and the MSW file twin.
+12. **R5 placeholder values (NEW)** — pin real `unitType`/`organizationName`
+    values from a live response (MSW currently emits placeholders `'Unit'` /
+    `'dewr-digital'`; `pricePerUnit: 0.01` is exact per CLAUDE.md §5).
 
 ## Sources consulted (2026-07-05)
 

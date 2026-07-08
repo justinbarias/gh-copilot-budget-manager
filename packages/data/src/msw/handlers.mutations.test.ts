@@ -430,17 +430,17 @@ describe('Task 4.2 -- cost center mutations: statelessness', () => {
       body: JSON.stringify({ resources: [{ type: 'User', name: 'tess-whitford' }] }),
     });
 
-    const resourcesRes = await fetch(
-      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/cost-centers/${COST_CENTER_IDS.dataEval}/resource`,
-      { headers },
-    );
-    const resourcesBody = (await resourcesRes.json()) as { resources: unknown[] };
-    expect(resourcesBody.resources).toHaveLength(9); // canonical fixture count, unchanged
+    // R3: membership now rides embedded on the cost-center object (list AND
+    // get-one) -- there is no separate GET .../resource endpoint anymore.
+    const getOneRes = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}`, { headers });
+    const getOneBody = (await getOneRes.json()) as { resources: unknown[] };
+    expect(getOneBody.resources).toHaveLength(9); // canonical fixture count, unchanged
 
     const centersBody = (await (await fetch(COST_CENTERS_URL, { headers })).json()) as {
-      costCenters: Array<{ id: string; included_usage_cap: { computed_limit_credits: number } }>;
+      costCenters: Array<{ id: string; resources: unknown[]; included_usage_cap: { computed_limit_credits: number } }>;
     };
     const dataEval = centersBody.costCenters.find((c) => c.id === COST_CENTER_IDS.dataEval);
+    expect(dataEval?.resources).toHaveLength(9); // canonical fixture count, unchanged
     expect(dataEval?.included_usage_cap.computed_limit_credits).toBe(63_000); // untouched canonical value
   });
 

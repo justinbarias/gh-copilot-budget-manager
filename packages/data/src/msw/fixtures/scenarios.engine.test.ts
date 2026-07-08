@@ -262,8 +262,14 @@ describe('METERED scenario', () => {
     expect(dataEval.meteredCreditsUsed).toBe(24_500);
     expect(dataEval.poolCreditsUsed).toBe(63_000); // == cap, exhausted
     const sam = currentUsage.users.find((u) => u.userLogin === 'sam-kelly')!;
-    expect(sam.poolCreditsUsed).toBe(4_900);
-    expect(sam.meteredCreditsUsed).toBe(500);
+    // R6 live-wire reconciliation: the per-user pool-vs-metered split is NOT
+    // derivable from the real wire (the users-1-day/28-day metrics report gives
+    // one ai_credits_used TOTAL per user, no pool/metered breakdown; the R5
+    // billing usage report carries no user_login). So per-user metered is 0 and
+    // pool = the cycle total. sam-kelly's total 5,400 (was pool 4,900 + metered
+    // 500) is preserved; only the split collapses. See wire-contract R5/R6.
+    expect(sam.poolCreditsUsed).toBe(5_400);
+    expect(sam.meteredCreditsUsed).toBe(0);
   });
 
   it('fires the metered trigger: 2 grants (5,000 cc-budget + 1,000 individual), $60 bill delta', async () => {

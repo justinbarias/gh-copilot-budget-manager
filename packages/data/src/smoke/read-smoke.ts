@@ -1,18 +1,29 @@
 import type { Octokit } from 'octokit';
+import { fetchUsersReport } from '../api-client/users-report.js';
 
 // Task 9.2-prep: the live read-surface smoke runner. Given a configured
-// Octokit client + enterprise slug, it issues ONE read against each
-// hand-wrapped enterprise billing/budget endpoint in the §6.9 inventory
-// (docs/api-surface-validation.md rows R1-R6) and structurally reconciles the
-// response against the shapes github-impl.ts has coded to. The per-endpoint
-// report it returns IS the Task 9.2 work order: each row says whether real
-// GitHub's wire shape matches what we parse today, and where it diverges.
+// Octokit client + enterprise slug, it issues reads against each hand-wrapped
+// enterprise billing/budget endpoint in the §6.9 inventory (rows R1-R6) and
+// structurally reconciles the response against the shapes github-impl.ts codes
+// to. The per-endpoint report it returns IS the work order: each row says
+// whether real GitHub's wire shape matches what we parse, and where it diverges.
 //
-// This runner is MODE-AGNOSTIC on purpose: it is unit-tested against MSW today
-// (that is how we prove the plumbing before a PAT exists), and runs against
-// live GitHub once a real client is passed. The refusal-in-sim-mode gate lives
-// one layer up, on the ApiClient.runLiveReadSmoke() bridge method -- NOT here
-// (CLAUDE.md §6/§8: a bridge action must be unmistakably refused in sim mode).
+// Reconciled against the wire contract (wire-contract-r3-r5-r6.md, pinned
+// against the 2026-07-08 authenticated live run):
+//   R3 -> GET .../cost-centers/{id} (get-one), embedded resources[] (no
+//         GET .../resource endpoint exists; disproven live 2026-07-08, 404).
+//   R5 -> camelCase usage items ({date, quantity, netAmount, discountAmount});
+//         default call excludes cost-center usage, so a per-CC call is what
+//         surfaces a non-empty sample.
+//   R6 -> users-28-day/latest + users-1-day return a download-link envelope;
+//         the per-user records live in the file behind download_links. This
+//         runner follows the first link and reports the real format +
+//         first-record keys so the maintainer can pin the (undocumented) file
+//         format on the next live run.
+//
+// MODE-AGNOSTIC on purpose: unit-tested against MSW today (proves the plumbing
+// before a PAT exists), runs against live GitHub once a real client is passed.
+// The refusal-in-sim-mode gate lives one layer up, on ApiClient.runLiveReadSmoke().
 
 export type ReadSmokeStatus = 'ok' | 'shape_mismatch' | 'http_error' | 'skipped';
 
@@ -32,8 +43,7 @@ type FieldType = 'string' | 'number' | 'boolean';
 // Verifies each required field is present and of the coded-to primitive type;
 // returns the list of problems (empty === shape ok). `null` is treated as
 // present-but-wrong-type for a required field (a real "the field went null on
-// us" divergence we want the smoke to catch), matching how github-impl.ts's
-// parsers would mis-handle it.
+// us" divergence we want the smoke to catch).
 function checkFields(item: unknown, spec: Record<string, FieldType>): string[] {
   const problems: string[] = [];
   if (typeof item !== 'object' || item === null) {
@@ -53,10 +63,9 @@ function checkFields(item: unknown, spec: Record<string, FieldType>): string[] {
   return problems;
 }
 
-// Checks up to `sampleSize` items and returns the first item's problems (a
-// representative sample -- a shape divergence is systemic, not per-row). An
-// empty array with 0 items is reported as ok with "0 items" (a valid empty
-// list is not a shape failure).
+// Checks up to the first item and returns its problems (a shape divergence is
+// systemic, not per-row). An empty list is reported as ok (a valid empty list
+// is not a shape failure).
 function summarizeItems(items: unknown[], spec: Record<string, FieldType>): { status: ReadSmokeStatus; details: string } {
   if (items.length === 0) {
     return { status: 'ok', details: '0 items returned (empty list -- shape not exercised)' };
@@ -68,11 +77,6 @@ function summarizeItems(items: unknown[], spec: Record<string, FieldType>): { st
   return { status: 'ok', details: `${items.length} item(s) checked, required fields present` };
 }
 
-// The §6.9 read inventory, in ONE place with row references. Each entry knows
-// how to fetch its endpoint, pull the item array out of the (possibly
-// enveloped) response, and which required fields to reconcile. R3 (cost-center
-// resources) is dependent -- it needs a cost-center id from R2 -- so it is run
-// explicitly after R2 below rather than declared here.
 interface SmokeEndpoint {
   key: string;
   docRef: string;
@@ -82,6 +86,8 @@ interface SmokeEndpoint {
   fields: Record<string, FieldType>;
 }
 
+// R1/R2/R4 are independent, single-call, enveloped list reads. R3/R5/R6 are
+// custom (dependent or multi-call) and run explicitly below.
 const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
   {
     key: 'seats',
@@ -89,8 +95,6 @@ const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
     endpoint: '/enterprises/{enterprise}/copilot/billing/seats',
     path: 'GET /enterprises/{enterprise}/copilot/billing/seats',
     extract: (d) => (d as { seats?: unknown[] }).seats ?? [],
-    // github-impl.ts's Seat: { assignee: { login, id }, created_at }. We check
-    // the top-level scalar github-impl reads directly; assignee is nested.
     fields: { created_at: 'string' },
   },
   {
@@ -109,27 +113,10 @@ const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
     extract: (d) => (d as { budgets?: unknown[] }).budgets ?? [],
     fields: { budget_scope: 'string', budget_entity_name: 'string', budget_amount: 'number' },
   },
-  {
-    key: 'usage',
-    docRef: 'R5',
-    endpoint: '/enterprises/{enterprise}/settings/billing/usage',
-    path: 'GET /enterprises/{enterprise}/settings/billing/usage',
-    extract: (d) => (d as { usageItems?: unknown[] }).usageItems ?? [],
-    fields: { date: 'string', quantity: 'number', net_amount: 'number', discount_amount: 'number' },
-  },
-  {
-    key: 'credits-used',
-    docRef: 'R6',
-    endpoint: '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
-    path: 'GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day',
-    // R6 returns a bare array (not enveloped) -- github-impl.ts parses it as CreditsUsedItem[].
-    extract: (d) => (Array.isArray(d) ? d : []),
-    fields: { date: 'string', user_login: 'string', ai_credits_used: 'number' },
-  },
 ];
 
 // The row references this runner covers, exported so a caller/test can assert
-// the smoke stays aligned with the §6.9 inventory (R1, R2, R3, R4, R5, R6).
+// the smoke stays aligned with the §6.9 inventory.
 export const SMOKE_ENDPOINT_DOC_REFS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6'] as const;
 
 function httpErrorDetails(err: unknown): string {
@@ -149,42 +136,123 @@ async function runOne(octokit: Octokit, enterprise: string, ep: SmokeEndpoint): 
   }
 }
 
-export async function runReadSmoke(octokit: Octokit, enterprise: string): Promise<ReadSmokeEndpointResult[]> {
-  const results: ReadSmokeEndpointResult[] = [];
-
-  // R1/R2/R4/R5/R6 are independent -- run them in inventory order.
-  for (const ep of INDEPENDENT_ENDPOINTS) {
-    results.push(await runOne(octokit, enterprise, ep));
-  }
-
-  // R3 (cost-center resources) is dependent: it needs a real cost-center id,
-  // which only R2 can supply. Slot it right after R2 in the report. If R2
-  // returned no cost centers (or failed), R3 is 'skipped' with the reason --
-  // there is nothing to read a resource roster from.
-  const r3Path = 'GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource';
-  let r3: ReadSmokeEndpointResult;
+// R3: get ONE cost center (a real endpoint) and structurally check the EMBEDDED
+// resources[] items for {type, name}. The old GET .../resource path was
+// disproven live 2026-07-08 (404) -- it only accepts POST/DELETE.
+async function runR3(octokit: Octokit, enterprise: string): Promise<ReadSmokeEndpointResult> {
+  const path = 'GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}';
   try {
-    const ccResponse = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', { enterprise });
-    const costCenters = (ccResponse.data as { costCenters?: Array<{ id?: unknown }> }).costCenters ?? [];
+    const listResponse = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', { enterprise });
+    const costCenters = (listResponse.data as { costCenters?: Array<{ id?: unknown }> }).costCenters ?? [];
     const firstId = costCenters.find((c) => typeof c.id === 'string')?.id as string | undefined;
     if (!firstId) {
-      r3 = { endpoint: r3Path, docRef: 'R3', status: 'skipped', details: 'no cost center available to read a resource roster from' };
-    } else {
-      const resResponse = await octokit.request(
-        'GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource',
-        { enterprise, cost_center_id: firstId },
-      );
-      const resources = (resResponse.data as { resources?: unknown[] }).resources ?? [];
-      const { status, details } = summarizeItems(resources, { type: 'string', name: 'string' });
-      r3 = { endpoint: r3Path, docRef: 'R3', status, details: `cost_center ${firstId}: ${details}` };
+      return { endpoint: path, docRef: 'R3', status: 'skipped', details: 'no cost center available to read a member roster from' };
     }
+    const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}', {
+      enterprise,
+      cost_center_id: firstId,
+    });
+    const resources = (response.data as { resources?: unknown[] }).resources ?? [];
+    const { status, details } = summarizeItems(resources, { type: 'string', name: 'string' });
+    return { endpoint: path, docRef: 'R3', status, details: `cost_center ${firstId} embedded resources[]: ${details}` };
   } catch (err) {
-    r3 = { endpoint: r3Path, docRef: 'R3', status: 'http_error', details: httpErrorDetails(err) };
+    return { endpoint: path, docRef: 'R3', status: 'http_error', details: httpErrorDetails(err) };
   }
+}
 
-  // Insert R3 immediately after R2 (index 1 in INDEPENDENT_ENDPOINTS -> splice at 2).
-  const r2Index = results.findIndex((r) => r.docRef === 'R2');
-  results.splice(r2Index + 1, 0, r3);
+// R5: camelCase usage items. The default (no cost_center_id) call returns ONLY
+// cost-center-unassociated usage, so a per-cost-center call is what surfaces a
+// non-empty sample to check the camelCase field spec against.
+async function runR5(octokit: Octokit, enterprise: string): Promise<ReadSmokeEndpointResult> {
+  const path = 'GET /enterprises/{enterprise}/settings/billing/usage';
+  const spec: Record<string, FieldType> = { date: 'string', quantity: 'number', netAmount: 'number', discountAmount: 'number' };
+  try {
+    const defaultResponse = await octokit.request('GET /enterprises/{enterprise}/settings/billing/usage', { enterprise });
+    const defaultItems = (defaultResponse.data as { usageItems?: unknown[] }).usageItems ?? [];
 
-  return results;
+    const listResponse = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', { enterprise });
+    const costCenters = (listResponse.data as { costCenters?: Array<{ id?: unknown }> }).costCenters ?? [];
+    const firstId = costCenters.find((c) => typeof c.id === 'string')?.id as string | undefined;
+
+    let ccPart: string;
+    let ccStatus: ReadSmokeStatus = 'ok';
+    if (!firstId) {
+      ccPart = 'no cost center available for a per-CC sample';
+    } else {
+      const ccResponse = await octokit.request('GET /enterprises/{enterprise}/settings/billing/usage', {
+        enterprise,
+        cost_center_id: firstId,
+      });
+      const ccItems = (ccResponse.data as { usageItems?: unknown[] }).usageItems ?? [];
+      const summary = summarizeItems(ccItems, spec);
+      ccStatus = summary.status;
+      ccPart = `cost_center ${firstId}: ${summary.details}`;
+    }
+
+    return {
+      endpoint: path,
+      docRef: 'R5',
+      status: ccStatus,
+      details: `default call: ${defaultItems.length} cost-center-unassociated item(s); ${ccPart}`,
+    };
+  } catch (err) {
+    return { endpoint: path, docRef: 'R5', status: 'http_error', details: httpErrorDetails(err) };
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+// R6: the per-user metrics reports return a download-link ENVELOPE; the records
+// live in the file behind download_links (format undocumented). This row's
+// output IS the format pin: it follows the first link and reports
+// format=<json|jsonl|csv> + first-record keys, and also exercises users-1-day.
+async function runR6(octokit: Octokit, enterprise: string, probeDay: string): Promise<ReadSmokeEndpointResult> {
+  const path = 'GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest';
+  try {
+    const latest = await fetchUsersReport(octokit, enterprise, 'users-28-day');
+    if (!isStringArray(latest.envelope.download_links)) {
+      return {
+        endpoint: path,
+        docRef: 'R6',
+        status: 'shape_mismatch',
+        details: 'users-28-day/latest: envelope missing a string[] "download_links"',
+      };
+    }
+    const firstRecordKeys = latest.records[0] ? Object.keys(latest.records[0]) : [];
+    const latestPart = `users-28-day/latest: format=${latest.format}, first-record keys=[${firstRecordKeys.join(', ')}] (${latest.records.length} record(s))`;
+
+    const oneDay = await fetchUsersReport(octokit, enterprise, 'users-1-day', { day: probeDay });
+    if (!isStringArray(oneDay.envelope.download_links)) {
+      return {
+        endpoint: path,
+        docRef: 'R6',
+        status: 'shape_mismatch',
+        details: `${latestPart}; users-1-day?day=${probeDay}: envelope missing a string[] "download_links"`,
+      };
+    }
+    const oneDayPart = `users-1-day?day=${probeDay}: format=${oneDay.format}, envelope ok (${oneDay.records.length} record(s))`;
+
+    return { endpoint: path, docRef: 'R6', status: 'ok', details: `${latestPart}; ${oneDayPart}` };
+  } catch (err) {
+    return { endpoint: path, docRef: 'R6', status: 'http_error', details: httpErrorDetails(err) };
+  }
+}
+
+// `probeDay` (YYYY-MM-DD) is the users-1-day day the R6 row exercises -- an
+// elapsed cycle day supplied by the caller's clock seam (never wall-clock in
+// sim). Defaults to today for a bare live invocation.
+export async function runReadSmoke(
+  octokit: Octokit,
+  enterprise: string,
+  probeDay: string = new Date().toISOString().slice(0, 10),
+): Promise<ReadSmokeEndpointResult[]> {
+  const [r1, r2, r4] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
+  const r3 = await runR3(octokit, enterprise);
+  const r5 = await runR5(octokit, enterprise);
+  const r6 = await runR6(octokit, enterprise, probeDay);
+
+  // Inventory order: R1, R2, R3, R4, R5, R6.
+  return [r1!, r2!, r3, r4!, r5, r6];
 }
