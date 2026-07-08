@@ -52,7 +52,6 @@ function createWindow(): void {
 }
 
 async function bootstrap(): Promise<void> {
-  registerPatIpcHandlers();
   registerModeIpcHandler();
 
   const mode = await getMode();
@@ -70,7 +69,14 @@ async function bootstrap(): Promise<void> {
     server.listen({ onUnhandledRequest: failLoudForGitHub });
   }
 
-  await registerApiClientIpcHandlers(mode === 'simulation' ? 'msw' : 'github');
+  // registerApiClientIpcHandlers is wired FIRST so its rebuildClient handle
+  // exists before the PAT handlers that need to call it (2026-07-08
+  // live-mode fix -- see pat-bridge.ts's onCredentialsChanged doc comment).
+  // getMode()/getPatStore() above already resolve the PAT store lazily and
+  // independently of handler registration, so this reordering changes
+  // nothing about mode detection.
+  const { rebuildClient } = await registerApiClientIpcHandlers(mode === 'simulation' ? 'msw' : 'github');
+  registerPatIpcHandlers(rebuildClient);
   createWindow();
 }
 

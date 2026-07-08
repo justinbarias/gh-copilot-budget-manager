@@ -111,6 +111,20 @@ concrete Task 9.2 work order. The endpoint list lives in one place
 (`INDEPENDENT_ENDPOINTS` + the R3 dependent read) with the `docRef` on each row
 pointing back at this table.
 
+**First live-contact finding (2026-07-08 smoke).** The maintainer's first real
+live read smoke returned **`401 "Requires authentication"` on every read
+(R1–R6)** — a wiring bug, not a shape divergence: `apps/desktop/src/main/ipc.ts`
+built the routed-to `ApiClient` **without `auth`**, so its Octokit issued
+unauthenticated requests (only `validatePat`'s dedicated probe ever read the
+live PAT). Fixed by wiring the stored PAT + tenant pointer into the client and
+rebuilding on credential/tenant change. **R1–R5 `401` resolved by this fix**
+(the reads now carry the `Authorization` header — proven on the wire by
+`packages/data/src/api-client/auth-header.test.ts`). **R6
+(`copilot/metrics/reports/users-28-day`) `404` still unconfirmed** — the
+`401` masked whether the path/report shape is correct; **awaiting an authed
+re-run** against a real tenant to distinguish a genuine path miss from the prior
+auth failure. All R1–R6 shape reconciliations remain 9.2 items regardless.
+
 ---
 
 ## Resolution of the 7 builder-flagged inferences
