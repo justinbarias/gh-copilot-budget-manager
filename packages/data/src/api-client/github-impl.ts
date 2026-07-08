@@ -930,9 +930,12 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     if (config.source === 'msw') {
       return { refused: true, reason: 'simulation mode' };
     }
-    // R6's users-1-day probe needs an elapsed cycle day -- the clock seam's
-    // as-of date is one by construction (never wall-clock in sim).
-    const results = await runReadSmoke(octokit, enterprise, currentDate());
+    // R6's variant probes need a day whose report is expected to EXIST and be
+    // complete: the day BEFORE the clock seam's as-of date (live: yesterday --
+    // today's report may not be generated yet, and the tenant rejects future
+    // days). Derived from the clock seam, never bare wall-clock.
+    const probeDay = new Date(currentDateObj().getTime() - DAY_MS).toISOString().slice(0, 10);
+    const results = await runReadSmoke(octokit, enterprise, probeDay);
     return { refused: false, ranAt: new Date().toISOString(), results };
   }
 

@@ -110,35 +110,140 @@ export function parseUsersReportFile(text: string): { records: UsersReportRecord
   return { records: parseCsv(text), format };
 }
 
-// One report fetch: envelope -> follow the first download link -> sniff+parse.
-// The download-link fetch is a NEW hand-wrapped, non-Octokit HTTP call (§6.9):
-// the link points at an opaque results host (GitHub's docs describe it as a
-// short-lived signed URL), so a plain `fetch` is correct and Octokit's typed
-// surface does not apply. It is added to the §6.9 validation inventory (the
-// validator folds it into docs/api-surface-validation.md).
+// ---------------------------------------------------------------------------
+// Endpoint-variant fallback (2026-07-08 second live smoke). The maintainer's
+// real tenant 400'd on the DOCUMENTED `users-28-day/latest` route with a
+// day-parse error ("Invalid day parameter...") -- i.e. its router serves
+// `/users-28-day/{day}` (a PATH param) and has no literal `/latest` route, a
+// genuine docs-vs-deployment divergence (docs.github.com enterprise-cloud@
+// latest still documents `/latest` and a REQUIRED `?day=` QUERY param on
+// users-1-day). Each report therefore has two wire variants:
+//   users-28-day: 'latest'    -> .../users-28-day/latest        (documented)
+//                 'day-path'  -> .../users-28-day/{day}         (observed tenant)
+//   users-1-day:  'day-query' -> .../users-1-day?day=YYYY-MM-DD (documented)
+//                 'day-path'  -> .../users-1-day/{day}          (inferred same-router)
+// The documented form is ALWAYS tried first; ONLY an HTTP 400/404 on it
+// triggers the fallback (any other status propagates unmasked -- a 401/403/500
+// is a real error, not a routing divergence). If both variants fail, the
+// SECOND variant's error is thrown (it is the more specific signal once the
+// documented route is known-absent). Whichever variant succeeds is memoised
+// PER OCTOKIT INSTANCE (WeakMap -- one ApiClient owns one Octokit), so a
+// 106-day Sync backfill pays at most ONE failed probe, not 106.
+// ---------------------------------------------------------------------------
+
+type Users28Variant = 'latest' | 'day-path';
+type Users1Variant = 'day-query' | 'day-path';
+
+interface VariantMemo {
+  users28?: Users28Variant;
+  users1?: Users1Variant;
+}
+
+const variantMemoByClient = new WeakMap<Octokit, VariantMemo>();
+
+function memoFor(octokit: Octokit): VariantMemo {
+  let memo = variantMemoByClient.get(octokit);
+  if (!memo) {
+    memo = {};
+    variantMemoByClient.set(octokit, memo);
+  }
+  return memo;
+}
+
+// Only these two statuses mean "this route shape doesn't exist on this
+// tenant": 404 = no route matched; 400 = the router matched a {day} segment
+// and rejected our literal/missing value as a date (the exact live failure).
+function isVariantMissSignal(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  return status === 400 || status === 404;
+}
+
+// The "latest-equivalent" day used when the users-28-day PATH-param variant
+// needs a day and the caller supplied none: YESTERDAY (UTC) -- the most recent
+// day whose report can be expected to exist and be complete (today's report
+// may not be generated yet, and the tenant's own error text says the day may
+// not be in the future). Callers with a clock seam (the smoke, Sync) pass an
+// explicit day instead, so this wall-clock default only serves a bare live
+// invocation.
+function utcYesterday(): string {
+  return new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);
+}
+
+async function requestEnvelope(
+  octokit: Octokit,
+  enterprise: string,
+  report: UsersReport,
+  variant: Users28Variant | Users1Variant,
+  day: string,
+): Promise<UsersReportEnvelope> {
+  if (report === 'users-28-day') {
+    if (variant === 'latest') {
+      const r = await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest', { enterprise });
+      return r.data as UsersReportEnvelope;
+    }
+    const r = await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/{day}', { enterprise, day });
+    return r.data as UsersReportEnvelope;
+  }
+  if (variant === 'day-query') {
+    const r = await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-1-day', { enterprise, day });
+    return r.data as UsersReportEnvelope;
+  }
+  const r = await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-1-day/{day}', { enterprise, day });
+  return r.data as UsersReportEnvelope;
+}
+
+// Follow a report envelope's first download link and sniff+parse the file.
+// The download-link fetch is a hand-wrapped, non-Octokit HTTP call (§6.9): the
+// link points at an opaque results host (a short-lived signed URL), so a plain
+// `fetch` is correct and Octokit's typed surface does not apply. Exported so
+// the read-smoke's multi-variant probe can reuse it verbatim.
+export async function downloadReportRecords(
+  envelope: UsersReportEnvelope,
+): Promise<{ records: UsersReportRecord[]; format: ReportFormat }> {
+  const links = Array.isArray(envelope.download_links) ? envelope.download_links : [];
+  if (links.length === 0) return { records: [], format: 'empty' };
+  const fileResponse = await fetch(links[0]!);
+  const text = await fileResponse.text();
+  return parseUsersReportFile(text);
+}
+
+// One report fetch: envelope (with variant fallback, above) -> follow the
+// first download link -> sniff+parse.
 export async function fetchUsersReport(
   octokit: Octokit,
   enterprise: string,
   report: UsersReport,
   params: { day?: string } = {},
 ): Promise<FetchedUsersReport> {
-  const path =
-    report === 'users-28-day'
-      ? '/enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest'
-      : '/enterprises/{enterprise}/copilot/metrics/reports/users-1-day';
-  const requestParams: Record<string, string> = { enterprise };
-  if (params.day) requestParams.day = params.day;
+  const memo = memoFor(octokit);
+  const day = params.day ?? utcYesterday();
 
-  const response = await octokit.request(`GET ${path}`, requestParams);
-  const envelope = response.data as UsersReportEnvelope;
-  const links = Array.isArray(envelope.download_links) ? envelope.download_links : [];
-  if (links.length === 0) {
-    return { envelope: { ...envelope, download_links: links }, records: [], format: 'empty' };
+  // A memoised variant is used exclusively (no re-probing, and a failure on it
+  // propagates as-is -- once a variant has succeeded on this tenant, a later
+  // error on it is a real error, not a routing divergence).
+  const known = report === 'users-28-day' ? memo.users28 : memo.users1;
+  const variants: Array<Users28Variant | Users1Variant> = known
+    ? [known]
+    : report === 'users-28-day'
+      ? ['latest', 'day-path']
+      : ['day-query', 'day-path'];
+
+  let envelope: UsersReportEnvelope;
+  let used = variants[0]!;
+  try {
+    envelope = await requestEnvelope(octokit, enterprise, report, used, day);
+  } catch (err) {
+    if (variants.length < 2 || !isVariantMissSignal(err)) throw err;
+    // Documented form is absent on this tenant -- retry the path-param form.
+    // If this one ALSO fails, its error propagates (the more specific signal).
+    used = variants[1]!;
+    envelope = await requestEnvelope(octokit, enterprise, report, used, day);
   }
+  if (report === 'users-28-day') memo.users28 = used as Users28Variant;
+  else memo.users1 = used as Users1Variant;
 
-  const fileResponse = await fetch(links[0]!);
-  const text = await fileResponse.text();
-  const { records, format } = parseUsersReportFile(text);
+  const links = Array.isArray(envelope.download_links) ? envelope.download_links : [];
+  const { records, format } = await downloadReportRecords(envelope);
   return { envelope: { ...envelope, download_links: links }, records, format };
 }
 
@@ -160,9 +265,26 @@ export async function fetchUserCreditsForDays(
   days: readonly string[],
   concurrency: number = USERS_REPORT_CONCURRENCY,
 ): Promise<DatedUsersReportRecord[]> {
+  if (days.length === 0) return [];
   const byDay = new Map<string, DatedUsersReportRecord[]>();
-  for (let i = 0; i < days.length; i += concurrency) {
-    const chunk = days.slice(i, i + concurrency);
+
+  // Resolve the endpoint variant on the FIRST day alone, before any concurrent
+  // wave: fetchUsersReport memoises the working variant per Octokit instance,
+  // so a divergent tenant costs exactly ONE failed probe for the whole fan-out
+  // -- not one per call in the first concurrent chunk (which would all start
+  // before any of them had populated the memo).
+  {
+    const firstDay = days[0]!;
+    const { records } = await fetchUsersReport(octokit, enterprise, 'users-1-day', { day: firstDay });
+    byDay.set(
+      firstDay,
+      records.map((r) => ({ ...r, date: firstDay })),
+    );
+  }
+
+  const rest = days.slice(1);
+  for (let i = 0; i < rest.length; i += concurrency) {
+    const chunk = rest.slice(i, i + concurrency);
     await Promise.all(
       chunk.map(async (day) => {
         const { records } = await fetchUsersReport(octokit, enterprise, 'users-1-day', { day });

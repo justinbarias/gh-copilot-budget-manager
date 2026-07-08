@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { server } from '../msw/server.js';
-import { ENTERPRISE_SLUG } from '../msw/fixtures/index.js';
+import { ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { createTenantConfigStore } from '../tenant/store.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { createGitHubApiClient } from './github-impl.js';
@@ -13,6 +14,22 @@ import { createGitHubApiClient } from './github-impl.js';
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+
+// runLiveReadSmoke's R6 row is a multi-variant probe; the canonical mock only
+// models the DOCUMENTED forms, so the two path-param variants are registered
+// test-locally as 404 (a docs-faithful tenant) rather than left unhandled --
+// same treatment as read-smoke.test.ts, see its comment for the fall-through.
+beforeEach(() => {
+  server.use(
+    http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-28-day/:day`, ({ params }) => {
+      if (params.day === 'latest') return undefined;
+      return HttpResponse.json({ message: 'Not Found' }, { status: 404 });
+    }),
+    http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day/:day`, () =>
+      HttpResponse.json({ message: 'Not Found' }, { status: 404 }),
+    ),
+  );
+});
 
 describe('9.1/9.2 bridge methods', () => {
   let tmpDir: string;

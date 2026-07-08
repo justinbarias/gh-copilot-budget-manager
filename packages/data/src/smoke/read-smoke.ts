@@ -1,5 +1,5 @@
 import type { Octokit } from 'octokit';
-import { fetchUsersReport } from '../api-client/users-report.js';
+import { downloadReportRecords, type UsersReportEnvelope } from '../api-client/users-report.js';
 
 // Task 9.2-prep: the live read-surface smoke runner. Given a configured
 // Octokit client + enterprise slug, it issues reads against each hand-wrapped
@@ -204,49 +204,124 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
-// R6: the per-user metrics reports return a download-link ENVELOPE; the records
-// live in the file behind download_links (format undocumented). This row's
-// output IS the format pin: it follows the first link and reports
-// format=<json|jsonl|csv> + first-record keys, and also exercises users-1-day.
+// R6: DECISIVE multi-variant probe (2026-07-08 second live smoke: the
+// documented `users-28-day/latest` route 400'd with a day-parse error on the
+// maintainer's tenant -- its router serves `/users-28-day/{day}` and has no
+// literal `/latest`; docs still say otherwise). Each of the FOUR candidate
+// wire forms is attempted INDEPENDENTLY (raw octokit.request, deliberately
+// NOT via fetchUsersReport's fallback memo -- the probe's job is to pin the
+// tenant's full surface, not to find one working form and stop):
+//   28d/latest    GET .../users-28-day/latest              (documented)
+//   28d/{day}     GET .../users-28-day/{day}               (observed tenant)
+//   1d?day=       GET .../users-1-day?day=YYYY-MM-DD       (documented)
+//   1d/{day}      GET .../users-1-day/{day}                (inferred same-router)
+// Per-variant OK/HTTP-status is reported in details, plus format= +
+// first-record keys from the first variant that returns a valid envelope --
+// this output is what pins the tenant's actual metrics-report surface.
 async function runR6(octokit: Octokit, enterprise: string, probeDay: string): Promise<ReadSmokeEndpointResult> {
-  const path = 'GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest';
-  try {
-    const latest = await fetchUsersReport(octokit, enterprise, 'users-28-day');
-    if (!isStringArray(latest.envelope.download_links)) {
-      return {
-        endpoint: path,
-        docRef: 'R6',
-        status: 'shape_mismatch',
-        details: 'users-28-day/latest: envelope missing a string[] "download_links"',
-      };
-    }
-    const firstRecordKeys = latest.records[0] ? Object.keys(latest.records[0]) : [];
-    const latestPart = `users-28-day/latest: format=${latest.format}, first-record keys=[${firstRecordKeys.join(', ')}] (${latest.records.length} record(s))`;
+  const path = 'GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest (+ 3 variant probes)';
 
-    const oneDay = await fetchUsersReport(octokit, enterprise, 'users-1-day', { day: probeDay });
-    if (!isStringArray(oneDay.envelope.download_links)) {
-      return {
-        endpoint: path,
-        docRef: 'R6',
-        status: 'shape_mismatch',
-        details: `${latestPart}; users-1-day?day=${probeDay}: envelope missing a string[] "download_links"`,
-      };
-    }
-    const oneDayPart = `users-1-day?day=${probeDay}: format=${oneDay.format}, envelope ok (${oneDay.records.length} record(s))`;
-
-    return { endpoint: path, docRef: 'R6', status: 'ok', details: `${latestPart}; ${oneDayPart}` };
-  } catch (err) {
-    return { endpoint: path, docRef: 'R6', status: 'http_error', details: httpErrorDetails(err) };
+  interface VariantProbe {
+    label: string;
+    report: '28d' | '1d';
+    request: () => Promise<unknown>;
   }
+  const probes: VariantProbe[] = [
+    {
+      label: '28d/latest',
+      report: '28d',
+      request: async () =>
+        (await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest', { enterprise })).data,
+    },
+    {
+      label: `28d/{${probeDay}}`,
+      report: '28d',
+      request: async () =>
+        (
+          await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/{day}', {
+            enterprise,
+            day: probeDay,
+          })
+        ).data,
+    },
+    {
+      label: `1d?day=${probeDay}`,
+      report: '1d',
+      request: async () =>
+        (await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-1-day', { enterprise, day: probeDay }))
+          .data,
+    },
+    {
+      label: `1d/{${probeDay}}`,
+      report: '1d',
+      request: async () =>
+        (
+          await octokit.request('GET /enterprises/{enterprise}/copilot/metrics/reports/users-1-day/{day}', {
+            enterprise,
+            day: probeDay,
+          })
+        ).data,
+    },
+  ];
+
+  const parts: string[] = [];
+  const okByReport = { '28d': false, '1d': false };
+  let sawEnvelopeMismatch = false;
+  let pinnedEnvelope: UsersReportEnvelope | null = null;
+  let pinnedVia: string | null = null;
+
+  for (const probe of probes) {
+    try {
+      const data = (await probe.request()) as UsersReportEnvelope;
+      if (!isStringArray(data.download_links)) {
+        sawEnvelopeMismatch = true;
+        parts.push(`${probe.label}=ENVELOPE_MISMATCH (no string[] download_links)`);
+        continue;
+      }
+      okByReport[probe.report] = true;
+      parts.push(`${probe.label}=OK`);
+      if (!pinnedEnvelope) {
+        pinnedEnvelope = data;
+        pinnedVia = probe.label;
+      }
+    } catch (err) {
+      parts.push(`${probe.label}=${httpErrorDetails(err)}`);
+    }
+  }
+
+  // Format pin from the first working variant's envelope. A download-link
+  // failure is tracked separately from the envelope mismatches: it must
+  // downgrade the row even when every variant's ENVELOPE was reachable --
+  // otherwise an "ok" row would mask a failed format pin (this row's whole
+  // job), and the maintainer would have no cue to capture it. (Validator
+  // hardening, 2026-07-08.)
+  let downloadFailed = false;
+  if (pinnedEnvelope) {
+    try {
+      const { records, format } = await downloadReportRecords(pinnedEnvelope);
+      const firstRecordKeys = records[0] ? Object.keys(records[0]) : [];
+      parts.push(`format=${format}, first-record keys=[${firstRecordKeys.join(', ')}] (${records.length} record(s), via ${pinnedVia})`);
+    } catch (err) {
+      parts.push(`download-link fetch failed: ${httpErrorDetails(err)}`);
+      downloadFailed = true;
+    }
+  }
+
+  const bothReportsReachable = okByReport['28d'] && okByReport['1d'];
+  const status: ReadSmokeStatus =
+    bothReportsReachable && !downloadFailed ? 'ok' : sawEnvelopeMismatch || downloadFailed ? 'shape_mismatch' : 'http_error';
+  return { endpoint: path, docRef: 'R6', status, details: parts.join('; ') };
 }
 
-// `probeDay` (YYYY-MM-DD) is the users-1-day day the R6 row exercises -- an
+// `probeDay` (YYYY-MM-DD) is the day the R6 variant probes exercise -- an
 // elapsed cycle day supplied by the caller's clock seam (never wall-clock in
-// sim). Defaults to today for a bare live invocation.
+// sim). Defaults to YESTERDAY (UTC) for a bare live invocation: the most
+// recent day whose report can be expected to exist and be complete (today's
+// may not be generated yet).
 export async function runReadSmoke(
   octokit: Octokit,
   enterprise: string,
-  probeDay: string = new Date().toISOString().slice(0, 10),
+  probeDay: string = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
 ): Promise<ReadSmokeEndpointResult[]> {
   const [r1, r2, r4] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
   const r3 = await runR3(octokit, enterprise);

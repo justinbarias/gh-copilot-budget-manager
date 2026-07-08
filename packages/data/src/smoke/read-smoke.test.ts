@@ -1,6 +1,6 @@
 import { Octokit } from 'octokit';
 import { http, HttpResponse } from 'msw';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { server } from '../msw/server.js';
 import { ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { runReadSmoke, SMOKE_ENDPOINT_DOC_REFS } from './read-smoke.js';
@@ -11,6 +11,25 @@ import { runReadSmoke, SMOKE_ENDPOINT_DOC_REFS } from './read-smoke.js';
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+
+// The R6 row is a multi-variant probe (documented + path-param forms). The
+// canonical MSW world models the DOCUMENTED GHEC surface only, so the two
+// path-param variants ({day} in the path) are registered test-locally as 404
+// -- the shape of a docs-faithful tenant -- rather than left unhandled (this
+// suite listens with onUnhandledRequest: 'error'). The :day override must
+// fall through for the literal "latest" segment so the canonical /latest
+// handler keeps serving it.
+beforeEach(() => {
+  server.use(
+    http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-28-day/:day`, ({ params }) => {
+      if (params.day === 'latest') return undefined;
+      return HttpResponse.json({ message: 'Not Found' }, { status: 404 });
+    }),
+    http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day/:day`, () =>
+      HttpResponse.json({ message: 'Not Found' }, { status: 404 }),
+    ),
+  );
+});
 
 function client(): Octokit {
   return new Octokit({ baseUrl: GITHUB_API_BASE });
@@ -31,18 +50,65 @@ describe('runReadSmoke', () => {
     }
   });
 
-  // The R6 row's job is to PIN the (undocumented) downloaded report file
-  // format for the maintainer's next live run: it follows the first
-  // download_link and reports the sniffed format + first-record keys.
-  it('R6 follows the download-link envelope and reports the report file format + first-record keys', async () => {
+  // The R6 row's job is now twofold: PIN the (undocumented) downloaded report
+  // file format AND decisively map which of the four candidate wire forms this
+  // tenant serves (the second live smoke proved /latest can be absent).
+  it('R6 probes all four variants, reports per-variant status, and pins the report file format + first-record keys', async () => {
     const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
     const r6 = results.find((r) => r.docRef === 'R6');
     expect(r6?.status, r6?.details).toBe('ok');
-    // Format is one of the three sniffed kinds, and the per-user record keys
-    // are surfaced (ai_credits_used is the money-affecting field we depend on).
-    expect(r6?.details).toMatch(/users-28-day\/latest: format=(json|jsonl|csv)/);
+    // Documented forms serve on the canonical (docs-faithful) mock world; the
+    // path-param variants report their own status (404 here) instead of being
+    // silently skipped -- this per-variant map is the tenant-surface pin.
+    expect(r6?.details).toMatch(/28d\/latest=OK/);
+    expect(r6?.details).toMatch(/1d\?day=2026-06-12=OK/);
+    expect(r6?.details).toMatch(/28d\/\{2026-06-12\}=HTTP 404/);
+    expect(r6?.details).toMatch(/1d\/\{2026-06-12\}=HTTP 404/);
+    // Format pin from the first working variant, with the money-affecting
+    // ai_credits_used key surfaced.
+    expect(r6?.details).toMatch(/format=(json|jsonl|csv)/);
     expect(r6?.details).toMatch(/ai_credits_used/);
-    expect(r6?.details).toMatch(/users-1-day\?day=2026-06-12/);
+    expect(r6?.details).toMatch(/via 28d\/latest/);
+  });
+
+  // The divergent-tenant shape observed live 2026-07-08: /latest 400s with a
+  // day-parse error (the router treats "latest" as a {day}), the path-param
+  // forms serve. R6 must still be decisive -- OK overall, with the failing
+  // documented forms individually reported.
+  it('R6 stays ok on a path-param-only tenant (documented forms 400) and reports the divergence per variant', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-28-day/:day`, ({ params }) => {
+        if (params.day === 'latest') {
+          return HttpResponse.json({ message: 'Invalid day parameter. Expected format: YYYY-MM-DD' }, { status: 400 });
+        }
+        // Reuse the canonical 28-day download link so the file host stays canonical.
+        return HttpResponse.json({
+          download_links: ['https://results.download.github.test/reports/users-28-day/latest.json'],
+          report_start_day: '2026-05-16',
+          report_end_day: PROBE_DAY,
+        });
+      }),
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day`, () =>
+        HttpResponse.json({ message: 'Invalid day parameter. Expected format: YYYY-MM-DD' }, { status: 400 }),
+      ),
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day/:day`, ({ params }) =>
+        HttpResponse.json({
+          download_links: [`https://results.download.github.test/reports/users-1-day/${params.day as string}.json`],
+          report_start_day: params.day as string,
+          report_end_day: params.day as string,
+        }),
+      ),
+    );
+
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r6 = results.find((r) => r.docRef === 'R6');
+    expect(r6?.status, r6?.details).toBe('ok');
+    expect(r6?.details).toMatch(/28d\/latest=HTTP 400/);
+    expect(r6?.details).toMatch(/28d\/\{2026-06-12\}=OK/);
+    expect(r6?.details).toMatch(/1d\?day=2026-06-12=HTTP 400/);
+    expect(r6?.details).toMatch(/1d\/\{2026-06-12\}=OK/);
+    // Format pin comes from the first WORKING variant on this tenant.
+    expect(r6?.details).toMatch(/via 28d\/\{2026-06-12\}/);
   });
 
   it('catches a wrong shape (missing required field) as shape_mismatch', async () => {
