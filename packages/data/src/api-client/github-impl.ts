@@ -40,6 +40,7 @@ import { runReadSmoke } from '../smoke/read-smoke.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
+import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetScope } from './budget-scope.js';
 import { normalizeIncludedUsageCap } from './cost-center-cap.js';
 import { fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
@@ -156,12 +157,15 @@ interface Seat {
   created_at: string;
 }
 
-// Minimal projection of the budgets wire shape (PRD §2.3, §4.2): only the
-// fields ULB-precedence resolution needs. `budget_amount` is USD (PRD §2.3's
-// budget object doc) -- converted to credits the same way poolCreditsForItem
-// converts discount_amount, below.
+// Minimal INTERNAL-shaped projection of a budget: only the fields
+// ULB-precedence resolution needs, with scope/entity ALREADY translated from
+// the real wire enum (multi_user_customer / user + user field -- OpenAPI-
+// pinned, wire-contract-writes.md §1) by the shared budget-scope mapper at the
+// fetchBudgetsRaw boundary. `budget_amount` is USD (machine-verified "in whole
+// dollars") -- converted to credits the same way poolCreditsForItem converts
+// discountAmount, below.
 interface BudgetItem {
-  budget_scope: 'universal' | 'individual' | 'multi_user_cost_center' | 'enterprise' | 'organization' | 'cost_center' | 'repository';
+  budget_scope: InternalBudgetScope;
   budget_entity_name: string;
   budget_amount: number;
 }
@@ -487,17 +491,40 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return fetchUserCreditsForDays(octokit, enterprise, days);
   }
 
-  // Hand-wrapped (not in Octokit's typed catalog -- same CLAUDE.md §6.9 note as
-  // fetchCostCentersRaw/fetchCreditsUsedItems above): the enterprise budgets
-  // endpoint is a 2026-dated route from the PRD's own API-inventory research
-  // (§2.3, §4.2), not yet a real, published GitHub route to validate against.
+  // Scope translation at the boundary (wire-contract-writes.md §1, OpenAPI-
+  // pinned): the wire's seven-value budget_scope enum (multi_user_customer =
+  // universal ULB; user + `user` login field = individual ULB) is mapped to
+  // the internal spellings HERE, so every downstream consumer
+  // (buildUlbCandidates' ULB-precedence filter, forecast wiring) keeps working
+  // against the frozen internal model. Rows with no internal home
+  // (repository / unknown) are skipped, mirroring fetchLiveControls.
   async function fetchBudgetsRaw(): Promise<BudgetItem[]> {
-    return paginateAll<BudgetItem>(
+    interface WireBudgetRow {
+      budget_scope: string;
+      budget_entity_name?: string | null;
+      user?: string | null;
+      budget_amount: number;
+    }
+    const raw = await paginateAll<WireBudgetRow>(
       octokit,
       '/enterprises/{enterprise}/settings/billing/budgets',
       { enterprise },
-      (data) => (data as { budgets: BudgetItem[] }).budgets,
+      (data) => (data as { budgets: WireBudgetRow[] }).budgets,
     );
+    const items: BudgetItem[] = [];
+    const skipped: WireBudgetRow[] = [];
+    for (const row of raw) {
+      const identity = wireBudgetToInternal(row);
+      if (!identity) {
+        skipped.push(row);
+        continue;
+      }
+      items.push({ budget_scope: identity.scope, budget_entity_name: identity.entityName, budget_amount: row.budget_amount });
+    }
+    // Never silent: unsupported scopes (repository / a future enum widening)
+    // are excluded from Controls but traced (see budget-scope.ts's helper).
+    warnSkippedBudgetScopes(skipped, 'fetchBudgetsRaw');
+    return items;
   }
 
   async function fetchSeats(): Promise<Seat[]> {

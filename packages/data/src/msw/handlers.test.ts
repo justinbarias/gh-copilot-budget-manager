@@ -117,6 +117,47 @@ describe('budgets handler', () => {
     const zeroUlb = body.budgets.find((b) => b.id === BUDGET_IDS.zeroUlb);
     expect(zeroUlb?.budget_amount).toBe(0);
   });
+
+  // Machine-verified scope spellings (wire-contract-writes.md §1): the wire
+  // enum has NO 'universal'/'individual' -- the universal ULB rides as
+  // 'multi_user_customer' and individual ULBs as scope 'user' + a `user`
+  // login field. This pins the LIST emission so the internal spellings can
+  // never leak back onto the wire.
+  it('emits only the real seven-value budget_scope enum, with the user field on scope-user budgets', async () => {
+    const res = await fetch(`${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/budgets?per_page=100`, {
+      headers,
+    });
+    const body = (await res.json()) as {
+      budgets: Array<{ id: string; budget_scope: string; budget_entity_name: string; user?: string }>;
+    };
+    const realScopes = new Set([
+      'enterprise',
+      'organization',
+      'repository',
+      'cost_center',
+      'multi_user_customer',
+      'multi_user_cost_center',
+      'user',
+    ]);
+    expect(body.budgets.length).toBeGreaterThan(0);
+    for (const b of body.budgets) {
+      expect(realScopes.has(b.budget_scope)).toBe(true);
+      if (b.budget_scope === 'user') {
+        expect(b.user).toBe(b.budget_entity_name); // login rides the user field
+      } else {
+        expect('user' in b).toBe(false);
+      }
+    }
+    const universal = body.budgets.find((b) => b.id === BUDGET_IDS.universal);
+    expect(universal?.budget_scope).toBe('multi_user_customer');
+    const displayBug = body.budgets.find((b) => b.id === BUDGET_IDS.ulbDisplayBug);
+    expect(displayBug?.budget_scope).toBe('user');
+    expect(displayBug?.user).toBe('liam-obrien');
+    // 9 individual-ULB fixtures carry scope 'user'; exactly 1 fixture is the
+    // 'multi_user_customer' universal (fixture DATA unchanged, spelling migrated).
+    expect(body.budgets.filter((b) => b.budget_scope === 'user')).toHaveLength(9);
+    expect(body.budgets.filter((b) => b.budget_scope === 'multi_user_customer')).toHaveLength(1);
+  });
 });
 
 // R5 wire item: what the mock now emits on `.../settings/billing/usage`

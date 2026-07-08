@@ -29,8 +29,11 @@ function validBudgetPayload(overrides: Record<string, unknown> = {}) {
   return {
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    // Wire spelling for an individual ULB (machine-verified, wire-contract-
+    // writes.md §1): scope 'user' + the `user` login field.
+    budget_scope: 'user',
     budget_entity_name: 'user-99',
+    user: 'user-99',
     budget_amount: 100,
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['finops@dewr.gov.au'] },
@@ -38,38 +41,72 @@ function validBudgetPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Machine-verified success envelope (wire-contract-writes.md §2):
+// POST/PATCH -> 200 {message, budget}; DELETE -> 200 {message, id}.
+interface BudgetEnvelope {
+  message: string;
+  budget: Record<string, unknown>;
+}
+
 describe('Task 4.1 -- budget mutations: create (POST)', () => {
-  const scopeCases: Array<{ scope: string; entity: string }> = [
+  // The REAL seven-value budget_scope enum (machine-verified). The 'user'
+  // case additionally carries the `user` login field.
+  const scopeCases: Array<{ scope: string; entity: string; user?: string }> = [
     { scope: 'enterprise', entity: ENTERPRISE_SLUG },
     { scope: 'organization', entity: 'dewr-digital' },
+    { scope: 'repository', entity: 'dewr-digital/wfa-portal' },
     { scope: 'cost_center', entity: 'Workforce Australia Platform' },
-    { scope: 'universal', entity: ENTERPRISE_SLUG },
-    { scope: 'individual', entity: 'user-99' },
+    { scope: 'multi_user_customer', entity: ENTERPRISE_SLUG },
     { scope: 'multi_user_cost_center', entity: 'Workforce Australia Platform' },
+    { scope: 'user', entity: 'user-99', user: 'user-99' },
   ];
 
-  it.each(scopeCases)('creates a $scope budget: 201 + full echoed response + deterministic id', async ({ scope, entity }) => {
-    const payload = validBudgetPayload({ budget_scope: scope, budget_entity_name: entity });
+  it.each(scopeCases)('creates a $scope budget: 200 {message, budget} envelope + deterministic id', async ({ scope, entity, user }) => {
+    const payload = validBudgetPayload({
+      budget_scope: scope,
+      budget_entity_name: entity,
+      ...(user ? { user } : { user: undefined }),
+    });
+    if (!user) delete (payload as Record<string, unknown>).user;
     const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toMatchObject(payload);
-    expect(typeof body.id).toBe('string');
-    expect((body.id as string).length).toBeGreaterThan(0);
+    expect(res.status).toBe(200); // machine-verified: the status list has NO 201
+    const body = (await res.json()) as BudgetEnvelope;
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
+    expect(body.budget).toMatchObject(payload);
+    expect(typeof body.budget.id).toBe('string');
+    expect((body.budget.id as string).length).toBeGreaterThan(0);
 
-    // Determinism: identical payload -> identical id (derived from the
-    // payload, never Math.random/a counter -- Architecture Decisions).
+    // Determinism: identical payload -> identical envelope (id derived from
+    // the payload, never Math.random/a counter -- Architecture Decisions).
     const res2 = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
     const body2 = await res2.json();
     expect(body2).toEqual(body);
   });
 
-  it('accepts a $0 budget amount -- the trap; the real API allows it and so must this mock', async () => {
-    const payload = validBudgetPayload({ budget_entity_name: 'user-98', budget_amount: 0, budget_alerting: { will_alert: false, alert_recipients: [] } });
+  it('a scope-user create echoes the user login field on the budget object', async () => {
+    const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(validBudgetPayload()) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as BudgetEnvelope;
+    expect(body.budget.user).toBe('user-99');
+    expect(body.budget.budget_scope).toBe('user');
+  });
+
+  it('rejects a scope-user create without the user login field (422, field: user)', async () => {
+    const payload = validBudgetPayload();
+    delete (payload as Record<string, unknown>).user;
     const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { budget_amount: number };
-    expect(body.budget_amount).toBe(0);
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { errors: Array<{ field: string }> };
+    expect(body.errors.some((e) => e.field === 'user')).toBe(true);
+  });
+
+  it('accepts a $0 budget amount -- the trap; the real API allows it and so must this mock', async () => {
+    const payload = validBudgetPayload({ budget_entity_name: 'user-98', user: 'user-98', budget_amount: 0, budget_alerting: { will_alert: false, alert_recipients: [] } });
+    const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as BudgetEnvelope;
+    expect(body.budget.budget_amount).toBe(0);
   });
 
   it('matches the PRD §2.1 CCULB (multi_user_cost_center) example payload shape verbatim', async () => {
@@ -83,8 +120,9 @@ describe('Task 4.1 -- budget mutations: create (POST)', () => {
       budget_alerting: { will_alert: true, alert_recipients: ['wfa-leads@dewr.gov.au'] },
     };
     const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
-    expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject(payload);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as BudgetEnvelope;
+    expect(body.budget).toMatchObject(payload);
   });
 
   it('rejects an invalid budget_scope with a GitHub-shaped 422', async () => {
@@ -101,11 +139,31 @@ describe('Task 4.1 -- budget mutations: create (POST)', () => {
     expect(body.errors.length).toBeGreaterThan(0);
   });
 
+  // Drift guard: our old INTERNAL spellings are not wire values -- any impl
+  // callsite still serializing the internal model onto the wire fails here.
+  it.each(['universal', 'individual'])('rejects the internal-only scope spelling %s (never a wire value)', async (scope) => {
+    const res = await fetch(BUDGETS_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validBudgetPayload({ budget_scope: scope })),
+    });
+    expect(res.status).toBe(422);
+  });
+
   it('rejects a negative budget_amount', async () => {
     const res = await fetch(BUDGETS_URL, {
       method: 'POST',
       headers,
       body: JSON.stringify(validBudgetPayload({ budget_amount: -5 })),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects a fractional budget_amount (machine-verified: integer, whole dollars)', async () => {
+    const res = await fetch(BUDGETS_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validBudgetPayload({ budget_amount: 12.5 })),
     });
     expect(res.status).toBe(422);
   });
@@ -153,11 +211,12 @@ describe('Task 4.1 -- budget mutations: read/update/delete by id', () => {
     BUDGET_IDS.organizationMetered,
     BUDGET_IDS.costCenterMetered,
   ])(
-    // Covers all five budget_scope families (enterprise, organization, cost_center,
-    // user-level universal/individual, multi_user_cost_center/CCULB) -- the PATCH
-    // handler is generic-by-id, but the acceptance criterion is explicit ("All
-    // five scopes create/update/delete"), so every canonical scope gets its own
-    // assertion rather than relying on genericity as implicit proof.
+    // Covers all five budget_scope families (enterprise, organization,
+    // cost_center, user-level multi_user_customer/user, multi_user_cost_center/
+    // CCULB) -- the PATCH handler is generic-by-id, but the acceptance
+    // criterion is explicit ("All five scopes create/update/delete"), so every
+    // canonical scope gets its own assertion rather than relying on genericity
+    // as implicit proof. Machine-verified envelope: PATCH -> 200 {message, budget}.
     'PATCHes %s across every budget_scope incl. the display-bug/$0 edge fixtures and the API-only CCULB',
     async (id) => {
       const res = await fetch(`${BUDGETS_URL}/${id}`, {
@@ -166,9 +225,11 @@ describe('Task 4.1 -- budget mutations: read/update/delete by id', () => {
         body: JSON.stringify({ budget_amount: 250 }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { budget_amount: number; id: string };
-      expect(body.budget_amount).toBe(250);
-      expect(body.id).toBe(id);
+      const body = (await res.json()) as { message: string; budget: { budget_amount: number; id: string } };
+      expect(typeof body.message).toBe('string');
+      expect(body.message.length).toBeGreaterThan(0);
+      expect(body.budget.budget_amount).toBe(250);
+      expect(body.budget.id).toBe(id);
     },
   );
 
@@ -201,11 +262,16 @@ describe('Task 4.1 -- budget mutations: read/update/delete by id', () => {
   ])(
     // Same "all five scopes" acceptance criterion as the PATCH suite above,
     // covering DELETE too (edge fixtures + the API-only CCULB are mutable
-    // via API despite the display-bug/UI omission).
-    'DELETEs %s across every budget_scope with 204',
+    // via API despite the display-bug/UI omission). Machine-verified
+    // envelope: DELETE -> 200 {message, id} -- the status list has NO 204.
+    'DELETEs %s across every budget_scope with 200 {message, id}',
     async (id) => {
       const res = await fetch(`${BUDGETS_URL}/${id}`, { method: 'DELETE', headers });
-      expect(res.status).toBe(204);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { message: string; id: string };
+      expect(typeof body.message).toBe('string');
+      expect(body.message.length).toBeGreaterThan(0);
+      expect(body.id).toBe(id);
     },
   );
 
@@ -222,8 +288,8 @@ describe('Task 4.1 -- budget mutations: statelessness', () => {
 
     const patched = (await (
       await fetch(`${BUDGETS_URL}/${BUDGET_IDS.zeroUlb}`, { method: 'PATCH', headers, body: JSON.stringify({ budget_amount: 999 }) })
-    ).json()) as { budget_amount: number };
-    expect(patched.budget_amount).toBe(999);
+    ).json()) as { budget: { budget_amount: number } };
+    expect(patched.budget.budget_amount).toBe(999);
 
     // Interleaved read immediately after: canonical fixture is untouched.
     const after = (await (await fetch(`${BUDGETS_URL}/${BUDGET_IDS.zeroUlb}`, { headers })).json()) as { budget_amount: number };
@@ -234,7 +300,7 @@ describe('Task 4.1 -- budget mutations: statelessness', () => {
   });
 
   it('running the identical create mutation twice yields byte-identical responses', async () => {
-    const payload = validBudgetPayload({ budget_entity_name: 'user-95', budget_amount: 50 });
+    const payload = validBudgetPayload({ budget_entity_name: 'user-95', user: 'user-95', budget_amount: 50 });
     const first = await (await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) })).json();
     const second = await (await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) })).json();
     expect(second).toEqual(first);
@@ -274,7 +340,9 @@ describe('Task 4.2 -- cost center mutations: create (POST)', () => {
     expect(body.included_usage_cap).toEqual({ enabled: true, overflow: 'metered', computed_limit_credits: 2 * PROMO_CREDITS_PER_SEAT });
   });
 
-  it('rejects any attempt to set a cap amount at create time', async () => {
+  // Machine-verified (wire-contract-writes.md §4): cost-center mutations have
+  // NO 422 in their OpenAPI status lists -- validation failures are 400.
+  it('rejects any attempt to set a cap amount at create time (400)', async () => {
     const res = await fetch(COST_CENTERS_URL, {
       method: 'POST',
       headers,
@@ -283,23 +351,23 @@ describe('Task 4.2 -- cost center mutations: create (POST)', () => {
         included_usage_cap: { enabled: true, overflow: 'block', computed_limit_credits: 999_999 },
       }),
     });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as { errors: Array<{ field: string }> };
     expect(body.errors.some((e) => e.field.includes('included_usage_cap'))).toBe(true);
   });
 
-  it('rejects a create payload missing a name', async () => {
+  it('rejects a create payload missing a name (400)', async () => {
     const res = await fetch(COST_CENTERS_URL, { method: 'POST', headers, body: JSON.stringify({}) });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 
-  it('rejects an unknown top-level field on create', async () => {
+  it('rejects an unknown top-level field on create (400)', async () => {
     const res = await fetch(COST_CENTERS_URL, {
       method: 'POST',
       headers,
       body: JSON.stringify({ name: 'x', computed_limit_credits: 5000 }),
     });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 });
 
@@ -329,22 +397,22 @@ describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap t
     expect(body.included_usage_cap.computed_limit_credits).toBe(24 * PROMO_CREDITS_PER_SEAT);
   });
 
-  it('rejects any attempt to set a cap amount on edit, under any guessed field name', async () => {
+  it('rejects any attempt to set a cap amount on edit, under any guessed field name (400 -- §4 status-list ruling)', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ included_usage_cap: { overflow: 'metered', amount: 50_000 } }),
     });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 
-  it('rejects an unknown top-level field on edit', async () => {
+  it('rejects an unknown top-level field on edit (400)', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ mtd_burn_credits: 0 }),
     });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 
   it('404s editing an unknown cost center', async () => {
@@ -353,72 +421,122 @@ describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap t
   });
 });
 
+// Machine-verified /resource wire (wire-contract-writes.md §3): four-array
+// request body {users, organizations, repositories, enterprise_teams}
+// (minProperties 1); add -> 200 {message, reassigned_resources|null},
+// remove -> 200 {message}. `simulated_included_usage_cap` is the mock's
+// SIM-ONLY enrichment preserving Task 4.2's recomputed-limit observability
+// (see the handler comment; validator to ratify).
 describe('Task 4.2 -- cost center mutations: membership (resource add/remove)', () => {
-  it('adds 2 users to the 9-seat Data & Evaluation Platform CC and returns the recomputed limit for 11 seats', async () => {
+  interface ResourceAddResponse {
+    message: string;
+    reassigned_resources: Array<{ resource_type: string; name: string; previous_cost_center: string }> | null;
+    simulated_included_usage_cap: { enabled: boolean; overflow: string; computed_limit_credits: number };
+  }
+
+  it('adds 2 users to the 9-seat Data & Evaluation Platform CC: 200 {message, reassigned_resources: null} + recomputed sim limit for 11 seats', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        resources: [
-          { type: 'User', name: 'tess-whitford' },
-          { type: 'User', name: 'jordan-mackay' },
-        ],
-      }),
+      // tess-whitford / jordan-mackay belong to NO fixture cost center, so
+      // nothing is reassigned -- machine-verified null, not [].
+      body: JSON.stringify({ users: ['tess-whitford', 'jordan-mackay'] }),
     });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { included_usage_cap: { computed_limit_credits: number }; member_count: number };
-    expect(body.included_usage_cap.computed_limit_credits).toBe(11 * PROMO_CREDITS_PER_SEAT);
-    expect(body.member_count).toBe(11);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ResourceAddResponse;
+    expect(typeof body.message).toBe('string');
+    expect(body.reassigned_resources).toBeNull();
+    expect(body.simulated_included_usage_cap.computed_limit_credits).toBe(11 * PROMO_CREDITS_PER_SEAT);
   });
 
-  it('supports adding an enterprise-team resource', async () => {
+  it('reports a genuine cross-cost-center move in reassigned_resources (raymond-li: Data & Evaluation -> Workforce)', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'EnterpriseTeam', name: 'design-guild' }] }),
+      body: JSON.stringify({ users: ['raymond-li'] }),
     });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { added: Array<{ type: string; name: string }> };
-    expect(body.added).toEqual([{ type: 'EnterpriseTeam', name: 'design-guild' }]);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ResourceAddResponse;
+    expect(body.reassigned_resources).toEqual([
+      { resource_type: 'User', name: 'raymond-li', previous_cost_center: COST_CENTER_IDS.dataEval },
+    ]);
   });
 
-  it('removes a user and recomputes the limit downward', async () => {
+  it('supports adding an enterprise-team resource via the enterprise_teams array', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enterprise_teams: ['design-guild'] }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ResourceAddResponse;
+    expect(body.reassigned_resources).toBeNull();
+    // design-guild is not in ENTERPRISE_TEAM_SEAT_COUNTS -> the 1-seat
+    // default on top of Workforce's canonical 24 seats.
+    expect(body.simulated_included_usage_cap.computed_limit_credits).toBe(25 * PROMO_CREDITS_PER_SEAT);
+  });
+
+  it('removes a user: 200 {message} WITHOUT reassigned_resources, sim limit recomputed downward', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'DELETE',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'User', name: 'raymond-li' }] }),
+      body: JSON.stringify({ users: ['raymond-li'] }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { included_usage_cap: { computed_limit_credits: number }; member_count: number };
-    expect(body.included_usage_cap.computed_limit_credits).toBe(8 * PROMO_CREDITS_PER_SEAT);
-    expect(body.member_count).toBe(8);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(typeof body.message).toBe('string');
+    // Machine-verified: the remove envelope carries NO reassigned_resources key.
+    expect('reassigned_resources' in body).toBe(false);
+    expect((body.simulated_included_usage_cap as { computed_limit_credits: number }).computed_limit_credits).toBe(
+      8 * PROMO_CREDITS_PER_SEAT,
+    );
   });
 
   it('404s adding a resource to an unknown cost center', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/does-not-exist/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'User', name: 'user-01' }] }),
+      body: JSON.stringify({ users: ['user-01'] }),
     });
     expect(res.status).toBe(404);
   });
 
-  it('rejects a malformed resource payload (unknown resource type)', async () => {
-    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ resources: [{ type: 'Bogus', name: 'x' }] }),
-    });
-    expect(res.status).toBe(422);
+  it('rejects the OLD invented {resources: [{type, name}]} body shape loudly (400) -- any missed impl callsite must surface', async () => {
+    for (const method of ['POST', 'DELETE'] as const) {
+      const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
+        method,
+        headers,
+        body: JSON.stringify({ resources: [{ type: 'User', name: 'x' }] }),
+      });
+      expect(res.status).toBe(400);
+    }
   });
 
-  it('rejects an empty resources array', async () => {
+  it('rejects an empty body object (machine-verified minProperties: 1) with 400', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ resources: [] }),
+      body: JSON.stringify({}),
     });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a body whose present arrays are all empty (400)', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ users: [], enterprise_teams: [] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects non-string array entries (400)', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}/resource`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ users: [42] }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 
@@ -427,7 +545,7 @@ describe('Task 4.2 -- cost center mutations: statelessness', () => {
     await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.dataEval}/resource`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ resources: [{ type: 'User', name: 'tess-whitford' }] }),
+      body: JSON.stringify({ users: ['tess-whitford'] }),
     });
 
     // R3: membership now rides embedded on the cost-center object (list AND

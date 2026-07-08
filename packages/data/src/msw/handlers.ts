@@ -106,14 +106,19 @@ function slug(value: string): string {
 // ---------------------------------------------------------------------------
 
 const BUDGET_TYPES = new Set<BudgetType>(['ProductPricing', 'SkuPricing', 'BundlePricing']);
+// The REAL wire enum, machine-verified against GitHub's OpenAPI description
+// (wire-contract-writes.md §1). Our old internal spellings
+// 'universal'/'individual' are NOT wire values and are rejected here like any
+// other unknown scope -- the drift guard that surfaces any impl callsite
+// still serializing the internal model onto the wire.
 const BUDGET_SCOPES = new Set<BudgetScope>([
   'enterprise',
   'organization',
-  'cost_center',
   'repository',
-  'universal',
-  'individual',
+  'cost_center',
+  'multi_user_customer',
   'multi_user_cost_center',
+  'user',
 ]);
 
 const BUDGET_CREATE_ALLOWED_FIELDS = new Set([
@@ -124,6 +129,7 @@ const BUDGET_CREATE_ALLOWED_FIELDS = new Set([
   'budget_amount',
   'prevent_further_usage',
   'budget_alerting',
+  'user',
 ]);
 const BUDGET_PATCH_ALLOWED_FIELDS = new Set(['budget_amount', 'prevent_further_usage', 'budget_alerting']);
 
@@ -141,10 +147,12 @@ function validateBudgetAlerting(value: unknown, errors: FieldError[]): Budget['b
 }
 
 // $0 is a deliberate, valid amount (spec §1.3/§1.4 -- ULBs can and do block at
-// $0; this is the documented trap, not a bug) -- only non-numeric or negative
-// amounts are malformed.
+// $0; this is the documented trap, not a bug). Machine-verified
+// (wire-contract-writes.md §1): budget_amount is `type: integer`, "in whole
+// dollars" -- so fractional dollars are malformed, alongside non-numeric or
+// negative values.
 function validateBudgetAmount(value: unknown, errors: FieldError[]): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     errors.push({ resource: 'Budget', field: 'budget_amount', code: 'invalid' });
     return undefined;
   }
@@ -175,6 +183,15 @@ function validateCreateBudgetPayload(body: unknown): { ok: true; value: Budget }
   }
   const budgetAlerting = validateBudgetAlerting(body.budget_alerting, errors);
 
+  // Machine-verified (wire-contract-writes.md §1): `user` is "the login when
+  // scope is `user`" -- required for scope 'user', a non-empty string when
+  // present.
+  if (body.budget_scope === 'user' && (typeof body.user !== 'string' || body.user.length === 0)) {
+    errors.push({ resource: 'Budget', field: 'user', code: 'missing_field' });
+  } else if ('user' in body && typeof body.user !== 'string') {
+    errors.push({ resource: 'Budget', field: 'user', code: 'invalid' });
+  }
+
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
@@ -187,6 +204,7 @@ function validateCreateBudgetPayload(body: unknown): { ok: true; value: Budget }
       budget_amount: budgetAmount as number,
       prevent_further_usage: body.prevent_further_usage as boolean,
       budget_alerting: budgetAlerting as Budget['budget_alerting'],
+      ...(typeof body.user === 'string' && body.user.length > 0 ? { user: body.user } : {}),
     },
   };
 }
@@ -312,6 +330,95 @@ function validateResourceList(value: unknown, errors: FieldError[]): CostCenterR
     result.push({ type: entry.type as CostCenterResource['type'], name: entry.name });
   });
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Machine-verified /resource mutation body (wire-contract-writes.md §3): POST
+// (add) and DELETE (remove) take the IDENTICAL four-array shape with
+// `minProperties: 1`:
+//   { users: [string], organizations: [string],
+//     repositories: [string], enterprise_teams: [string] }
+// The old invented `{resources: [{type, name}]}` shape is rejected outright
+// (`resources` is an unknown key -> validation error), so any impl callsite
+// still sending it fails loudly instead of silently half-working.
+// ---------------------------------------------------------------------------
+
+// Body key -> the resource `type` used by the fixture membership model (and
+// by the R3-pinned embedded `resources[]` read shape, e.g. {"type": "User"}).
+const RESOURCE_BODY_KEY_TO_TYPE: Record<string, CostCenterResource['type']> = {
+  users: 'User',
+  organizations: 'Org',
+  repositories: 'Repo',
+  enterprise_teams: 'EnterpriseTeam',
+};
+const RESOURCE_BODY_ALLOWED_FIELDS = new Set(Object.keys(RESOURCE_BODY_KEY_TO_TYPE));
+
+function validateResourceMutationBody(
+  body: unknown,
+): { ok: true; entries: CostCenterResource[] } | { ok: false; errors: FieldError[] } {
+  const errors: FieldError[] = [];
+  if (!isPlainObject(body)) {
+    return { ok: false, errors: [{ resource: 'CostCenter', field: 'body', code: 'missing' }] };
+  }
+  rejectUnknownKeys(body, RESOURCE_BODY_ALLOWED_FIELDS, 'CostCenter', errors);
+
+  // minProperties: 1 -- machine-verified; an empty object is malformed.
+  if (Object.keys(body).filter((k) => RESOURCE_BODY_ALLOWED_FIELDS.has(k)).length === 0) {
+    errors.push({ resource: 'CostCenter', field: 'body', code: 'missing_field' });
+  }
+
+  const entries: CostCenterResource[] = [];
+  for (const [key, type] of Object.entries(RESOURCE_BODY_KEY_TO_TYPE)) {
+    if (!(key in body)) continue;
+    const arr = body[key];
+    if (!Array.isArray(arr) || !arr.every((n) => typeof n === 'string' && n.length > 0)) {
+      errors.push({ resource: 'CostCenter', field: key, code: 'invalid' });
+      continue;
+    }
+    for (const name of arr as string[]) entries.push({ type, name });
+  }
+  // All present arrays empty -> nothing to mutate. minProperties: 1 is the
+  // machine-verified floor; rejecting an all-empty no-op on top of it is a
+  // plausible-server validation (mirrors the old empty-resources rejection).
+  if (errors.length === 0 && entries.length === 0) {
+    errors.push({ resource: 'CostCenter', field: 'body', code: 'invalid' });
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, entries };
+}
+
+// Machine-verified add response (wire-contract-writes.md §3):
+// reassigned_resources[] = {resource_type, name, previous_cost_center}, or
+// null when nothing moved. A resource "genuinely moves" when the canonical
+// fixtures attribute it to a DIFFERENT cost center than the target.
+// `previous_cost_center` carries the previous cost center's ID (fixtures key
+// membership by id; the OpenAPI type is just `string`, so id-vs-name is a
+// simulation choice -- flagged for the next live smoke to pin).
+// `resource_type` uses the R3-pinned read-shape casing ('User'/'Org'/...);
+// the contract does not quote this enum, so it too is pinned-by-consistency,
+// not machine-verified.
+interface ReassignedResource {
+  resource_type: CostCenterResource['type'];
+  name: string;
+  previous_cost_center: string;
+}
+
+function findReassignments(
+  costCenterResources: Readonly<Record<string, readonly CostCenterResource[]>>,
+  targetCcId: string,
+  entries: readonly CostCenterResource[],
+): ReassignedResource[] {
+  const moves: ReassignedResource[] = [];
+  for (const entry of entries) {
+    for (const [ccId, resources] of Object.entries(costCenterResources)) {
+      if (ccId === targetCcId) continue;
+      if (resources.some((r) => r.type === entry.type && r.name === entry.name)) {
+        moves.push({ resource_type: entry.type, name: entry.name, previous_cost_center: ccId });
+        break;
+      }
+    }
+  }
+  return moves;
 }
 
 function validateCreateCostCenterPayload(
@@ -612,8 +719,10 @@ export const handlers = [
     const parsed = await readJsonBody(request);
     if (!parsed.ok) return githubError(400, 'Problems parsing JSON');
 
+    // Cost-center mutations have NO 422 in their machine-verified status
+    // list (wire-contract-writes.md §4) -- validation failures are 400.
     const result = validateCreateCostCenterPayload(parsed.value);
-    if (!result.ok) return githubError(422, 'Validation Failed', result.errors);
+    if (!result.ok) return githubError(400, 'Validation Failed', result.errors);
 
     const value = result.value;
     const resources = value.resources ?? [];
@@ -655,8 +764,9 @@ export const handlers = [
     const parsed = await readJsonBody(request);
     if (!parsed.ok) return githubError(400, 'Problems parsing JSON');
 
+    // 400 on validation failure, same §4 status-list ruling as create above.
     const result = validateEditCostCenterPayload(parsed.value);
-    if (!result.ok) return githubError(422, 'Validation Failed', result.errors);
+    if (!result.ok) return githubError(400, 'Validation Failed', result.errors);
 
     const value = result.value;
     // computed_limit_credits is always freshly derived from canonical
@@ -682,17 +792,21 @@ export const handlers = [
     });
   }),
 
-  // Membership mutations: the recomputed included_usage_cap.computed_limit_credits
-  // in the immediate response is derived purely from canonical fixture
-  // membership + this request's resources (never persisted -- Architecture
-  // Decisions: "MSW stays stateless"). §6.9 (Task 4.3 -- docs/api-surface-
-  // validation.md): real GitHub takes a four-array body ({users, organizations,
-  // repositories, enterprise_teams}) and returns 200 {message,
-  // reassigned_resources} -- NOT this {resources:[{type,name}]} request or the
-  // recomputed-limit response. That is a DELIBERATE simulation enrichment: 4.2
-  // requires the recomputed limit to be observable in the immediate response,
-  // and a stateless mock can't surface it on a re-GET. Kept as an enrichment
-  // and flagged for github-impl reconciliation at Task 9.2 -- not "corrected".
+  // Membership mutations -- machine-verified wire (wire-contract-writes.md
+  // §3): four-array request body (validateResourceMutationBody above), add ->
+  // 200 {message, reassigned_resources|null}, remove -> 200 {message}.
+  //
+  // SIM-ONLY ENRICHMENT -- `simulated_included_usage_cap` (validator to rule;
+  // builder's proposal): Task 4.2's acceptance criterion requires the
+  // recomputed license-derived cap limit to be OBSERVABLE in the immediate
+  // response, because a stateless mock can never surface it on a re-GET (the
+  // canonical fixtures don't change). The real envelope has no such field, so
+  // the recomputed cap rides ALONGSIDE the real keys under an unmistakably
+  // simulation-scoped name (precedent: `simulatedUiHidden`, `via_ent_team`).
+  // Real GitHub never sends it; impl code must never depend on it (additive
+  // unknown fields are exactly what a defensive parser tolerates). The
+  // alternative -- re-deriving the limit client-side -- would relocate mock
+  // knowledge into UI/impl code and touch files outside the mock's seam.
   http.post(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, async ({ request, params }) => {
     const fx = getActiveFixtures();
     const ccId = params.costCenterId as string;
@@ -702,31 +816,24 @@ export const handlers = [
     const parsed = await readJsonBody(request);
     if (!parsed.ok) return githubError(400, 'Problems parsing JSON');
 
-    const errors: FieldError[] = [];
-    if (!isPlainObject(parsed.value)) {
-      return githubError(422, 'Validation Failed', [{ resource: 'CostCenterResource', field: 'body', code: 'missing' }]);
-    }
-    const added = validateResourceList(parsed.value.resources, errors);
-    if (!added || added.length === 0) {
-      errors.push({ resource: 'CostCenterResource', field: 'resources', code: 'invalid' });
-    }
-    if (errors.length > 0 || !added) return githubError(422, 'Validation Failed', errors);
+    // Cost-center mutations have NO 422 in their machine-verified status
+    // list -- validation failures are 400 (wire-contract-writes.md §4).
+    const result = validateResourceMutationBody(parsed.value);
+    if (!result.ok) return githubError(400, 'Validation Failed', result.errors);
+    const added = result.entries;
 
+    const moves = findReassignments(fx.costCenterResources, ccId, added);
     const existing = fx.costCenterResources[ccId] ?? [];
     const recomputedSeatCount = licensedSeatCount(existing) + licensedSeatCount(added);
-    return HttpResponse.json(
-      {
-        cost_center_id: ccId,
-        added,
-        member_count: existing.length + added.length,
-        included_usage_cap: {
-          enabled: canonical.included_usage_cap.enabled,
-          overflow: canonical.included_usage_cap.overflow,
-          computed_limit_credits: includedUsageCapLimitForSeats(recomputedSeatCount),
-        },
+    return HttpResponse.json({
+      message: 'Resources successfully added to the cost center.',
+      reassigned_resources: moves.length > 0 ? moves : null,
+      simulated_included_usage_cap: {
+        enabled: canonical.included_usage_cap.enabled,
+        overflow: canonical.included_usage_cap.overflow,
+        computed_limit_credits: includedUsageCapLimitForSeats(recomputedSeatCount),
       },
-      { status: 201 },
-    );
+    });
   }),
 
   http.delete(`${ENTERPRISE_BASE}/settings/billing/cost-centers/:costCenterId/resource`, async ({ request, params }) => {
@@ -738,23 +845,18 @@ export const handlers = [
     const parsed = await readJsonBody(request);
     if (!parsed.ok) return githubError(400, 'Problems parsing JSON');
 
-    const errors: FieldError[] = [];
-    if (!isPlainObject(parsed.value)) {
-      return githubError(422, 'Validation Failed', [{ resource: 'CostCenterResource', field: 'body', code: 'missing' }]);
-    }
-    const removed = validateResourceList(parsed.value.resources, errors);
-    if (!removed || removed.length === 0) {
-      errors.push({ resource: 'CostCenterResource', field: 'resources', code: 'invalid' });
-    }
-    if (errors.length > 0 || !removed) return githubError(422, 'Validation Failed', errors);
+    const result = validateResourceMutationBody(parsed.value);
+    if (!result.ok) return githubError(400, 'Validation Failed', result.errors);
+    const removed = result.entries;
 
     const existing = fx.costCenterResources[ccId] ?? [];
     const remainingSeatCount = Math.max(0, licensedSeatCount(existing) - licensedSeatCount(removed));
+    // Machine-verified: remove carries {message} ONLY -- no
+    // reassigned_resources key. The sim cap enrichment rides here too (same
+    // 4.2 observability rationale as the add handler above).
     return HttpResponse.json({
-      cost_center_id: ccId,
-      removed,
-      member_count: Math.max(0, existing.length - removed.length),
-      included_usage_cap: {
+      message: 'Resources successfully removed from the cost center.',
+      simulated_included_usage_cap: {
         enabled: canonical.included_usage_cap.enabled,
         overflow: canonical.included_usage_cap.overflow,
         computed_limit_credits: includedUsageCapLimitForSeats(remainingSeatCount),
@@ -774,6 +876,9 @@ export const handlers = [
 
   // ---- Task 4.1: budget create / read-one / edit / delete (all budget_scope values) ----
 
+  // Machine-verified success envelope (wire-contract-writes.md §2): POST ->
+  // 200 { message, budget } -- the OpenAPI status list has NO 201. Budget
+  // validation failures stay 422 (the shared validation-error schema).
   http.post(`${ENTERPRISE_BASE}/settings/billing/budgets`, async ({ request }) => {
     const parsed = await readJsonBody(request);
     if (!parsed.ok) return githubError(400, 'Problems parsing JSON');
@@ -782,7 +887,10 @@ export const handlers = [
     if (!result.ok) return githubError(422, 'Validation Failed', result.errors);
 
     const value = result.value;
-    return HttpResponse.json({ ...value, id: deterministicBudgetId(value) }, { status: 201 });
+    return HttpResponse.json({
+      message: 'Budget successfully created.',
+      budget: { ...value, id: deterministicBudgetId(value) },
+    });
   }),
 
   http.get(`${ENTERPRISE_BASE}/settings/billing/budgets/:budgetId`, ({ params }) => {
@@ -801,16 +909,23 @@ export const handlers = [
     const result = validatePatchBudgetPayload(parsed.value);
     if (!result.ok) return githubError(422, 'Validation Failed', result.errors);
 
-    // Stateless: merged into a fresh response object only -- the canonical
-    // BUDGETS fixture entry is never written to, so the next request (GET,
-    // list, or another PATCH) still sees the original committed value.
-    return HttpResponse.json({ ...budget, ...result.value });
+    // Machine-verified envelope (wire-contract-writes.md §2): PATCH -> 200
+    // { message, budget }. Stateless: merged into a fresh response object
+    // only -- the canonical BUDGETS fixture entry is never written to, so the
+    // next request (GET, list, or another PATCH) still sees the original
+    // committed value.
+    return HttpResponse.json({
+      message: 'Budget successfully updated.',
+      budget: { ...budget, ...result.value },
+    });
   }),
 
+  // Machine-verified envelope (wire-contract-writes.md §2): DELETE -> 200
+  // { message, id } -- the OpenAPI status list has NO 204.
   http.delete(`${ENTERPRISE_BASE}/settings/billing/budgets/:budgetId`, ({ params }) => {
     const budget = getActiveFixtures().budgets.find((b) => b.id === params.budgetId);
     if (!budget) return githubError(404, 'Not Found');
-    return new HttpResponse(null, { status: 204 });
+    return HttpResponse.json({ message: 'Budget successfully deleted.', id: budget.id });
   }),
 
   // R5 (wire-contract-r3-r5-r6.md, live smoke 2026-07-08): real GitHub emits

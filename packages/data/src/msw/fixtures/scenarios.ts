@@ -372,8 +372,11 @@ function surplusContractorUlb(login: string): Budget {
     id: `budget-ulb-surplus-${login}`,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    // Wire spelling for an individual ULB (machine-verified 2026-07-08):
+    // scope 'user' + the `user` login field -- never 'individual' on the wire.
+    budget_scope: 'user',
     budget_entity_name: login,
+    user: login,
     budget_amount: SURPLUS_CONTRACTOR_ULB_CREDITS / 100,
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['copilot-admins@dewr.gov.au'] },

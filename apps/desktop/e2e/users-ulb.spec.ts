@@ -152,8 +152,11 @@ test('row "Set ULB" CREATEs a new individual ULB (hannah-webb): real dry-run (ho
     expect(parsedBody).toStrictEqual({
       budget_type: 'BundlePricing',
       budget_product_sku: 'ai_credits',
-      budget_scope: 'individual',
+      // OpenAPI-pinned wire form (wire-contract-writes.md §1): internal
+      // 'individual' serializes as scope 'user' + the `user` login field.
+      budget_scope: 'user',
       budget_entity_name: 'hannah-webb',
+      user: 'hannah-webb',
       budget_amount: 30,
       prevent_further_usage: true,
       budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -304,12 +307,15 @@ test('bulk-select the top 3 users on page 1: one staged value produces 2 creates
     await expect(mutations.nth(2)).toContainText('/settings/billing/budgets/budget-ulb-display-bug');
 
     const bodies = await mutations.locator('.plan-rail__mutation-body').allInnerTexts();
+    // OpenAPI-pinned wire form (wire-contract-writes.md §1): internal
+    // 'individual' serializes as scope 'user' + the `user` login field.
     expect(bodies.map((b) => JSON.parse(b))).toStrictEqual([
       {
         budget_type: 'BundlePricing',
         budget_product_sku: 'ai_credits',
-        budget_scope: 'individual',
+        budget_scope: 'user',
         budget_entity_name: 'aran-mehta',
+        user: 'aran-mehta',
         budget_amount: 50,
         prevent_further_usage: true,
         budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -317,8 +323,9 @@ test('bulk-select the top 3 users on page 1: one staged value produces 2 creates
       {
         budget_type: 'BundlePricing',
         budget_product_sku: 'ai_credits',
-        budget_scope: 'individual',
+        budget_scope: 'user',
         budget_entity_name: 'emily-zhao',
+        user: 'emily-zhao',
         budget_amount: 50,
         prevent_further_usage: true,
         budget_alerting: { will_alert: false, alert_recipients: [] },

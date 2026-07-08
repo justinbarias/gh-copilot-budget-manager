@@ -1,14 +1,23 @@
 import { BUDGET_IDS, ENTERPRISE_SLUG } from './constants.js';
 
 export type BudgetType = 'ProductPricing' | 'SkuPricing' | 'BundlePricing';
+// The REAL wire enum -- machine-verified against GitHub's published OpenAPI
+// description (github/rest-api-description, descriptions/ghec/
+// ghec.2026-03-10.json; wire-contract-writes.md §1). The internal model's
+// `universal`/`individual` spellings (packages/core BudgetScope) were our
+// inventions and never exist on the wire:
+//   internal universal   <-> wire 'multi_user_customer'
+//   internal individual  <-> wire scope 'user' + a `user: <login>` field
+// github-impl translates wire<->internal at the parse/serialize boundary;
+// this fixture layer IS the wire, so it speaks only these seven values.
 export type BudgetScope =
-  | 'universal'
-  | 'individual'
-  | 'multi_user_cost_center'
   | 'enterprise'
   | 'organization'
+  | 'repository'
   | 'cost_center'
-  | 'repository';
+  | 'multi_user_customer'
+  | 'multi_user_cost_center'
+  | 'user';
 
 export interface Budget {
   id: string;
@@ -19,6 +28,9 @@ export interface Budget {
   budget_amount: number;
   prevent_further_usage: boolean;
   budget_alerting: { will_alert: boolean; alert_recipients: string[] };
+  // Machine-verified (wire-contract-writes.md §1): "the login when scope is
+  // `user`". Present on every scope-'user' fixture below, absent otherwise.
+  user?: string;
   /**
    * MSW-ONLY simulation enrichment (docs/api-surface-validation.md's "ULB
    * display-bug detection signal" entry, Task 4.14) -- NOT a real GitHub
@@ -49,11 +61,14 @@ const DATA_EVAL_CC = 'Data & Evaluation Platform';
 // ~1,900–6,000 credit band. Family-A ULBs always hard-stop (CLAUDE.md §5).
 export const BUDGETS: Budget[] = [
   // ---- Family A: user-level budgets (ULBs) — most-specific wins ----
+  // Wire scope 'multi_user_customer' == the internal model's UNIVERSAL ULB
+  // ("apply a universal budget to all users in the enterprise") -- spelling
+  // machine-verified 2026-07-08; fixture DATA unchanged.
   {
     id: BUDGET_IDS.universal,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'universal',
+    budget_scope: 'multi_user_customer',
     budget_entity_name: ENTERPRISE_SLUG,
     budget_amount: 46, // 4,600 credits — everyone's baseline ceiling
     prevent_further_usage: true,
@@ -68,8 +83,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.ulbDisplayBug,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'liam-obrien',
+    user: 'liam-obrien',
     budget_amount: 58, // 5,800 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['copilot-admins@dewr.gov.au'] },
@@ -88,8 +104,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.zeroUlb,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'ext-dmorrow',
+    user: 'ext-dmorrow',
     budget_amount: 0,
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -124,8 +141,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualContractor,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'ext-pshah',
+    user: 'ext-pshah',
     budget_amount: 19, // 1,900 credits (above the $1 near-zero warning threshold)
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['copilot-admins@dewr.gov.au'] },
@@ -136,8 +154,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualPowerUser,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'sam-kelly',
+    user: 'sam-kelly',
     budget_amount: 54, // 5,400 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['cyber-leads@dewr.gov.au'] },
@@ -156,8 +175,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualDeclanRyan,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'declan-ryan',
+    user: 'declan-ryan',
     budget_amount: 25, // 2,500 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -166,8 +186,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualDeviAnand,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'devi-anand',
+    user: 'devi-anand',
     budget_amount: 33, // 3,300 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -176,8 +197,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualJomoMburu,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'jomo-mburu',
+    user: 'jomo-mburu',
     budget_amount: 29, // 2,900 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -186,8 +208,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualNinaPopov,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'nina-popov',
+    user: 'nina-popov',
     budget_amount: 48, // 4,800 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },
@@ -196,8 +219,9 @@ export const BUDGETS: Budget[] = [
     id: BUDGET_IDS.individualTeganEllis,
     budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
-    budget_scope: 'individual',
+    budget_scope: 'user',
     budget_entity_name: 'tegan-ellis',
+    user: 'tegan-ellis',
     budget_amount: 37, // 3,700 credits
     prevent_further_usage: true,
     budget_alerting: { will_alert: false, alert_recipients: [] },

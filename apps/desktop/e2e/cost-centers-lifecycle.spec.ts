@@ -99,6 +99,16 @@ function capLimit(mutation: MutationLogEntry): number {
     .computed_limit_credits;
 }
 
+// Membership (resource) mutation responses are the OpenAPI-pinned envelopes
+// (wire-contract-writes.md §3: add -> {message, reassigned_resources|null},
+// remove -> {message}); the recomputed-limit observability (Task 4.2
+// criterion) rides alongside under the sim-flagged
+// `simulated_included_usage_cap` key.
+function simCapLimit(mutation: MutationLogEntry): number {
+  return (mutation.responseBody as { simulated_included_usage_cap: { computed_limit_credits: number } })
+    .simulated_included_usage_cap.computed_limit_credits;
+}
+
 // --- window.api sequence gate ---------------------------------------------
 
 test('create: a new cost center POSTs /cost-centers with the exact payload and audits cost_center.create', async () => {
@@ -184,18 +194,21 @@ test('membership: a single-CC add+remove issues DELETE then POST /resource (remo
     // double-attributed.
     expect(applied.mutationLog).toHaveLength(2);
     const [remove, add] = applied.mutationLog;
+    // OpenAPI-pinned four-array bodies (wire-contract-writes.md §3) -- the
+    // invented {resources:[{type,name}]} shape is gone.
     expect(remove!.method).toBe('DELETE');
     expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(remove!.requestBody).toEqual({ users: ['rpatel2'] });
     expect(add!.method).toBe('POST');
     expect(add!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'new-hire' }] });
+    expect(add!.requestBody).toEqual({ users: ['new-hire'] });
 
     // The recomputed, license-derived cap limit is observable in the mutation
     // responses (24 + 1 = 25 seats x 7,000 = 175,000 on add; 24 - 1 = 161,000
-    // on remove) -- evidence the UI surfaces in its mutation log.
-    expect(capLimit(add!)).toBe(175_000);
-    expect(capLimit(remove!)).toBe(161_000);
+    // on remove) -- evidence the UI surfaces in its mutation log, riding the
+    // real envelope under the sim-flagged key (see simCapLimit).
+    expect(simCapLimit(add!)).toBe(175_000);
+    expect(simCapLimit(remove!)).toBe(161_000);
 
     expect(applied.auditEvents).toHaveLength(1);
     expect(applied.auditEvents[0]!.action).toBe('cost_center.membership');
@@ -239,10 +252,10 @@ test('reassign: a 1:1 move issues DELETE(old)/resource then POST(new)/resource i
     // Remove from the OLD cost center first, then add to the NEW one.
     expect(remove!.method).toBe('DELETE');
     expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(remove!.requestBody).toEqual({ users: ['rpatel2'] }); // four-array wire body (§3)
     expect(add!.method).toBe('POST');
     expect(add!.path).toMatch(new RegExp(`/cost-centers/${CYBER_ID}/resource$`));
-    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(add!.requestBody).toEqual({ users: ['rpatel2'] });
 
     // One audit per touched cost center, in apply (removal-first) order.
     expect(applied.auditEvents.map((e) => e.entityRef)).toEqual([

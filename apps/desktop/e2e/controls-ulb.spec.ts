@@ -326,12 +326,14 @@ test('CREATE a CCULB for Employer & Provider Portals: the POST payload matches t
   }
 });
 
-test('CREATE an individual ULB (rpatel2): the POST carries budget_scope:"individual" + the login as budget_entity_name', async () => {
+test('CREATE an individual ULB (rpatel2): the POST carries the wire form budget_scope:"user" + the login in the user field', async () => {
   // Complements the CCULB-create test above: create is otherwise only proven
   // for the multi_user_cost_center scope, but the plan's acceptance is "all
   // three scopes CRUD end-to-end". Individual-create exercises a genuinely
   // distinct path -- the user <select> (populated from listHeavyUsers, not the
-  // cost-center list) and a budget_scope:'individual' POST. Every value is
+  // cost-center list) and a wire budget_scope:'user' POST (OpenAPI-pinned,
+  // wire-contract-writes.md §1: the internal 'individual' spelling does not
+  // exist on the wire). Every value is
   // fixture-derived: rpatel2 (a Workforce Australia Platform seat, not one of
   // the four existing individual ULBs) is eligible; it's Workforce-CCULB-bound
   // at 4,170 MTD credits (metrics report), so a fresh 5,000-credit individual
@@ -396,8 +398,11 @@ test('CREATE an individual ULB (rpatel2): the POST carries budget_scope:"individ
     expect(parsedBody).toStrictEqual({
       budget_type: 'BundlePricing',
       budget_product_sku: 'ai_credits',
-      budget_scope: 'individual',
+      // OpenAPI-pinned wire form (wire-contract-writes.md §1): internal
+      // 'individual' serializes as scope 'user' + the `user` login field.
+      budget_scope: 'user',
       budget_entity_name: 'rpatel2',
+      user: 'rpatel2',
       budget_amount: 50,
       prevent_further_usage: true,
       budget_alerting: { will_alert: false, alert_recipients: [] },

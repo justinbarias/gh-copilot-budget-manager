@@ -54,7 +54,8 @@ and therefore none are exempt).
 |---|---|
 | `documented-confirmed` | Corroborated across ≥2 independent retrievals; safe to rely on. |
 | `docs-indicated (summarizer)` | Single-source page-summary; plausible but unverified exact string/shape — **pin at 9.2**. |
-| `live-confirmed` | Proven against a real authenticated tenant (2026-07-08 live smoke) **and** pinned against docs.github.com `enterprise-cloud@latest` `apiVersion=2026-03-10`; the strongest grade this doc issues. |
+| `live-confirmed` | Proven against a real authenticated tenant (2026-07-08 live smoke) **and** pinned against docs.github.com `enterprise-cloud@latest` `apiVersion=2026-03-10`. |
+| `machine-verified (OpenAPI)` | Quoted from GitHub's published OpenAPI description — `github/rest-api-description`, file `descriptions/ghec/ghec.2026-03-10.json` (the ~12MB calendar-versioned per-file spec; the earlier "OpenAPI too big to parse" note referred to the undated bundle and is SUPERSEDED — this file is the go-to §6.9 source from now on). Equal-strongest grade alongside `live-confirmed`. |
 | `docs-confirmed, unadopted` | Endpoint confirmed real against the docs but deliberately **not** integrated — recorded so a later phase can adopt it without re-research. |
 | `simulation-enrichment` | Deliberate MSW-only shape the task requires; known to diverge from live — **reconcile in github-impl at 9.2**, do not "correct" in MSW. |
 | `PRD-authority` | Real docs inconclusive/contradictory; MSW follows the PRD (standing authority) — **pin at 9.2**. |
@@ -70,7 +71,7 @@ and therefore none are exempt).
 | R1 | `GET /enterprises/{enterprise}/copilot/billing/seats` | `github-impl` seats | Copilot seat-management REST (established) | `documented-confirmed` (path) | Response `{total_seats, seats[]}` + Link paging — conventional; pin exact fields at 9.2. |
 | R2 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | `github-impl` cost centers (cap fields via `api-client/cost-center-cap.ts`) | Cost centers REST `2026-03-10` + 2026-07-08 live crash evidence | `live-confirmed` (flat cap dialect confirmed; **two mapped-field assumptions pending pin**, see A-rows) | **Live-proven 2026-07-08 (as crashes):** real GHEC cost centers carry the flat `ai_credit_pool_enabled` + `ai_credit_pool_state{target_amount,current_amount}` dialect and **no** `included_usage_cap` — reading `.included_usage_cap.enabled` off them was the live `TypeError` that crashed `getControls`/`syncNow`/`listCostCenters`. Fixed at the PARSE layer per inference #2's standing ruling: the ONE shared, total (never-throwing) mapper `normalizeIncludedUsageCap` (`cost-center-cap.ts`) is applied at BOTH fetch boundaries (`github-impl.ts` `fetchCostCentersRaw` + `write/live-state.ts` `fetchLiveControls`), folding both dialects into the internal shape — the internal model, MSW, core, and UI are unchanged (sim byte-identical: the internal-shape passthrough is exact). Two mapped fields ride **flagged assumptions** (rows A1/A2 below); the smoke's R2 row now dumps the first cost-center's full key list, `ai_credit_pool_enabled` + the entire `ai_credit_pool_state` verbatim, and every overflow-suggestive key — **that dump is the pin for both assumptions** on the next live run. Note: live cost centers also lack the sim-only DEWR-mapping/`mtd_burn` enrichments — a **display gap** on the Cost Centers screen against live (blank mapping columns, zero-burn until ingest fills it), pre-existing and non-crashing, reconciled when the live read path grows its own burn join. |
 | R3 | `GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (get-one; members embedded) | `github-impl` members | Cost centers REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **The old `GET …/{id}/resource` path DOES NOT EXIST** (live `404`, 2026-07-08; the docs' full endpoint list has `/resource` as POST/DELETE only — mutations, already modeled by M8/M9). Members/resources are **embedded** as `resources: [{type, name}]` on the cost-center objects returned by list/get-one/create/patch. `github-impl`/`live-state` now read `resources` off the already-fetched objects (net code deletion); the smoke's R3 row exercises get-one and structurally checks the embedded `resources[]`. |
-| R4 | `GET /enterprises/{enterprise}/settings/billing/budgets` | `github-impl` budgets | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | **Pagination divergence:** real list returns in-body `{budgets[], total_count, has_next_page, user?, effective_budget?}`; MSW returns `{budgets[]}` + a `Link` header. Read-path change with github-impl blast radius → **defer to 9.2** (pagination reconciliation is an explicit 9.2 task). |
+| R4 | `GET /enterprises/{enterprise}/settings/billing/budgets` | `github-impl` budgets (scopes via `api-client/budget-scope.ts`) | Budgets REST `2026-03-10` + OpenAPI `ghec.2026-03-10.json` | `machine-verified (OpenAPI)` (scope model) / pagination **shape-closed, code-pending** | **Scope model reconciled 2026-07-08 (a REAL live read bug fixed):** live budgets return the wire spellings (`multi_user_customer` = universal ULB, `user` + `user` login field = individual, `multi_user_cost_center` = CCULB), and the old read path classified by our internal spellings — live Controls misfiled ULBs (wrong family/precedence; e.g. a $46 `multi_user_customer` budget now correctly reads universal/4,600 credits and a $58 `user`/liam-obrien budget individual/5,800). The shared mapper `budget-scope.ts` translates wire↔internal at both read boundaries (`fetchBudgetsRaw` + `fetchLiveControls`) and serializes creates (internal `individual` → scope `user` + `user` field). **`repository`-scoped budgets are known-unsupported:** they (and any future enum value) have no internal home and are SKIPPED from Controls — never silently: both boundaries emit a main-process `console.warn` naming the skipped scopes (`warnSkippedBudgetScopes`, validator hardening). A transitional read-tolerance also accepts the internal spellings (mock-cutover safety; real GitHub never sends them) — **remove after one full-green live cycle**. **Pagination:** shape machine-verified (in-body `{budgets[], total_count, has_next_page}`), but the CODE still reads Link-header style — single-page tenants (the maintainer's 10 budgets) are unaffected; multi-page reconciliation stays a 9.2 item. |
 | R5 | `GET /enterprises/{enterprise}/settings/billing/usage` (`?year/month/day/cost_center_id`) | `github-impl` usage (via `api-client/usage-fetch.ts`) | Billing usage REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **Items are camelCase** — `{date, product, sku, quantity, unitType, pricePerUnit, grossAmount, discountAmount, netAmount, organizationName, repositoryName?}`. Our old snake_case parse (`net_amount`/`discount_amount`) was why the live smoke reported `SHAPE_MISMATCH` (reading them live yields `NaN` through every money rollup). **No `user_login` and no `cost_center_id` on items** — both were our invention; per-user attribution moved to R6, per-cost-center attribution to the `cost_center_id` query param. **Default call EXCLUDES cost-center-attributed usage** (docs verbatim: "By default this endpoint will return usage that does not have a cost center"), so the correct enterprise-wide read is a **fan-out**: 1 default (unassociated) call + 1 call per known cost-center id, attributing items by WHICH query returned them (`usage-fetch.ts` `fetchUsageFanout`). MSW keeps `user_login`/`cost_center_id` as fixture-internal keys only (used to implement the query filtering) and projects both out of every emitted response; its `unitType: 'Unit'` and `organizationName: 'dewr-digital'` are **placeholder values** (docs pin the fields' existence, not their values — `pricePerUnit: 0.01` is exact per CLAUDE.md §5); pin real values on a live run. |
 | R6 | 28-day: `GET …/copilot/metrics/reports/users-28-day/latest`; 1-day: `GET …/users-1-day?day=YYYY-MM-DD` (both **documented forms live-confirmed working**; path-param variants `…/users-28-day/{day}` / `…/users-1-day/{day}` **live-404'd** — retained only as fallback insurance, see note) | `github-impl` credits-used (via `api-client/users-report.ts`) | Copilot metrics-reports REST + 2026-07-08 live smokes (four authed runs) | `live-confirmed` (routes, envelope, **and file format — pin CLOSED: JSONL**) | First authed smoke: our `404` was the missing `/latest` suffix. Second authed smoke: a `400` `"Invalid day parameter…"` briefly suggested the tenant's router bound `latest` as a `{day}` path param — **that diagnosis was WRONG** (see the corrected live-contact history): the third + fourth smokes' four-variant probes, twice identical, returned `28d/latest=OK; 28d/{day}=404; 1d?day==OK; 1d/{day}=404` — **the tenant (github.com GHEC, confirmed) is DOCS-FAITHFUL**; the `400` was the old probe sending `day=<today>` for a not-yet-generated report, mislabeled under the `/latest` row. **Variant-fallback design, retained as insurance** (`users-report.ts` — inert on this tenant, guards a future GHE.com deployment): documented form first; **only an HTTP 400/404 on it** triggers the path-param retry (any other status propagates unmasked); both-fail throws the second error; winning variant memoised per Octokit instance (WeakMap — client rebuild = clean memo); `fetchUserCreditsForDays` resolves the variant on the first day sequentially (one failed probe max per fan-out). Response is the async report **envelope** `{download_links: string[], report_start_day, report_end_day}`; per-user records live in the file behind the link (see R7) — **format LIVE-PINNED: JSONL, record keys exactly `[user_id, user_login, ai_credits_used]`** (1,111 records on the maintainer's tenant). **Cycle-accuracy ruling (money-affecting):** the 28-day report is a TRAILING aggregate crossing the cycle boundary, so it is never the cycle-total source; cycle-accurate per-user totals come from users-1-day fanned out over elapsed cycle days (Sync-only), with a **≤2-day trailing-gap tolerance** (see Live-wire limitations). The smoke's R6 row remains the four-variant probe (raw `octokit.request`, bypassing the memo) reporting per-variant status + format + first-record keys; `ok` iff ≥1 variant per report family works and the download-link follow succeeds. |
 | R7 | `GET <download_links[0]>` (opaque signed URL, plain `fetch`, non-Octokit) | `users-report.ts` `downloadReportRecords` (used by `fetchUsersReport` + the smoke's four-variant probe) | GitHub docs describe the link as a short-lived signed URL + 2026-07-08 live smokes (third/fourth runs) | `live-confirmed` — **format pin CLOSED: JSONL** | **Hand-wrapped HTTP call (§6.9):** the only non-Octokit request in the codebase — a bare `fetch` following the R6 envelope's first download link. **File format LIVE-PINNED (2026-07-08, two identical runs): JSONL** — one JSON object per line, first-record keys exactly `[user_id, user_login, ai_credits_used]`. `parseUsersReportFile`'s defensive sniff (leading `[` → JSON array, `{` → JSONL, else CSV-with-header) classifies it correctly and is retained as-is; the MSW twin (`msw/handlers.ts` `jsonlResponse`) is **realigned to emit the same JSONL** (one object/line, no trailing newline, `Content-Type: text/plain` — deliberately not `application/json`, so nothing can start trusting a header the live host may not send; empty day = empty body → sniffed `'empty'`). The mock's download *filenames* still end `.json` while carrying JSONL — intentional (the impl sniffs content, never filename/header; the live signed URLs' filenames are opaque anyway). **Call volume:** each users-1-day day costs an envelope request + a file download; `syncNow` fans out over elapsed cycle days (~15 at the June-14 anchor) **plus a 92-day prior-3-closed-cycle backfill** (2026-03-01..2026-05-31, from the clock seam) for per-user forecast history — ~214 HTTP requests per Sync, chunked at `USERS_REPORT_CONCURRENCY = 10` in-flight (`users-report.ts`) to stay under secondary rate limits; acceptable because Sync is an explicit job (CLAUDE.md §2), tune the knob if live rate-limiting bites. |
@@ -79,7 +80,7 @@ and therefore none are exempt).
 
 | # | Assumption | Basis | Risk if wrong | Pin mechanism |
 |---|---|---|---|---|
-| A1 | **`ai_credit_pool_state.target_amount` is denominated in USD dollars**; mapped to credits via `round(USD × 100)` (the platform-wide $0.01/credit rule). | Every other amount on the billing wire (`budget_amount`, `netAmount`, `pricePerUnit`) is USD; a lone credits-denominated field would be the inconsistency. | Displayed cap limits read **100× too high** if the field is actually credits. Money-critical. | The smoke R2 row dumps `ai_credit_pool_state` **verbatim, untransformed** — compare `target_amount` against the tenant's known license-derived pool (e.g. an 8-seat CC ⇒ $560 if USD, 56,000 if credits). |
+| A1 | ~~USD-dollars assumption~~ **CLOSED 2026-07-08 — machine-verified:** the OpenAPI schema states `ai_credit_pool_state.target_amount`/`current_amount` are **"in dollars" (verbatim)**. The `round(USD × 100)` mapping in `cost-center-cap.ts` is confirmed correct. | OpenAPI `ghec.2026-03-10.json` | (was: limits 100× off) — risk retired. | Closed by the OpenAPI pass; the R2 dump remains useful only as a live sanity echo. |
 | A2 | **Overflow (block vs metered at cap exhaustion) defaults to `'block'`** when no wire field sniffs. Sniff rule: any key on the cost-center object or its `ai_credit_pool_state` matching `/overflow\|exceed\|block/i` whose value is literally `'block'` or `'metered'`; **boolean candidates deliberately unmapped** (`allow_overflow: true` vs `block_on_exceed: true` would mean opposite things — guessing polarity is worse than defaulting). | The real field is undocumented anywhere reachable. `'block'` matches the platform's default posture (pool exhaustion blocks unless paid-usage is enabled, CLAUDE.md §5) and **fails conservative**: a wrong `'block'` gives earlier exhaustion warnings; a wrong `'metered'` would project spend capacity a hard stop will deny. | A genuinely-metered CC is forecast as blocking (over-conservative alerts) until pinned. | The smoke R2 row lists every overflow-suggestive key + value on the first cost-center — if GitHub ships the field under any recognisable name, the dump surfaces it. |
 
 ### Known divergence — cap WRITES (do not toggle a cap against live yet)
@@ -98,22 +99,23 @@ and therefore none are exempt).
 
 | # | Method + path | Task | Doc source | Verdict | Deviation / note |
 |---|---|---|---|---|---|
-| M1 | `POST /enterprises/{enterprise}/settings/billing/budgets` | 4.1 create | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | Path/fields confirmed. **Success shape divergence:** real returns **`200 {message, budget:{…}}`**; MSW returns **`201`** + a *flat* budget object. **Scope-enum divergence:** see inference #2b (user-scope) and the CCULB watch-item. Reconcile the envelope in github-impl at 9.2. |
+| M1 | `POST /enterprises/{enterprise}/settings/billing/budgets` | 4.1 create | OpenAPI `ghec.2026-03-10.json` (2026-07-08 pass) | `machine-verified (OpenAPI)` | **Reconciled 2026-07-08 (write-shape round):** returns **`200 {message, budget}`** (both required; status list 200/400/401/403/404/422/500 — **201 does not exist**) — MSW now emits exactly this, and the write engine parses it. **Scope enum machine-verified (7 values):** `enterprise, organization, repository, cost_center, multi_user_customer, multi_user_cost_center, user`; the `user` scope carries a separate required `user: <login>` field. MSW **rejects** the internal `universal`/`individual` spellings with `422` — a deliberate **drift-guard** that loudly surfaces any impl callsite still serializing the internal model onto the wire. `budget_amount` machine-verified `type: integer` "in whole dollars" (MSW validates integer-only). |
 | M2 | `GET /enterprises/{enterprise}/settings/billing/budgets/{budget_id}` | 4.1 read-one | Budgets REST `2026-03-10` | `documented-confirmed` (path) | MSW returns the flat budget object; real by-id shape pinned at 9.2. |
-| M3 | `PATCH …/budgets/{budget_id}` | 4.1 update | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | Real `200 {message, budget}`; MSW `200` + flat object. Patchable fields (amount/prevent_further_usage/alerting) confirmed; MSW's allow-list is a strict subset (safe). |
-| M4 | `DELETE …/budgets/{budget_id}` | 4.1 delete | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | **Status divergence:** real returns **`200 {message, id}`**; MSW returns **`204`** No Content. Reconcile in github-impl at 9.2. |
-| M5 | `POST /enterprises/{enterprise}/settings/billing/cost-centers` | 4.2 create | Cost centers REST `2026-03-10` | `docs-indicated (summarizer)` | Path confirmed; `PATCH` sibling confirmed real (inference #3). Real cap field is `ai_credit_pool_enabled` (inference #2). Create-response echo of `resources` is a `simulation-enrichment` (inference #7). |
+| M3 | `PATCH …/budgets/{budget_id}` | 4.1 update | OpenAPI `ghec.2026-03-10.json` | `machine-verified (OpenAPI)` | **Reconciled:** `200 {message, budget}` (budget may carry `consumed_amount` for user-scoped budgets) — MSW emits it, engine parses it. PATCH bodies carry no scope (create is the only scope-serialization site). Patchable fields confirmed; MSW's allow-list is a strict subset (safe). |
+| M4 | `DELETE …/budgets/{budget_id}` | 4.1 delete | OpenAPI `ghec.2026-03-10.json` | `machine-verified (OpenAPI)` | **Reconciled:** `200 {message, id}` (id = the deleted budget id; **no 204 in the status list**) — MSW emits it, engine parses it. |
+| M5 | `POST /enterprises/{enterprise}/settings/billing/cost-centers` | 4.2 create | Cost centers REST `2026-03-10` + OpenAPI | `docs-indicated (summarizer)` (envelope) | Path confirmed; cap field is `ai_credit_pool_enabled` (inference #2, live-proven). Create-response echo of `resources` remains a `simulation-enrichment` (inference #7). Error statuses now machine-verified: cc mutations list **400, never 422** (MSW realigned). |
 | M6 | `DELETE …/cost-centers/{id}` | 4.2 delete | Cost centers REST `2026-03-10` | `documented-confirmed` (path) | Path confirmed; MSW `204`. |
-| M7 | `PATCH …/cost-centers/{id}` | 4.2 edit / cap toggle | Cost centers REST `2026-03-10` | `documented-confirmed` (route exists) | **Route existence CONFIRMED** (resolves the builder's "own inference / no PATCH route" caveat — inference #3). Body/response *shape* still summarizer-grade: real cap toggle is flat `ai_credit_pool_enabled`, not nested `included_usage_cap` (inference #2). |
-| M8 | `POST …/cost-centers/{id}/resource` | 4.2 add members | Cost centers REST `2026-03-10` | `simulation-enrichment` | **Request-body divergence:** real body is four optional string arrays `{users, organizations, repositories, enterprise_teams}`; MSW takes `{resources:[{type,name}]}` (inference #1). **Response divergence:** real `200 {message, reassigned_resources}`; MSW returns `201` + recomputed `computed_limit_credits` (inference #4 — deliberate, task-required). Reconcile request-body in github-impl at 9.2. |
-| M9 | `DELETE …/cost-centers/{id}/resource` | 4.2 remove members | Cost centers REST `2026-03-10` | `simulation-enrichment` | Same four-array request shape as M8 (DELETE-with-body is **valid/documented** here — resolves inference #1's DELETE-with-body concern). MSW `200` + recomputed limit (enrichment, inference #4). |
+| M7 | `PATCH …/cost-centers/{id}` | 4.2 edit / cap toggle | Cost centers REST `2026-03-10` + OpenAPI | `documented-confirmed` (route) / **cap-toggle body still `known-divergent` (W1)** | Route confirmed. The cap-toggle PATCH body remains unreconciled — the OpenAPI pass **confirmed no overflow field exists anywhere in the schema** (A2 narrowed: exhaustive search over overflow/exhaustion/paid_usage/"block"/"metered" — zero hits), so the write body still cannot be built faithfully; cap writes stay out of scope (W1, blocked on the live R2 dump; if that also shows nothing, the per-CC `overflow` knob may not exist on the real API — a PRD-level modeling question, not resolvable unilaterally). |
+| M8 | `POST …/cost-centers/{id}/resource` | 4.2 add members | OpenAPI `ghec.2026-03-10.json` | `machine-verified (OpenAPI)` (+ flagged sim enrichment) | **Reconciled:** request body is the four optional string arrays `{users, organizations, repositories, enterprise_teams}` (`minProperties: 1`) — the engine now sends it, MSW accepts ONLY it (the old `{resources:[{type,name}]}` shape → `400`, loudly). Response `200 {message, reassigned_resources: [{resource_type, name, previous_cost_center}] | null}` — MSW populates `reassigned_resources` only on genuine cross-CC fixture moves, `null` otherwise. Task 4.2's recomputed-limit observability rides ALONGSIDE the real keys as **`simulated_included_usage_cap`** (validator-ratified: unmistakably sim-scoped name, `simulatedUiHidden` precedent; the engine records response bodies verbatim and never parses it, so live behaviour is unaffected — a live response simply lacks the key). |
+| M9 | `DELETE …/cost-centers/{id}/resource` | 4.2 remove members | OpenAPI `ghec.2026-03-10.json` | `machine-verified (OpenAPI)` (+ flagged sim enrichment) | **Reconciled:** same four-array request body (DELETE-with-body valid); response **`200 {message}` only — NO `reassigned_resources` on remove**. Same `simulated_included_usage_cap` enrichment rationale as M8. |
 
-**Error envelope (all mutations).** MSW uses GitHub's *conventional* REST error
-shape `{message, documentation_url, errors:[{resource, field, code}]}` with
-`400` (bad JSON), `422` (validation), `404` (unknown id). The billing-preview
-endpoints do **not** publish an exact 422 schema in the docs, so this is
-`convention-based` — pin the real 422 body against a live failure at 9.2
-(inference #6).
+**Error envelopes (machine-verified 2026-07-08).** Budgets POST/PATCH list
+**`422`** → the shared `validation-error` schema `{message, documentation_url,
+errors?: [{resource?, field?, message?, code (required), index?, value?}]}` —
+matches MSW's shape (inference #6 CLOSED). Cost-center mutations (incl.
+`/resource`) list **400/403/404/409/500/503 — no 422**: validation failures
+there surface as **`400`**, and MSW's cc-mutation statuses were realigned
+accordingly (422 → 400).
 
 ### Auth surface (new — Task 9.1 `validatePat`)
 
@@ -362,25 +364,26 @@ re-confirm the gap still exists (or note if GitHub ever adds a real signal).
 
 ## Additional confirmed divergences (beyond the 7)
 
-- **2b — user-level scope model.** Real GitHub uses a **single `budget_scope:
-  "user"`** plus a separate **`user` (username)** field: *universal* = `user` scope
-  with no/empty username; *individual* = `user` scope with a username. MSW invents
-  **two scope enum values `universal` / `individual`** and has no `user` field.
-  Corroborated across both budget reads. → Defer to 9.2 (the plan explicitly
-  anticipates this: "Lazy universal-ULB records reconciled against full
-  licensing"). github-impl must map universal/individual → `user` scope + `user`
-  field on live writes.
-- **CCULB scope enum — UNRESOLVED.** PRD §2.1 says `multi_user_cost_center`; MSW
-  uses `multi_user_cost_center`; the doc summarizer returned **contradictory**
-  values (`multi_user_cost_center` vs `multi_user_customer`, once both). One
-  targeted OpenAPI-line search did not converge. → **`PRD-authority`: MSW follows
-  the PRD (`multi_user_cost_center`); pin against the OpenAPI schema / a live POST
-  at 9.2.** **Watch-item for Task 4.10** (it POSTs the CCULB payload "verbatim per
-  PRD §2.1"): if 9.2 finds `multi_user_customer`, both the MSW handler set **and**
-  4.10's asserted payload change together.
-- **budget_amount type.** Real docs say integer whole USD; MSW accepts any finite
-  `>= 0` (incl. `$0` — correct, the documented trap — and, more permissively,
-  floats). Harmless (more permissive); optionally tighten at 9.2.
+- **2b — user-level scope model. RESOLVED 2026-07-08 (machine-verified;
+  supersedes this item's earlier summarizer-grade guesses).** The real enum has
+  **seven** values: `enterprise, organization, repository, cost_center,
+  multi_user_customer, multi_user_cost_center, user`. The earlier reading
+  ("universal = `user` scope with empty username") was WRONG: **universal =
+  `multi_user_customer`** (a distinct scope, "apply a universal budget to all
+  users in the enterprise"); **individual = `user` scope + a required `user:
+  <login>` field**. MSW now emits the real wire values (with 422 drift-guards
+  rejecting the internal spellings) and `budget-scope.ts` maps both directions
+  at the boundary — the internal `universal`/`individual` model is unchanged
+  (see R4/M1).
+- **CCULB scope enum — RESOLVED 2026-07-08 (machine-verified).** The old
+  summarizer contradiction (`multi_user_cost_center` vs `multi_user_customer`)
+  was **two real, distinct scopes**, not a confabulation: `multi_user_cost_center`
+  IS the CCULB (PRD §2.1 and MSW were right all along) and `multi_user_customer`
+  is the universal ULB (2b above). Task 4.10's verbatim payload stands — no
+  change needed. Watch-item closed.
+- **budget_amount type — machine-verified 2026-07-08:** `type: integer`, "in
+  whole dollars". MSW now validates integer-only (the earlier float-permissive
+  acceptance is tightened).
 - **Task 5.1 — usage/users-28-day query-param filtering.** Added `year`/`month`
   /`day` support to the R5 usage handler and `since`/`until` to the R6
   users-28-day handler, so historical fixtures (`fixtures/usage-history.ts`)
@@ -421,29 +424,43 @@ Remaining items, when the live tenant + classic PAT
    `included_usage_cap{enabled, overflow, computed_limit_credits}`; **resolve the
    block-vs-overflow field name** (undocumented today). *(Still pending — writes
    were out of the 2026-07-08 read-reconciliation's scope.)*
-2. **Resource mutations** — four-array request body `{users, organizations,
-   repositories, enterprise_teams}`; real `200 {message, reassigned_resources}`.
-   *(Still pending.)*
-3. **Budget success envelopes** — `200 {message, budget}` (create/patch),
-   `200 {message, id}` (delete) vs MSW `201`/flat/`204`. *(Still pending.)*
-4. **User-scope model** — single `user` scope + `user` field vs MSW
-   `universal`/`individual`. *(Still pending.)*
-5. **CCULB enum** — `multi_user_cost_center` vs `multi_user_customer` (also gates
-   Task 4.10's verbatim payload). *(Still pending.)*
-6. **Budget list pagination** — in-body `{total_count, has_next_page}` vs MSW `Link`
-   header. *(Still pending.)*
+2. ~~**Resource mutations**~~ **CLOSED 2026-07-08 (machine-verified,
+   write-shape round):** engine sends the four-array body; MSW accepts only it
+   (old shape → 400 loudly); add echoes `reassigned_resources | null`, remove
+   `{message}` only (M8/M9).
+3. ~~**Budget success envelopes**~~ **CLOSED 2026-07-08 (machine-verified):**
+   uniformly `200 {message, budget}` / `{message, id}`; no 201/204 anywhere.
+   MSW emits, engine parses (M1/M3/M4).
+4. ~~**User-scope model**~~ **CLOSED 2026-07-08 (machine-verified):**
+   `multi_user_customer` = universal; `user` + `user` field = individual;
+   mapped both directions by `budget-scope.ts` (R4, inference 2b). Fixed a
+   real live misclassification bug in Controls.
+5. ~~**CCULB enum**~~ **CLOSED 2026-07-08 (machine-verified):** BOTH disputed
+   values are real, distinct scopes — `multi_user_cost_center` is the CCULB
+   (PRD/MSW/4.10 payload correct as-is); `multi_user_customer` is the
+   universal ULB.
+6. **Budget list pagination — shape CLOSED, code PENDING.** In-body
+   `{budgets[], total_count, has_next_page}` is machine-verified, but the read
+   code still consumes Link-header style pagination. Single-page tenants (the
+   maintainer's 10 budgets) are unaffected; reconcile the reader before any
+   multi-page tenant.
 7. ~~**Usage path** — `…/billing/ai_credit/usage` / `…/usage/summary` (PRD §2.3) vs
    MSW `…/billing/usage`.~~ **RESOLVED 2026-07-08:** both path families are real
    and coexist. `…/settings/billing/usage` (R5, adopted) is the enterprise
    usage report; the PRD §2.3 paths (`ai_credit/usage`, `premium_request/usage`,
    `usage/summary`) are the filterable per-product reports — recorded as N1,
    `docs-confirmed, unadopted`.
-8. **Error/422 body** — pin the real validation-error schema. *(Still pending —
-   the 2026-07-08 smoke exercised happy-path reads only.)*
-9. **OpenAPI pass** — parse `github/rest-api-description` for the `2026-03-10`
-   billing schemas to replace every remaining `docs-indicated (summarizer)` grade
-   above with machine-verified shapes. *(Still pending; R3/R5/R6 no longer need
-   it — live + docs already pinned them.)*
+8. ~~**Error/422 body**~~ **CLOSED 2026-07-08 (machine-verified):** budgets
+   POST/PATCH use the shared `validation-error` schema (422); cost-center
+   mutations list **400, never 422** — MSW realigned (see "Error envelopes").
+9. ~~**OpenAPI pass**~~ **CLOSED 2026-07-08:** `github/rest-api-description`'s
+   `descriptions/ghec/ghec.2026-03-10.json` (~12MB calendar-versioned per-file
+   spec) parsed — the old "too big to parse" note referred to the undated
+   bundle and is superseded; **this file is the go-to §6.9 source from now
+   on.** Every budget/mutation shape above upgraded to `machine-verified
+   (OpenAPI)`; also confirmed en passant: A1 cap units ("in dollars",
+   verbatim), no overflow field anywhere in the schema (A2 narrowed), and the
+   metrics `/{day}` path variants NEVER existed in the API (see item 13).
 10. **Auth surface (A1)** — confirm against a live classic PAT that `/rate_limit`
     returns `X-OAuth-Scopes`, that fine-grained tokens omit it, and that the
     required scope string is exactly `manage_billing:enterprise`. *(Still
@@ -464,25 +481,63 @@ Remaining items, when the live tenant + classic PAT
     the variant fallback is retained purely as insurance (inert on GHEC).
     **Tenant type: github.com (GHEC), confirmed 2026-07-08** — the earlier
     "router binds latest as {day}" diagnosis is retracted (probe-day artifact,
-    see the corrected live-contact history).
-14. **R2 cap-field dump (NEW — the A1/A2 pin, next live run)** — capture the
-    smoke R2 row's details verbatim: the first cost-center's full top-level
-    key list, `ai_credit_pool_enabled`, the entire `ai_credit_pool_state`
-    subobject untransformed, and every overflow-suggestive key/value. This
-    pins (a) `target_amount`'s units — compare the raw value against the CC's
-    known license-derived pool: an 8-seat CC reads $560 if USD (assumption A1
-    right) or 56,000 if credits (A1 wrong, limits displayed 100× too high) —
-    and (b) the real overflow field name (A2), which also unblocks the cap
-    WRITE reconciliation (W1).
-15. **Cap WRITE body (NEW — blocked on 14)** — map `write/engine.ts`'s
+    see the corrected live-contact history). **Machine-corroborated in the
+    OpenAPI pass:** only `/users-1-day?day=` (query, required, format date)
+    and `/users-28-day/latest` are defined — the `/{day}` path variants NEVER
+    existed in any GitHub surface; the fallback chain's second variant is
+    provably dead code, kept by explicit maintainer ruling (aware of this
+    evidence). Also machine-verified: the 1-day envelope carries `report_day`
+    (not `report_start_day`/`report_end_day` — those are the 28-day pair).
+14. **R2 cap-field dump — A1 CLOSED by the OpenAPI pass; the dump now pins A2
+    only.** The schema says `ai_credit_pool_state.target_amount`/
+    `current_amount` are **"in dollars" (verbatim)** — the USD×100 mapping is
+    machine-confirmed (assumption A1 CLOSED; row A1 below stands as record).
+    Still capture the smoke R2 dump verbatim on the next live run for **A2**:
+    the overflow field is confirmed ABSENT from the schema (exhaustive
+    search), so the dump is the last place a real field could surface; if it
+    also shows nothing, the per-CC `overflow` knob may not exist on the real
+    API (behavior may hang off the enterprise paid-usage policy) — a
+    PRD-level modeling question for the maintainer, not to be resolved
+    unilaterally.
+15. **Cap WRITE body (blocked on 14/A2)** — map `write/engine.ts`'s
     cap-toggle PATCH body from the internal nested `included_usage_cap` shape
-    to the real flat wire fields once A2 pins the overflow field. Until then,
-    live cap toggles from the app are unsafe (row W1).
+    to the real flat wire fields once A2 resolves. Until then, live cap
+    toggles from the app are unsafe (row W1). Explicitly untouched in the
+    write-shape round per contract.
+16. **(product, sku) usage filter (NEW — the maintainer's CURRENT dashboard
+    symptom).** Live, the R5 usage endpoint returns EVERY enhanced-billing
+    product (Actions, storage, …) and ingestion has NO product/sku filter —
+    pool/metered sums are polluted with the whole GitHub bill (the observed
+    "0 pool consumed / ~$64k phantom metered" dashboard). The smoke R5 row now
+    prints a per-(product, sku) inventory line (n/qty/gross/disc/net sums;
+    fixture pin `copilot/ai_credits n=39 qty=193036 gross=1930.36
+    disc=1905.02 net=25.34`, validator-recomputed). **Capture that line on the
+    next live run — it pins the real Copilot AI-credit (product, sku) pair**
+    (our fixtures' `copilot`/`ai_credits` is a PRD guess; filtering on a wrong
+    guess would zero real data), and the ingestion filter lands in its own
+    round against that pin.
+17. **`reassigned_resources` sub-shapes (NEW, next smoke/write):** is
+    `previous_cost_center` an id or a name, and what is `resource_type`'s
+    exact casing (`User` vs `user`)? The schema leaves both loose; pin from a
+    real add-with-move response before the engine ever branches on them.
+18. **Single-POST move optimization — RECORDED RULING (not open):** the wire
+    can express a cross-CC move as one POST (add-with-reassign, per
+    `reassigned_resources`), but the maintainer ruled the engine KEEPS its
+    two-op remove→add sequence for drift-detection and per-CC audit-event
+    semantics. Revisit only if live rate limits ever make the extra call
+    matter.
+19. **Transitional internal-spelling read-tolerance (NEW — removal note):**
+    `budget-scope.ts` still accepts `universal`/`individual` as read
+    passthrough (mock-cutover safety; real GitHub never sends them). Remove
+    after one full-green live cycle so drift-guarding is total on reads too.
 
-## Sources consulted (2026-07-05)
+## Sources consulted (2026-07-05, updated 2026-07-08)
 
+- **`github/rest-api-description`, `descriptions/ghec/ghec.2026-03-10.json`**
+  (~12MB calendar-versioned per-file spec) — **parsed 2026-07-08; the §6.9
+  go-to source from now on.** The 2026-07-05 note "Not parsed: OpenAPI (size)"
+  referred to the undated bundle and is superseded.
 - Budgets REST reference (`2026-03-10`): `docs.github.com/en/rest/billing/budgets?apiVersion=2026-03-10` (+ `enterprise-cloud@latest` / `free-pro-team@latest` variants).
 - Cost centers REST reference (`2026-03-10`): `docs.github.com/en/enterprise-cloud@latest/rest/billing/cost-centers`.
 - Copilot concept: `docs.github.com/en/copilot/concepts/billing/budgets-for-usage-based-billing`.
 - Changelog: "Cost centers now support included usage caps" (2026-07-02), "Per-user AI credit budgets available for cost centers" (2026-06-30), "GitHub Copilot is moving to usage-based billing" (github.blog).
-- Not parsed: `github/rest-api-description` OpenAPI (size) — the §6.9-preferred source; deferred to the 9.2 OpenAPI pass.

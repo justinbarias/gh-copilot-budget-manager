@@ -11,6 +11,7 @@ import {
   type UsageState,
   type UserUsage,
 } from '@copilot-budget/core';
+import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetIdentity } from '../api-client/budget-scope.js';
 import { normalizeIncludedUsageCap } from '../api-client/cost-center-cap.js';
 import { paginateAll } from '../api-client/paginate.js';
 import { fetchUsageFanout } from '../api-client/usage-fetch.js';
@@ -27,16 +28,22 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // helper (imported, not forked) so the two live-reads can never structurally
 // drift from one another.
 
-// Fuller projection of the budgets wire shape (PRD §2.3 / §4.2) than
-// api-client/github-impl.ts's BudgetItem -- adds the fields a mutation needs
-// to target an existing row (id) or reconstruct a POST body (budget_type,
-// budget_product_sku), on top of every field ControlState carries.
+// Fuller projection of the budgets wire shape (OpenAPI-pinned,
+// wire-contract-writes.md §1) than api-client/github-impl.ts's BudgetItem --
+// adds the fields a mutation needs to target an existing row (id) or
+// reconstruct a POST body (budget_type, budget_product_sku), on top of every
+// field ControlState carries. budget_scope is the REAL seven-value wire enum
+// (multi_user_customer / user / ...) -- translated to the internal model by
+// the shared budget-scope mapper (api-client/budget-scope.ts), never read raw
+// past this module.
 interface WireBudget {
   id: string;
   budget_type: 'ProductPricing' | 'SkuPricing' | 'BundlePricing';
   budget_product_sku: string;
-  budget_scope: BudgetScope | 'repository';
+  budget_scope: string;
   budget_entity_name: string;
+  /** The login, present when budget_scope is 'user' (the individual ULB). */
+  user?: string | null;
   budget_amount: number;
   prevent_further_usage: boolean;
   budget_alerting: { will_alert: boolean; alert_recipients: string[] };
@@ -81,11 +88,11 @@ function usdToCredits(amountUsd: number): number {
   return Math.round(amountUsd * 100);
 }
 
-function toBudgetControl(wire: WireBudget): BudgetControl {
+function toBudgetControl(wire: WireBudget, identity: InternalBudgetIdentity): BudgetControl {
   return {
     kind: 'budget',
-    scope: wire.budget_scope as BudgetScope,
-    entityName: wire.budget_entity_name,
+    scope: identity.scope as BudgetScope,
+    entityName: identity.entityName,
     amountCredits: usdToCredits(wire.budget_amount),
     preventFurtherUsage: wire.prevent_further_usage,
     alerting: { willAlert: wire.budget_alerting.will_alert, alertRecipients: wire.budget_alerting.alert_recipients },
@@ -190,20 +197,31 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string, _a
     rawCostCenters.map((cc) => [cc.id, cc.resources ?? []] as const),
   );
 
-  // `repository`-scope budgets are excluded from ControlState's BudgetScope
-  // union (packages/core/src/controls.ts: "not a scope this tool
-  // administers per the Phase 4 task breakdown") -- filtered out here for
-  // the same reason, defensively (no repository-scope fixture exists today).
-  const rawBudgets = rawBudgetsAll.filter((b) => b.budget_scope !== 'repository');
+  // Scope translation at the boundary (wire-contract-writes.md §1): each wire
+  // budget is mapped to its internal identity (multi_user_customer ->
+  // universal; user + user field -> individual). A null mapping means "no
+  // internal home" -- `repository` (deliberately un-administered, packages/
+  // core's BudgetScope) plus any unknown future enum value -- and the row is
+  // skipped, never guessed into an internal scope.
+  const allMapped = rawBudgetsAll.map((wire) => ({ wire, identity: wireBudgetToInternal(wire) }));
+  const mappedBudgets = allMapped.filter(
+    (m): m is { wire: WireBudget; identity: InternalBudgetIdentity } => m.identity !== null,
+  );
+  // Never silent: unsupported scopes are excluded from the controls state but
+  // traced (see budget-scope.ts's warnSkippedBudgetScopes doc).
+  warnSkippedBudgetScopes(
+    allMapped.filter((m) => m.identity === null).map((m) => m.wire),
+    'fetchLiveControls',
+  );
 
-  const budgetControls: BudgetControl[] = rawBudgets.map(toBudgetControl);
+  const budgetControls: BudgetControl[] = mappedBudgets.map(({ wire, identity }) => toBudgetControl(wire, identity));
   const capControls: IncludedCapControl[] = rawCostCenters.map(toCapControl);
   const costCenterControls: CostCenterControl[] = rawCostCenters.map((cc) =>
     toCostCenterControl(cc, resourcesByCostCenterId.get(cc.id) ?? []),
   );
 
   const budgetWireByIdentity = new Map<string, BudgetWireRef>(
-    rawBudgets.map((wire, i) => [
+    mappedBudgets.map(({ wire }, i) => [
       controlIdentity(budgetControls[i]!),
       { id: wire.id, budgetType: wire.budget_type, budgetProductSku: wire.budget_product_sku },
     ]),

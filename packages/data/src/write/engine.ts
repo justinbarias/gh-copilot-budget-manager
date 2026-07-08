@@ -21,6 +21,7 @@ import {
   type ValidationResult,
 } from '@copilot-budget/core';
 import { appendAuditEvent, type AppendAuditEventInput, type AuditEventRow } from '../audit/writer.js';
+import { internalBudgetIdentityToWire, type InternalBudgetScope } from '../api-client/budget-scope.js';
 import * as schema from '../db/schema.js';
 import type { Db } from '../db/client.js';
 import { assembleUsageState, fetchLiveControls, type LiveControlsResult } from './live-state.js';
@@ -288,11 +289,15 @@ async function executeBudgetMutation(
       will_alert: entry.desired.alerting.willAlert,
       alert_recipients: [...entry.desired.alerting.alertRecipients],
     };
+    // Scope serialization to the REAL wire enum (wire-contract-writes.md §1,
+    // shared budget-scope mapper): internal `universal` ->
+    // `multi_user_customer`; internal `individual` -> scope `user` + the
+    // `user` login field. The internal spellings never reach the wire.
+    const wireIdentity = internalBudgetIdentityToWire(entry.scope as InternalBudgetScope, entry.entityName);
     const requestBody = {
       budget_type: budgetType,
       budget_product_sku: 'ai_credits',
-      budget_scope: entry.scope,
-      budget_entity_name: entry.entityName,
+      ...wireIdentity,
       budget_amount: creditsToUsd(entry.desired.amountCredits),
       prevent_further_usage: entry.desired.preventFurtherUsage,
       budget_alerting: budgetAlerting,
@@ -404,15 +409,20 @@ async function executeCostCenterMutation(
 
   // action === 'change': removals -> DEWR/exclude PATCH -> additions.
   //
-  // Phase 9 (§9.2 live reconciliation) constraint: a 1:1 move currently stages
-  // as a removal entry on the source cost center + an addition entry on the
-  // target, executed here as two HTTP ops (DELETE then POST /resource). The
-  // Task 4.3 §6.9 investigation found GitHub's REAL resource-mutation response
-  // is `{ message, reassigned_resources }` -- i.e. the live API may reattribute
-  // a resource server-side in a SINGLE call, collapsing the two-op sequence.
-  // When 9.2 wires the live client, revisit whether a cross-CC move should be
-  // one reassignment request rather than DELETE+POST (MSW can't reproduce the
-  // reattribution, so the two-op path stays correct against the mock).
+  // Wire shapes OpenAPI-pinned (wire-contract-writes.md §3): POST (add) and
+  // DELETE (remove) both take the FOUR-ARRAY body ({users, organizations,
+  // repositories, enterprise_teams}, minProperties 1 -- resourceArraysBody
+  // below emits only the non-empty arrays), replacing the invented
+  // {resources:[{type,name}]}. Responses: add -> 200 {message,
+  // reassigned_resources|null} (each reassigned resource names its
+  // previous_cost_center -- i.e. live GitHub reattributes server-side in the
+  // SINGLE add call); remove -> 200 {message} only. Both envelopes ride
+  // responseBody into the mutationLog verbatim, so reassigned_resources is
+  // already observable to callers/audit evidence without a shape change. The
+  // two-op cross-CC move (DELETE from source entry + POST to target entry,
+  // ordered by orderEntriesForApply) is KEPT: collapsing to a single
+  // reassigning POST would change drift/audit semantics -- flagged for a
+  // maintainer ruling, not changed unilaterally here.
   const mutations: ExecutedMutation[] = [];
   const membership = entry.changes.find(
     (c): c is Extract<CostCenterFieldChange, { field: 'membership' }> => c.field === 'membership',
@@ -422,7 +432,7 @@ async function executeCostCenterMutation(
   );
 
   if (membership && membership.removed.length > 0) {
-    const requestBody = { resources: membership.removed.map((r) => ({ type: r.type, name: r.name })) };
+    const requestBody = resourceArraysBody(membership.removed);
     const response = await octokit.request('DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource', {
       enterprise,
       cost_center_id: costCenterId,
@@ -442,7 +452,7 @@ async function executeCostCenterMutation(
   }
 
   if (membership && membership.added.length > 0) {
-    const requestBody = { resources: membership.added.map((r) => ({ type: r.type, name: r.name })) };
+    const requestBody = resourceArraysBody(membership.added);
     const response = await octokit.request('POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource', {
       enterprise,
       cost_center_id: costCenterId,
@@ -452,6 +462,20 @@ async function executeCostCenterMutation(
   }
 
   return mutations;
+}
+
+// The OpenAPI-pinned resource-mutation body: four typed name arrays, only the
+// non-empty ones emitted (the schema's minProperties: 1 -- an all-empty body
+// is unreachable here since callers only invoke this with a non-empty ref
+// list). Internal member types map 1:1 onto the four arrays.
+function resourceArraysBody(refs: readonly { type: 'User' | 'Org' | 'Repo' | 'EnterpriseTeam'; name: string }[]): Record<string, string[]> {
+  const arrayKeyByType = { User: 'users', Org: 'organizations', Repo: 'repositories', EnterpriseTeam: 'enterprise_teams' } as const;
+  const body: Record<string, string[]> = {};
+  for (const ref of refs) {
+    const key = arrayKeyByType[ref.type];
+    (body[key] ??= []).push(ref.name);
+  }
+  return body;
 }
 
 function costCenterPatchBody(changes: readonly Exclude<CostCenterFieldChange, { field: 'membership' }>[]): Record<string, unknown> {

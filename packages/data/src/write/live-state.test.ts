@@ -99,6 +99,79 @@ describe('assembleUsageState', () => {
   });
 });
 
+// Live-shaped budget read (wire-contract-writes.md §1, OpenAPI-pinned): real
+// budgets come back with the SEVEN-value wire enum -- multi_user_customer is
+// the universal ULB; scope `user` + a `user` login field is the individual
+// ULB. The old parse classified by our internal spellings, so live Controls
+// misfiled every ULB (a real, current live bug). This proves the boundary
+// translation through fetchLiveControls (the getControls read path).
+describe('fetchLiveControls budget-scope translation (live wire shapes)', () => {
+  it('classifies multi_user_customer as universal and user+user-field as individual, and skips scopes with no internal home', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/budgets`, () =>
+        HttpResponse.json({
+          budgets: [
+            {
+              id: 'bud-universal-live',
+              budget_type: 'BundlePricing',
+              budget_product_sku: 'ai_credits',
+              budget_scope: 'multi_user_customer',
+              budget_entity_name: 'dewr',
+              budget_amount: 46,
+              prevent_further_usage: true,
+              budget_alerting: { will_alert: true, alert_recipients: [] },
+            },
+            {
+              id: 'bud-individual-live',
+              budget_type: 'BundlePricing',
+              budget_product_sku: 'ai_credits',
+              budget_scope: 'user',
+              budget_entity_name: 'dewr',
+              user: 'liam-obrien',
+              budget_amount: 58,
+              prevent_further_usage: true,
+              budget_alerting: { will_alert: false, alert_recipients: [] },
+            },
+            {
+              // No internal home -> skipped, never guessed into a scope.
+              id: 'bud-repo-live',
+              budget_type: 'ProductPricing',
+              budget_product_sku: 'ai_credits',
+              budget_scope: 'repository',
+              budget_entity_name: 'dewr/api',
+              budget_amount: 10,
+              prevent_further_usage: false,
+              budget_alerting: { will_alert: false, alert_recipients: [] },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+    const budgets = live.controls.filter((c) => c.kind === 'budget');
+
+    // The universal ULB, correctly classified ($46 -> 4,600 credits).
+    expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'universal')).toMatchObject({
+      entityName: 'dewr',
+      amountCredits: 4_600,
+    });
+    // The individual ULB: entityName is the `user` LOGIN, not budget_entity_name.
+    expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'individual')).toMatchObject({
+      entityName: 'liam-obrien',
+      amountCredits: 5_800,
+    });
+    // The repository budget was skipped; nothing leaked through raw.
+    expect(budgets).toHaveLength(2);
+
+    // The wire-id map keys off the TRANSLATED identity, so a PATCH/DELETE on
+    // these budgets targets the right wire ids.
+    expect(live.budgetWireByIdentity.get('budget:individual:liam-obrien')?.id).toBe('bud-individual-live');
+    expect(live.budgetWireByIdentity.get('budget:universal:dewr')?.id).toBe('bud-universal-live');
+  });
+});
+
 // Live crash repro (2026-07-08): real GHEC cost centers carry flat
 // ai_credit_pool_enabled + ai_credit_pool_state, NOT the internal
 // included_usage_cap -- toCapControl's .included_usage_cap.enabled read was

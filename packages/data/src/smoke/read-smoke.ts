@@ -1,4 +1,5 @@
 import type { Octokit } from 'octokit';
+import { fetchUsageFanout } from '../api-client/usage-fetch.js';
 import { downloadReportRecords, type UsersReportEnvelope } from '../api-client/users-report.js';
 
 // Task 9.2-prep: the live read-surface smoke runner. Given a configured
@@ -230,15 +231,53 @@ async function runR5(octokit: Octokit, enterprise: string): Promise<ReadSmokeEnd
       ccPart = `cost_center ${firstId}: ${summary.details}`;
     }
 
+    // (Product, sku) inventory across the FULL fan-out (default + one call per
+    // cost center -- the exact read Sync ingestion performs). Live finding
+    // (2026-07-08): ingestion has NO product/sku filter, and the live usage
+    // endpoint returns EVERY enhanced-billing product (Actions, storage, ...)
+    // -- so pool/metered sums are polluted with the whole GitHub bill (0 pool
+    // consumed / $64k phantom metered on the maintainer's dashboard). The
+    // FILTER is deferred until this inventory pins the real Copilot AI-credit
+    // (product, sku) pair (our fixtures' 'copilot'/'ai_credits' is a PRD
+    // guess; filtering on a wrong guess would zero real data). One line per
+    // distinct pair: n, summed quantity/gross/discount/net.
+    const ccIds = costCenters.map((c) => c.id).filter((id): id is string => typeof id === 'string');
+    const allItems = await fetchUsageFanout(octokit, enterprise, ccIds);
+    const skuInventory = summarizeSkuInventory(allItems);
+
     return {
       endpoint: path,
       docRef: 'R5',
       status: ccStatus,
-      details: `default call: ${defaultItems.length} cost-center-unassociated item(s); ${ccPart}`,
+      details: `default call: ${defaultItems.length} cost-center-unassociated item(s); ${ccPart}; skus: ${skuInventory}`,
     };
   } catch (err) {
     return { endpoint: path, docRef: 'R5', status: 'http_error', details: httpErrorDetails(err) };
   }
+}
+
+// One compact line per distinct (product, sku) pair, name-sorted for
+// deterministic output: `<product>/<sku> n=<items> qty=<Σquantity>
+// gross=<Σ$> disc=<Σ$> net=<Σ$>`.
+function summarizeSkuInventory(
+  items: ReadonlyArray<{ product?: string; sku?: string; quantity?: number; grossAmount?: number; discountAmount?: number; netAmount?: number }>,
+): string {
+  if (items.length === 0) return '(no usage items)';
+  const byPair = new Map<string, { n: number; qty: number; gross: number; disc: number; net: number }>();
+  for (const item of items) {
+    const key = `${item.product ?? '<no-product>'}/${item.sku ?? '<no-sku>'}`;
+    const acc = byPair.get(key) ?? { n: 0, qty: 0, gross: 0, disc: 0, net: 0 };
+    acc.n += 1;
+    acc.qty += item.quantity ?? 0;
+    acc.gross += item.grossAmount ?? 0;
+    acc.disc += item.discountAmount ?? 0;
+    acc.net += item.netAmount ?? 0;
+    byPair.set(key, acc);
+  }
+  return [...byPair.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, s]) => `${key} n=${s.n} qty=${s.qty} gross=${s.gross.toFixed(2)} disc=${s.disc.toFixed(2)} net=${s.net.toFixed(2)}`)
+    .join('; ');
 }
 
 function isStringArray(value: unknown): value is string[] {

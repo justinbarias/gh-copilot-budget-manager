@@ -103,8 +103,12 @@ describe('applyPlan', () => {
     expect(mutation.method).toBe('PATCH');
     expect(mutation.path).toContain(`/enterprises/${ENTERPRISE_SLUG}/settings/billing/budgets/${BUDGET_IDS.costCenterMetered}`);
     expect(mutation.requestBody).toEqual({ budget_amount: 650 });
+    // OpenAPI-pinned envelope (wire-contract-writes.md §2): PATCH -> 200
+    // { message, budget } -- never a flat budget object.
     expect(mutation.responseStatus).toBe(200);
-    expect((mutation.responseBody as { budget_amount: number }).budget_amount).toBe(650);
+    const patchEnvelope = mutation.responseBody as { message: string; budget: { budget_amount: number } };
+    expect(typeof patchEnvelope.message).toBe('string');
+    expect(patchEnvelope.budget.budget_amount).toBe(650);
 
     expect(result.auditEvents).toHaveLength(1);
     const auditEvent = result.auditEvents[0]!;
@@ -253,17 +257,26 @@ describe('applyPlan', () => {
     const mutation = result.mutationLog[0]!;
     expect(mutation.method).toBe('POST');
     expect(mutation.path).toContain(`/enterprises/${ENTERPRISE_SLUG}/settings/billing/budgets`);
-    // §6.9 M1 body shape + USD conversion (5,000 credits -> $50, i.e. /100).
+    // OpenAPI-pinned body (wire-contract-writes.md §1) + USD conversion (5,000
+    // credits -> $50): an internal `individual` ULB serializes as wire scope
+    // `user` + the `user` login field -- the internal spelling never reaches
+    // the wire.
     expect(mutation.requestBody).toEqual({
       budget_type: 'BundlePricing',
       budget_product_sku: 'ai_credits',
-      budget_scope: 'individual',
+      budget_scope: 'user',
       budget_entity_name: 'user-99',
+      user: 'user-99',
       budget_amount: 50,
       prevent_further_usage: true,
       budget_alerting: { will_alert: false, alert_recipients: [] },
     });
-    expect(mutation.responseStatus).toBe(201);
+    // OpenAPI-pinned envelope (§2): POST -> 200 { message, budget } -- 201
+    // does not exist in the status list.
+    expect(mutation.responseStatus).toBe(200);
+    const createEnvelope = mutation.responseBody as { message: string; budget: { budget_amount: number } };
+    expect(typeof createEnvelope.message).toBe('string');
+    expect(createEnvelope.budget.budget_amount).toBe(50);
 
     expect(result.auditEvents[0]!.action).toBe('budget.create');
     expect(result.auditEvents[0]!.entityRef).toBe('budget:individual:user-99');
@@ -272,7 +285,7 @@ describe('applyPlan', () => {
     expect(verifyStoredChain(db)).toEqual({ ok: true });
   });
 
-  it('deletes a budget: issues DELETE on the correct wire id (M4, no body, 204) and audits budget.delete', async () => {
+  it('deletes a budget: issues DELETE on the correct wire id (no body, 200 {message, id}) and audits budget.delete', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     // Full end-state minus the organization spending limit -> exactly one delete.
     const desiredControls: ControlState[] = live.controls.filter(
@@ -290,7 +303,12 @@ describe('applyPlan', () => {
     expect(mutation.method).toBe('DELETE');
     expect(mutation.path).toContain(`/settings/billing/budgets/${BUDGET_IDS.organizationMetered}`);
     expect(mutation.requestBody).toBeUndefined();
-    expect(mutation.responseStatus).toBe(204);
+    // OpenAPI-pinned envelope (wire-contract-writes.md §2): DELETE -> 200
+    // { message, id } -- the status list has no 204.
+    expect(mutation.responseStatus).toBe(200);
+    const deleteEnvelope = mutation.responseBody as { message: string; id: string };
+    expect(typeof deleteEnvelope.message).toBe('string');
+    expect(deleteEnvelope.id).toBe(BUDGET_IDS.organizationMetered);
 
     expect(result.auditEvents[0]!.action).toBe('budget.delete');
     expect(result.auditEvents[0]!.entityRef).toBe('budget:organization:dewr-digital');
@@ -527,20 +545,34 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
     expect(result.status).toBe('applied');
     if (result.status !== 'applied') throw new Error('unreachable');
 
-    // Removal (DELETE) precedes addition (POST).
+    // Removal (DELETE) precedes addition (POST). Bodies are the OpenAPI-pinned
+    // FOUR-ARRAY shape (wire-contract-writes.md §3) -- only non-empty arrays
+    // emitted; the invented {resources:[{type,name}]} is gone.
     expect(result.mutationLog).toHaveLength(2);
     const [remove, add] = result.mutationLog;
     expect(remove!.method).toBe('DELETE');
     expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(remove!.requestBody).toEqual({ users: ['rpatel2'] });
     expect(add!.method).toBe('POST');
     expect(add!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'new-hire' }] });
+    expect(add!.requestBody).toEqual({ users: ['new-hire'] });
 
-    // The recomputed cap limit is observable in the mutation response (24 + 1
-    // seats x 7,000 = 175,000 on add; 24 - 1 = 161,000 on remove).
-    expect((add!.responseBody as { included_usage_cap: { computed_limit_credits: number } }).included_usage_cap.computed_limit_credits).toBe(175_000);
-    expect((remove!.responseBody as { included_usage_cap: { computed_limit_credits: number } }).included_usage_cap.computed_limit_credits).toBe(161_000);
+    // OpenAPI-pinned envelopes (§3): add -> { message, reassigned_resources |
+    // null } (new-hire comes from no prior cost center -> null); remove ->
+    // { message }.
+    const addEnvelope = add!.responseBody as { message: string; reassigned_resources: unknown };
+    expect(typeof addEnvelope.message).toBe('string');
+    expect(addEnvelope).toHaveProperty('reassigned_resources');
+    expect(typeof (remove!.responseBody as { message: string }).message).toBe('string');
+
+    // The recomputed cap limit stays observable in the mutation response (the
+    // Task 4.2 acceptance criterion), riding ALONGSIDE the real envelope's
+    // message under the mock side's explicitly sim-flagged
+    // `simulated_included_usage_cap` key (their proposal per the contract's
+    // preserve-the-criterion note; validator to ratify): 24 + 1 seats x 7,000
+    // = 175,000 on add; 24 - 1 = 161,000 on remove.
+    expect((add!.responseBody as { simulated_included_usage_cap: { computed_limit_credits: number } }).simulated_included_usage_cap.computed_limit_credits).toBe(175_000);
+    expect((remove!.responseBody as { simulated_included_usage_cap: { computed_limit_credits: number } }).simulated_included_usage_cap.computed_limit_credits).toBe(161_000);
 
     // One audit event for the entry (net before -> after membership).
     expect(result.auditEvents).toHaveLength(1);
@@ -566,14 +598,14 @@ describe('applyPlan -- cost-center lifecycle (Task 4.13)', () => {
 
     expect(result.mutationLog).toHaveLength(2);
     const [remove, add] = result.mutationLog;
-    // Remove from the OLD cost center first.
+    // Remove from the OLD cost center first (four-array body, §3).
     expect(remove!.method).toBe('DELETE');
     expect(remove!.path).toMatch(new RegExp(`/cost-centers/${WORKFORCE_ID}/resource$`));
-    expect(remove!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(remove!.requestBody).toEqual({ users: ['rpatel2'] });
     // Then add to the NEW cost center.
     expect(add!.method).toBe('POST');
     expect(add!.path).toMatch(new RegExp(`/cost-centers/${CYBER_ID}/resource$`));
-    expect(add!.requestBody).toEqual({ resources: [{ type: 'User', name: 'rpatel2' }] });
+    expect(add!.requestBody).toEqual({ users: ['rpatel2'] });
 
     // Two audit events, in apply (removal-first) order.
     expect(result.auditEvents.map((e) => e.entityRef)).toEqual([`cost_center:${WORKFORCE_CC}`, `cost_center:${CYBER_CC}`]);

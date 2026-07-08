@@ -127,13 +127,29 @@ describe('runReadSmoke', () => {
     expect(r6?.details).toMatch(/via 28d\/\{2026-06-12\}/);
   });
 
+  // Addendum (2026-07-08 live finding): ingestion has no product/sku filter,
+  // so live pool/metered sums are polluted by every enhanced-billing product.
+  // R5's sku inventory is the pin for the deferred filter fix: one line per
+  // distinct (product, sku) pair across the full fan-out. Fixture world is
+  // Copilot-only -- all 39 USAGE_ITEMS rows are copilot/ai_credits, and every
+  // row's gross is quantity/100: qty 193,036 -> gross 1930.36; net 25.34
+  // (faisal-noor's $23 overflow + the Sep-1 cliff row's $2.34); disc =
+  // 1930.36 - 25.34 = 1905.02.
+  it('R5 reports the distinct (product, sku) inventory with summed quantities/amounts (the sku-filter pin)', async () => {
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r5 = results.find((r) => r.docRef === 'R5');
+    expect(r5?.status, r5?.details).toBe('ok');
+    expect(r5?.details).toMatch(/skus: copilot\/ai_credits n=39 qty=193036 gross=1930\.36 disc=1905\.02 net=25\.34/);
+  });
+
   it('catches a wrong shape (missing required field) as shape_mismatch', async () => {
     // Deliberate divergence: the budgets list returns a budget with NO
     // budget_amount -- exactly the class of drift the Task 9.2 live smoke must
     // be able to flag. Proves the checker can actually FAIL, not just pass.
     server.use(
       http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/budgets`, () =>
-        HttpResponse.json({ budgets: [{ budget_scope: 'universal', budget_entity_name: 'dewr' /* budget_amount MISSING */ }] }),
+        // Real wire scope spelling (multi_user_customer = the universal ULB).
+        HttpResponse.json({ budgets: [{ budget_scope: 'multi_user_customer', budget_entity_name: 'dewr' /* budget_amount MISSING */ }] }),
       ),
     );
 
