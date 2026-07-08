@@ -134,8 +134,12 @@ describe('fetchLiveControls budget-scope translation (live wire shapes)', () => 
             },
             {
               // No internal home -> skipped, never guessed into a scope.
+              // budget_type BundlePricing per the item-22 live pin (ai_credits
+              // <=> BundlePricing always; the skip here is SCOPE-driven) --
+              // validator correction: this synthetic row previously modeled
+              // the nonexistent ProductPricing+ai_credits pairing.
               id: 'bud-repo-live',
-              budget_type: 'ProductPricing',
+              budget_type: 'BundlePricing',
               budget_product_sku: 'ai_credits',
               budget_scope: 'repository',
               budget_entity_name: 'dewr/api',

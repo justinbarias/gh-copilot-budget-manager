@@ -170,6 +170,28 @@ describe('runReadSmoke', () => {
     expect(r5?.details).toMatch(/default call: 2 cost-center-unassociated item\(s\)/);
   });
 
+  // The date-granularity pin (2026-07-09 addendum -- the P50 ~= total x 31
+  // forecast blow-up): per-day feeds show MANY distinct dates per sku; a
+  // month-to-date-aggregate feed shows ONE date carrying the whole count.
+  // The fixture world is per-day BY CONSTRUCTION, so this pin renders the
+  // per-day side of the contrast -- the maintainer's live run renders the
+  // other, and the difference IS the diagnostic. Hand-derived: the 39
+  // AI-credit rows fall on exactly 8 distinct dates (6 CC-aggregate rows on
+  // each of Jun 2/4/5/9/11, 7 on Jun 12 incl. faisal-noor's overflow row,
+  // and the two cliff rows Aug 31 / Sep 1); Business on Jun 5 + Jun 9,
+  // Premium Request on Jun 10 + Jun 11.
+  it('R5 reports the per-sku date histogram + overall range (the date-granularity pin)', async () => {
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r5 = results.find((r) => r.docRef === 'R5');
+    expect(r5?.status, r5?.details).toBe('ok');
+    expect(r5?.details).toMatch(
+      /dates: Copilot AI Credits \[2026-06-02×6, 2026-06-04×6, 2026-06-05×6, 2026-06-09×6, 2026-06-11×6, 2026-06-12×7, 2026-08-31×1, 2026-09-01×1\]/,
+    );
+    expect(r5?.details).toMatch(/Copilot Business \[2026-06-05×1, 2026-06-09×1\]/);
+    expect(r5?.details).toMatch(/Copilot Premium Request \[2026-06-10×1, 2026-06-11×1\]/);
+    expect(r5?.details).toMatch(/range=2026-06-02\.\.2026-09-01/);
+  });
+
   it('catches a wrong shape (missing required field) as shape_mismatch', async () => {
     // Deliberate divergence: the budgets list returns a budget with NO
     // budget_amount -- exactly the class of drift the Task 9.2 live smoke must

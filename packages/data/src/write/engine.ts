@@ -6,7 +6,6 @@ import {
   controlIdentity,
   creditsToUsd,
   diffControls,
-  isUlbScope,
   simulatePlan,
   validatePlan,
   type AlertOnlyOverrideInput,
@@ -268,14 +267,21 @@ async function executeBudgetMutation(
   }
 
   if (entry.action === 'add') {
-    // Convention observed across every seeded budget fixture (msw/fixtures/budgets.ts):
-    // ULB scopes (universal/individual/multi_user_cost_center) are always
-    // 'BundlePricing'; spending-limit scopes (enterprise/organization/cost_center)
-    // are always 'ProductPricing'. No fixture or spec passage documents a
-    // third case, so this v1 infers budget_type from scope rather than
-    // requiring the caller to supply it -- flagged in the Task 4.8 report as
-    // an assumption to confirm.
-    const budgetType = isUlbScope(entry.scope) ? 'BundlePricing' : 'ProductPricing';
+    // budget_type is LIVE-PINNED (open item 22, maintainer's 2026-07-09 R4
+    // sampler over their 10 real budgets): every real ai_credits budget is
+    // BundlePricing at EVERY scope -- including cost_center spending limits
+    // -- while ProductPricing pairs only with product skus. Verbatim from the
+    // live inventory:
+    //   BundlePricing/ai_credits/cost_center/TEST-CC ... /enterprise/
+    //   departmentofemploymentandworkplacerelations ... /cost_center/
+    //   DSD-Premium|DES-NoFunds|TSD-Premium|TSD-Admins|ETD-NoFunds;
+    //   ProductPricing/codespaces|packages|actions/enterprise only.
+    // The old Task-4.8 fixture-observed inference (isUlbScope ?
+    // 'BundlePricing' : 'ProductPricing') would have sent the nonexistent
+    // ProductPricing+ai_credits pairing on a live Family-B create. Every
+    // budget this tool creates is an AI-credit budget (AI_CREDITS_BUDGET_SKU
+    // below), so the type is a constant, not a branch.
+    const budgetType = 'BundlePricing';
     const budgetAlerting = {
       will_alert: entry.desired.alerting.willAlert,
       alert_recipients: [...entry.desired.alerting.alertRecipients],

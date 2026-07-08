@@ -74,7 +74,10 @@ describe('fetchLiveControls', () => {
 
     expect(live.budgetWireByIdentity.get(`budget:cost_center:${WORKFORCE_CC}`)).toEqual({
       id: BUDGET_IDS.costCenterMetered,
-      budgetType: 'ProductPricing',
+      // Open item 22, live-pinned: ai_credits budgets are BundlePricing at
+      // EVERY scope, spending limits included (ProductPricing+ai_credits does
+      // not exist on the real tenant).
+      budgetType: 'BundlePricing',
       budgetProductSku: 'ai_credits',
     });
     expect(live.costCenterIdByName.get(WORKFORCE_CC)).toBeDefined();
@@ -235,7 +238,7 @@ describe('applyPlan', () => {
   // body/path/status (docs/api-surface-validation.md M1/M4/M7), USD conversion,
   // and audit action are verified by execution rather than by reading engine.ts.
 
-  it('creates a new individual ULB: POSTs the M1 body (USD budget_amount, scope-inferred BundlePricing) and audits budget.create', async () => {
+  it('creates a new individual ULB: POSTs the M1 body (USD budget_amount, BundlePricing) and audits budget.create', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const newUlb: ControlState = {
       kind: 'budget',
@@ -282,6 +285,48 @@ describe('applyPlan', () => {
     expect(result.auditEvents[0]!.entityRef).toBe('budget:individual:user-99');
     expect(result.auditEvents[0]!.before).toBeNull();
     expect(result.auditEvents[0]!.after).toMatchObject({ amountCredits: 5_000 });
+    expect(verifyStoredChain(db)).toEqual({ ok: true });
+  });
+
+  // Open item 22, LIVE-PINNED (maintainer's 2026-07-09 R4 sampler): every
+  // real ai_credits budget is BundlePricing at EVERY scope -- their tenant's
+  // own cost_center spending limits read
+  // `BundlePricing/ai_credits/cost_center/TSD-Premium $100 stop=true` etc.,
+  // and ProductPricing pairs only with product skus (codespaces/packages/
+  // actions). The engine's old scope-inferred branch would have sent the
+  // nonexistent ProductPricing+ai_credits pairing on exactly this create.
+  it('creates a cost_center-scoped SPENDING LIMIT with budget_type BundlePricing (never ProductPricing+ai_credits)', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+    const newSpendingLimit: ControlState = {
+      kind: 'budget',
+      scope: 'cost_center',
+      entityName: 'Cyber & Identity Services',
+      amountCredits: 10_000, // $100 -- same magnitude as the live TSD-Premium row
+      preventFurtherUsage: true,
+      alerting: { willAlert: false, alertRecipients: [] },
+    };
+    const desiredControls: ControlState[] = [...live.controls, newSpendingLimit];
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    expect(stagedPlan.entries).toHaveLength(1);
+    expect(stagedPlan.entries[0]).toMatchObject({ controlKind: 'budget', action: 'add', scope: 'cost_center' });
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error(`expected 'applied', got ${result.status}`);
+
+    const mutation = result.mutationLog[0]!;
+    expect(mutation.method).toBe('POST');
+    expect(mutation.requestBody).toEqual({
+      budget_type: 'BundlePricing', // the live pin -- constant across scopes
+      budget_product_sku: 'ai_credits',
+      budget_scope: 'cost_center',
+      budget_entity_name: 'Cyber & Identity Services',
+      budget_amount: 100,
+      prevent_further_usage: true,
+      budget_alerting: { will_alert: false, alert_recipients: [] },
+    });
+    expect(mutation.responseStatus).toBe(200);
+    expect(result.auditEvents[0]!.action).toBe('budget.create');
     expect(verifyStoredChain(db)).toEqual({ ok: true });
   });
 

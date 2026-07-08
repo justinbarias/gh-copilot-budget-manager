@@ -284,16 +284,57 @@ async function runR5(octokit: Octokit, enterprise: string): Promise<ReadSmokeEnd
     const ccIds = costCenters.map((c) => c.id).filter((id): id is string => typeof id === 'string');
     const allItems = await fetchUsageFanout(octokit, enterprise, ccIds);
     const skuInventory = summarizeSkuInventory(allItems);
+    const dateHistogram = summarizeDateHistogram(allItems);
 
     return {
       endpoint: path,
       docRef: 'R5',
       status: ccStatus,
-      details: `default call: ${defaultItems.length} cost-center-unassociated item(s); ${ccPart}; skus: ${skuInventory}`,
+      details: `default call: ${defaultItems.length} cost-center-unassociated item(s); ${ccPart}; skus: ${skuInventory}; dates: ${dateHistogram}`,
     };
   } catch (err) {
     return { endpoint: path, docRef: 'R5', status: 'http_error', details: httpErrorDetails(err) };
   }
+}
+
+// Per-sku DATE histogram (2026-07-09 addendum -- the forecast blow-up pin):
+// the maintainer's Forecast screen showed P50 cycle-end ~= cycle-to-date total
+// x 31, i.e. the run-rate math treated a CUMULATIVE total as a DAILY rate.
+// Hypothesis: live R5 items are month-to-date AGGREGATES (their tenant
+// returned only n=7 AI-credit items across 8 elapsed days -- one per cost
+// center, likely one shared date), not the per-day rows our fixtures model
+// and buildDailyBurn assumes. This histogram pins it: per-day feeds show MANY
+// distinct dates per sku; an aggregate feed shows ONE date carrying the whole
+// count. The granularity fix (per-day ?day= fan-out vs run-rate =
+// cumulative/daysElapsed) is deliberately deferred until this output decides.
+// Format: `<sku> [date×n, ...]; ...; range=<min>..<max>`.
+function summarizeDateHistogram(items: ReadonlyArray<{ sku?: string; date?: string }>): string {
+  if (items.length === 0) return '(no usage items)';
+  const bySku = new Map<string, Map<string, number>>();
+  let minDate: string | null = null;
+  let maxDate: string | null = null;
+  for (const item of items) {
+    const sku = item.sku ?? '<no-sku>';
+    const date = item.date ?? '<no-date>';
+    const dates = bySku.get(sku) ?? new Map<string, number>();
+    dates.set(date, (dates.get(date) ?? 0) + 1);
+    bySku.set(sku, dates);
+    if (item.date) {
+      if (minDate === null || item.date < minDate) minDate = item.date;
+      if (maxDate === null || item.date > maxDate) maxDate = item.date;
+    }
+  }
+  const perSku = [...bySku.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([sku, dates]) => {
+      const parts = [...dates.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([date, n]) => `${date}×${n}`)
+        .join(', ');
+      return `${sku} [${parts}]`;
+    })
+    .join('; ');
+  return `${perSku}; range=${minDate ?? '?'}..${maxDate ?? '?'}`;
 }
 
 // One compact line per distinct (product, sku) pair, name-sorted for

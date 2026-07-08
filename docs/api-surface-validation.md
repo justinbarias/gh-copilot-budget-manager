@@ -615,19 +615,70 @@ Remaining items, when the live tenant + classic PAT
     cost-center CREATE body still accepts the internal nested
     `included_usage_cap` shape (only the PATCH body was pinned this round);
     pin the create body's cap field on a future smoke/write and align.
-22. **`budget_type` PAIRING TENSION (NEW OPEN ITEM — money-affecting write
-    risk).** The machine-verified pricing model says AI-credit SKUs belong
-    to **`BundlePricing`** (`budget_product_sku: 'ai_credits'`), but our
-    Family-B fixtures AND the write engine serialize **spending limits** as
-    **`ProductPricing` + `'ai_credits'`** (ULB creates already use
-    BundlePricing — `engine.ts`: `isUlbScope ? 'BundlePricing' :
-    'ProductPricing'`; validator-confirmed in both the fixture file and the
-    engine). If real GitHub *enforces* the type↔sku pairing, a live
-    spending-limit CREATE from this app may be **rejected or mis-typed**.
-    **The pin is the maintainer's next R4 sampler output** — specifically
-    the `budget_type` of their real $1,000 AI-credit budget: if it reads
-    `BundlePricing`, both the Family-B fixtures and the engine's non-ULB
-    branch flip to BundlePricing in their own round.
+22. ~~**`budget_type` PAIRING TENSION**~~ **CLOSED 2026-07-09 — LIVE-PINNED
+    by the maintainer's R4 sampler over their 10 real budgets:** ALL seven
+    of their `ai_credits` budgets are **`BundlePricing` at EVERY scope**
+    (their enterprise $1,000 budget AND all six cost_center spending limits
+    — e.g. `BundlePricing/ai_credits/cost_center/TSD-Premium $100
+    stop=true`); `ProductPricing` pairs only with product skus
+    (codespaces/packages/actions, all $0 stop=true on their tenant). Our
+    engine's scope-inferred branch (`isUlbScope ? BundlePricing :
+    ProductPricing`) was therefore WRONG for Family-B creates — a live
+    spending-limit CREATE would have sent the **nonexistent
+    ProductPricing+ai_credits pairing**. Fixed: the engine's CREATE
+    `budget_type` is now the constant `'BundlePricing'` (branch deleted;
+    every budget this tool creates is an AI-credit budget); the four
+    Family-B fixtures corrected to BundlePricing (only that field); MSW
+    grew a `validateBudgetPairing` **drift-guard on create** —
+    BundlePricing+ai_credits 200, ProductPricing+ai_credits **422**
+    (field=budget_type), SkuPricing+ai_credits 422, ProductPricing+actions
+    200 (all test-pinned; validator ran them). New engine test pins a
+    cost_center spending-limit CREATE's full POST body with BundlePricing.
+    Sweep results: PATCH bodies never carry a type; `BudgetWireRef.budgetType`
+    is passive (zero consumers — left as honest dead weight, flagged);
+    validator repo sweep found and corrected one residual synthetic
+    ProductPricing+ai_credits pairing in a test-local repository-skip
+    fixture (behavior-neutral: that skip is scope-driven).
+    **Decision recorded — inverse pairing NOT enforced:** the mock accepts
+    BundlePricing+`<other sku>` because that space is unpinned (the mock
+    must not reject what real GitHub might accept); flagged, revisit only
+    if it ever bites. **Fixture stop-posture note:** the live tenant's
+    ai_credits budgets are all stop=true (incl. three $0), while our
+    Family-B keeps 3-of-4 stop=false — deliberate §6.3 narrative fixtures
+    (the hard-stop-OFF default story), not drift; posture note only.
+23. **R5 DATE GRANULARITY (NEW OPEN ITEM — MONEY-CRITICAL, fix next
+    round).** The maintainer's live-synced Forecast/Overview screens show a
+    blow-up: P50 cycle-end ≈ **11,865,710 ≈ their 382,588 cycle total ×
+    31**, projected metered **$360,624** — i.e. run-rate math treating a
+    CUMULATIVE total as a DAILY rate. **Hypothesis:** live R5 usage items
+    are month-to-date AGGREGATES (their tenant returned only n=7 AI-credit
+    items across 8 elapsed days — one per cost center), not the per-day
+    rows our fixtures model and `buildDailyBurn` assumes. **The pin:** the
+    smoke R5 row now appends a per-sku DATE histogram
+    (`<sku> [date×n, …]; range=min..max`) — a per-day feed shows many
+    distinct dates per sku (the fixture world pins exactly that side:
+    AI Credits on 8 distinct dates, 6/6/6/6/6/7 across June + the two
+    cliff rows, range 2026-06-02..2026-09-01 — validator hand-recomputed);
+    an aggregate feed shows ONE date carrying the whole count. **The fix is
+    deliberately deferred until pinned.** Candidate designs: (a) per-day
+    `?day=` fan-out on the R5 read (same pattern as the R6 users-1-day
+    fan-out), or (b) run-rate = cumulative ÷ daysElapsed at the derivation
+    boundary. If confirmed, the blast radius is every consumer of the
+    daily series: `buildDailyBurn`, series assembly, run-rate, and the
+    backtest's training inputs.
+24. **MODE-BLIND PERSISTENCE (NEW OPEN ITEM — §6.8-adjacent
+    display-integrity bug, elevated from the deferred list; fix next round
+    alongside 23).** The same screenshots show live-synced PERSISTED rows
+    rendering inside a SIMULATION session: sim banner + the 672,000 live
+    allowance + the $360,624 live forecast tile + June-14 fixture alerts on
+    one screen. Persisted forecasts/snapshots are read back without scoping
+    to the session's mode, so a sim session serves whatever the last live
+    Sync wrote (and vice versa) — never a wire-safety issue (no requests
+    cross modes) but a §6.8-adjacent integrity problem: simulated and live
+    numbers must never be co-mingled on screen. Snapshots already carry
+    `source` ('msw' | 'github' — the audit-provenance precedent), so the
+    fix is scoping forecast/persisted reads (including `getSyncStatus`,
+    the todo list's existing deferred item) to the session's source.
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 

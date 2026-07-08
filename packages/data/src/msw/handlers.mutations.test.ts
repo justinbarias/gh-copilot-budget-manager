@@ -159,6 +159,53 @@ describe('Task 4.1 -- budget mutations: create (POST)', () => {
     expect(res.status).toBe(422);
   });
 
+  // LIVE-PINNED pairing matrix (maintainer's R4 sampler, 2026-07-09):
+  // ai_credits <=> BundlePricing always -- ProductPricing+ai_credits (the
+  // old engine serialization) must never reach the wire again.
+  it('accepts BundlePricing + ai_credits (the live-pinned AI-credit pairing)', async () => {
+    const res = await fetch(BUDGETS_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validBudgetPayload({ budget_type: 'BundlePricing', budget_product_sku: 'ai_credits' })),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects ProductPricing + ai_credits with a GitHub-shaped 422 (the pairing drift-guard)', async () => {
+    const res = await fetch(BUDGETS_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validBudgetPayload({ budget_type: 'ProductPricing', budget_product_sku: 'ai_credits' })),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { message: string; errors: Array<{ field: string }> };
+    expect(body.message).toBe('Validation Failed');
+    expect(body.errors.some((e) => e.field === 'budget_type')).toBe(true);
+  });
+
+  it('rejects SkuPricing + ai_credits too (only BundlePricing pairs with ai_credits)', async () => {
+    const res = await fetch(BUDGETS_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(validBudgetPayload({ budget_type: 'SkuPricing', budget_product_sku: 'ai_credits' })),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('accepts ProductPricing + a product sku (actions) -- non-AI pairings stay validation-light', async () => {
+    const payload = validBudgetPayload({
+      budget_type: 'ProductPricing',
+      budget_product_sku: 'actions',
+      budget_scope: 'enterprise',
+      budget_entity_name: ENTERPRISE_SLUG,
+    });
+    delete (payload as Record<string, unknown>).user;
+    const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { budget: { budget_type: string; budget_product_sku: string } };
+    expect(body.budget).toMatchObject({ budget_type: 'ProductPricing', budget_product_sku: 'actions' });
+  });
+
   it('rejects a fractional budget_amount (machine-verified: integer, whole dollars)', async () => {
     const res = await fetch(BUDGETS_URL, {
       method: 'POST',

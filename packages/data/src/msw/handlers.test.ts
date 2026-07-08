@@ -184,6 +184,16 @@ describe('budgets handler', () => {
 
     const pollution = body.budgets.filter((b) => b.budget_product_sku !== 'ai_credits');
     expect(pollution).toHaveLength(3);
+
+    // LIVE-PINNED pairing (R4 sampler, 2026-07-09): every ai_credits budget
+    // -- Family-A ULBs AND Family-B spending limits alike, at every scope --
+    // is BundlePricing. The four Family-B rows previously carried the
+    // ProductPricing fixture-convention artifact; this pins the correction.
+    for (const b of body.budgets) {
+      if (b.budget_product_sku === 'ai_credits') expect(b.budget_type).toBe('BundlePricing');
+    }
+    expect(body.budgets.find((b) => b.id === BUDGET_IDS.enterpriseMetered)?.budget_type).toBe('BundlePricing');
+    expect(body.budgets.find((b) => b.id === BUDGET_IDS.costCenterDataAnalyticsMetered)?.budget_type).toBe('BundlePricing');
     expect(body.budgets.find((b) => b.id === BUDGET_IDS.actionsProductBudget)).toMatchObject({
       budget_type: 'ProductPricing',
       budget_product_sku: 'actions',

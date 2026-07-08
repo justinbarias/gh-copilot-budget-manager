@@ -227,9 +227,16 @@ export const BUDGETS: Budget[] = [
     budget_alerting: { will_alert: false, alert_recipients: [] },
   },
   // ---- Family B: spending limits (metered charges only, hard-stop off by default) ----
+  // budget_type LIVE-PINNED (maintainer's R4 per-budget sampler, 2026-07-09):
+  // ALL seven of the real tenant's ai_credits budgets are BundlePricing at
+  // EVERY scope (enterprise + six cost_center spending limits alike) --
+  // ai_credits <=> BundlePricing always. The old ProductPricing pairing on
+  // these four rows was a fixture-convention artifact (flagged in the
+  // product-pollution round, now corrected); ProductPricing pairs with
+  // PRODUCT skus only (see the pollution budgets below).
   {
     id: BUDGET_IDS.enterpriseMetered,
-    budget_type: 'ProductPricing',
+    budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
     budget_scope: 'enterprise',
     budget_entity_name: ENTERPRISE_SLUG,
@@ -239,7 +246,7 @@ export const BUDGETS: Budget[] = [
   },
   {
     id: BUDGET_IDS.organizationMetered,
-    budget_type: 'ProductPricing',
+    budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
     budget_scope: 'organization',
     budget_entity_name: 'dewr-digital',
@@ -251,7 +258,7 @@ export const BUDGETS: Budget[] = [
   // engine's canonical PATCH target (engine.test.ts raises this $600 → $650).
   {
     id: BUDGET_IDS.costCenterMetered,
-    budget_type: 'ProductPricing',
+    budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
     budget_scope: 'cost_center',
     budget_entity_name: WORKFORCE_CC,
@@ -271,7 +278,7 @@ export const BUDGETS: Budget[] = [
   // `costCenterDataAnalyticsMetered` for import stability.
   {
     id: BUDGET_IDS.costCenterDataAnalyticsMetered,
-    budget_type: 'ProductPricing',
+    budget_type: 'BundlePricing',
     budget_product_sku: 'ai_credits',
     budget_scope: 'cost_center',
     budget_entity_name: DATA_EVAL_CC,

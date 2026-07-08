@@ -108,14 +108,28 @@ function slug(value: string): string {
 // Task 4.1: budget mutations (all budget_scope values this tool writes).
 // ---------------------------------------------------------------------------
 
-// Machine-verified pricing models (2026-07-09): BundlePricing pairs with
-// 'ai_credits', ProductPricing with PRODUCT strings (e.g. 'actions'),
-// SkuPricing with SKU strings (e.g. 'actions_linux'). budget_product_sku is
-// deliberately validation-light here (any non-empty string, any type<->sku
-// pairing): real GitHub accepts non-AI-credit budgets on this same endpoint
-// (the pollution fixtures model three), and the exact type<->sku pairing
-// rules are unpinned -- the mock must not reject what the real API accepts.
+// Pricing-model pairings, LIVE-PINNED (maintainer's R4 per-budget sampler,
+// 2026-07-09, corroborating the machine-verified model): 'ai_credits' pairs
+// with BundlePricing ALWAYS (all seven real ai_credits budgets, every
+// scope); ProductPricing pairs with PRODUCT skus (observed live: codespaces
+// / packages / actions), SkuPricing with SKU strings (e.g. 'actions_linux').
+// validateBudgetPairing below enforces the ai_credits<=>BundlePricing rule
+// as a hard 422 -- the drift-guard that stops the old ProductPricing+
+// ai_credits engine behavior from ever reaching the wire again. The exact
+// product/sku string space stays validation-light (unpinned beyond the four
+// observed strings) -- the mock must not reject what the real API accepts.
 const BUDGET_TYPES = new Set<BudgetType>(['ProductPricing', 'SkuPricing', 'BundlePricing']);
+
+function validateBudgetPairing(budgetType: unknown, productSku: unknown, errors: FieldError[]): void {
+  if (typeof budgetType !== 'string' || typeof productSku !== 'string') return; // presence/enum errors already recorded
+  if (productSku === 'ai_credits' && budgetType !== 'BundlePricing') {
+    errors.push({ resource: 'Budget', field: 'budget_type', code: 'invalid' });
+  }
+  // Deliberately NO inverse rule (BundlePricing + a non-ai_credits sku is
+  // NOT rejected): the live pin only establishes ai_credits => BundlePricing;
+  // whether other bundle skus exist is unpinned, and the mock must not
+  // reject what the real API might accept.
+}
 // The REAL wire enum, machine-verified against GitHub's OpenAPI description
 // (wire-contract-writes.md §1). Our old internal spellings
 // 'universal'/'individual' are NOT wire values and are rejected here like any
@@ -192,6 +206,7 @@ function validateCreateBudgetPayload(body: unknown): { ok: true; value: Budget }
     errors.push({ resource: 'Budget', field: 'prevent_further_usage', code: 'invalid' });
   }
   const budgetAlerting = validateBudgetAlerting(body.budget_alerting, errors);
+  validateBudgetPairing(body.budget_type, body.budget_product_sku, errors);
 
   // Machine-verified (wire-contract-writes.md §1): `user` is "the login when
   // scope is `user`" -- required for scope 'user', a non-empty string when
