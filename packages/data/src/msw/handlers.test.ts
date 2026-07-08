@@ -275,12 +275,34 @@ interface UsersReportRecord {
   model?: string;
 }
 
+// The report FILE format is LIVE-PINNED as JSONL (maintainer's 2026-07-08
+// smoke: one JSON object per line, first-record keys exactly
+// [user_id, user_login, ai_credits_used]). This helper asserts the JSONL
+// emission structurally (body is zero or more non-empty lines, EACH parsing
+// as one record object; an empty day is an EMPTY body, never `[]`) and
+// returns the parsed records for the value assertions in each test.
 async function followDownloadLink(envelope: ReportEnvelope): Promise<UsersReportRecord[]> {
   const link = envelope.download_links[0];
   expect(typeof link).toBe('string');
   const res = await fetch(link!, { headers });
   expect(res.status).toBe(200);
-  return (await res.json()) as UsersReportRecord[];
+  const text = await res.text();
+  // JSONL, not a JSON array: the body must never open with '['.
+  expect(text.trim().startsWith('[')).toBe(false);
+  if (text.trim().length === 0) return [];
+  const lines = text.split('\n');
+  expect(lines.every((line) => line.trim().length > 0)).toBe(true); // no blank/trailing lines
+  return lines.map((line) => {
+    const record = JSON.parse(line) as UsersReportRecord;
+    expect(record).toEqual(
+      expect.objectContaining({
+        user_id: expect.any(String),
+        user_login: expect.any(String),
+        ai_credits_used: expect.any(Number),
+      }),
+    );
+    return record;
+  });
 }
 
 describe('per-user metrics report handlers (R6: /latest suffix, download-link envelope)', () => {
@@ -343,14 +365,40 @@ describe('per-user metrics report handlers (R6: /latest suffix, download-link en
     expect(records.reduce((sum, r) => sum + r.ai_credits_used, 0)).toBe(1_635);
   });
 
-  it('users-1-day for a day with no fixture rows returns a 200 envelope whose file is an empty array (not a 404)', async () => {
+  it('users-1-day for a day with no fixture rows returns a 200 envelope whose file is an EMPTY body (zero JSONL lines, not `[]`, not a 404)', async () => {
     const res = await fetch(`${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/copilot/metrics/reports/users-1-day?day=2026-06-14`, {
       headers,
     });
     expect(res.status).toBe(200);
     const envelope = (await res.json()) as ReportEnvelope;
-    const records = await followDownloadLink(envelope);
-    expect(records).toEqual([]);
+    // Raw-body pin: an empty day's file is the empty string -- exactly what
+    // the impl's sniffReportFormat classifies as 'empty' -> zero records.
+    // Emitting `[]` instead would sniff as a JSON array and silently
+    // reintroduce the disproven format.
+    const fileRes = await fetch(envelope.download_links[0]!, { headers });
+    expect(fileRes.status).toBe(200);
+    expect(await fileRes.text()).toBe('');
+  });
+
+  it('emits the file as JSONL: N non-empty lines, each parsing to one record with the live-pinned keys', async () => {
+    const res = await fetch(`${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/copilot/metrics/reports/users-1-day?day=2026-06-12`, {
+      headers,
+    });
+    const envelope = (await res.json()) as ReportEnvelope;
+    const fileRes = await fetch(envelope.download_links[0]!, { headers });
+    const text = await fileRes.text();
+
+    expect(text.trim().startsWith('[')).toBe(false); // JSONL, never a JSON array
+    expect(text.endsWith('\n')).toBe(false); // no trailing newline
+    const lines = text.split('\n');
+    expect(lines).toHaveLength(36); // one line per 2026-06-12 fixture row
+    for (const line of lines) {
+      expect(line.trim().length).toBeGreaterThan(0);
+      const record = JSON.parse(line) as Record<string, unknown>;
+      // Live-pinned first-record keys [user_id, user_login, ai_credits_used]
+      // all present; the sim-only enrichments (date, model) may ride along.
+      expect(Object.keys(record)).toEqual(expect.arrayContaining(['user_id', 'user_login', 'ai_credits_used']));
+    }
   });
 
   it('users-1-day with a missing or malformed day param 400s with a GitHub-shaped error body', async () => {

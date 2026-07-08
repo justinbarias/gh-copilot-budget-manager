@@ -68,12 +68,25 @@ and therefore none are exempt).
 | # | Method + path | Consumer | Doc source | Verdict | Deviation / note |
 |---|---|---|---|---|---|
 | R1 | `GET /enterprises/{enterprise}/copilot/billing/seats` | `github-impl` seats | Copilot seat-management REST (established) | `documented-confirmed` (path) | Response `{total_seats, seats[]}` + Link paging — conventional; pin exact fields at 9.2. |
-| R2 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | `github-impl` cost centers | Cost centers REST `2026-03-10` | `docs-indicated (summarizer)` | Real cost-center object carries `ai_credit_pool_enabled` + `ai_credit_pool_state{target_amount,current_amount}`; MSW returns the internal `included_usage_cap{enabled,overflow,computed_limit_credits}` model (see inference #2). Reconcile in github-impl at 9.2. |
+| R2 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | `github-impl` cost centers (cap fields via `api-client/cost-center-cap.ts`) | Cost centers REST `2026-03-10` + 2026-07-08 live crash evidence | `live-confirmed` (flat cap dialect confirmed; **two mapped-field assumptions pending pin**, see A-rows) | **Live-proven 2026-07-08 (as crashes):** real GHEC cost centers carry the flat `ai_credit_pool_enabled` + `ai_credit_pool_state{target_amount,current_amount}` dialect and **no** `included_usage_cap` — reading `.included_usage_cap.enabled` off them was the live `TypeError` that crashed `getControls`/`syncNow`/`listCostCenters`. Fixed at the PARSE layer per inference #2's standing ruling: the ONE shared, total (never-throwing) mapper `normalizeIncludedUsageCap` (`cost-center-cap.ts`) is applied at BOTH fetch boundaries (`github-impl.ts` `fetchCostCentersRaw` + `write/live-state.ts` `fetchLiveControls`), folding both dialects into the internal shape — the internal model, MSW, core, and UI are unchanged (sim byte-identical: the internal-shape passthrough is exact). Two mapped fields ride **flagged assumptions** (rows A1/A2 below); the smoke's R2 row now dumps the first cost-center's full key list, `ai_credit_pool_enabled` + the entire `ai_credit_pool_state` verbatim, and every overflow-suggestive key — **that dump is the pin for both assumptions** on the next live run. Note: live cost centers also lack the sim-only DEWR-mapping/`mtd_burn` enrichments — a **display gap** on the Cost Centers screen against live (blank mapping columns, zero-burn until ingest fills it), pre-existing and non-crashing, reconciled when the live read path grows its own burn join. |
 | R3 | `GET /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (get-one; members embedded) | `github-impl` members | Cost centers REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **The old `GET …/{id}/resource` path DOES NOT EXIST** (live `404`, 2026-07-08; the docs' full endpoint list has `/resource` as POST/DELETE only — mutations, already modeled by M8/M9). Members/resources are **embedded** as `resources: [{type, name}]` on the cost-center objects returned by list/get-one/create/patch. `github-impl`/`live-state` now read `resources` off the already-fetched objects (net code deletion); the smoke's R3 row exercises get-one and structurally checks the embedded `resources[]`. |
 | R4 | `GET /enterprises/{enterprise}/settings/billing/budgets` | `github-impl` budgets | Budgets REST `2026-03-10` | `docs-indicated (summarizer)` | **Pagination divergence:** real list returns in-body `{budgets[], total_count, has_next_page, user?, effective_budget?}`; MSW returns `{budgets[]}` + a `Link` header. Read-path change with github-impl blast radius → **defer to 9.2** (pagination reconciliation is an explicit 9.2 task). |
 | R5 | `GET /enterprises/{enterprise}/settings/billing/usage` (`?year/month/day/cost_center_id`) | `github-impl` usage (via `api-client/usage-fetch.ts`) | Billing usage REST `2026-03-10` + 2026-07-08 live smoke | `live-confirmed` | **Items are camelCase** — `{date, product, sku, quantity, unitType, pricePerUnit, grossAmount, discountAmount, netAmount, organizationName, repositoryName?}`. Our old snake_case parse (`net_amount`/`discount_amount`) was why the live smoke reported `SHAPE_MISMATCH` (reading them live yields `NaN` through every money rollup). **No `user_login` and no `cost_center_id` on items** — both were our invention; per-user attribution moved to R6, per-cost-center attribution to the `cost_center_id` query param. **Default call EXCLUDES cost-center-attributed usage** (docs verbatim: "By default this endpoint will return usage that does not have a cost center"), so the correct enterprise-wide read is a **fan-out**: 1 default (unassociated) call + 1 call per known cost-center id, attributing items by WHICH query returned them (`usage-fetch.ts` `fetchUsageFanout`). MSW keeps `user_login`/`cost_center_id` as fixture-internal keys only (used to implement the query filtering) and projects both out of every emitted response; its `unitType: 'Unit'` and `organizationName: 'dewr-digital'` are **placeholder values** (docs pin the fields' existence, not their values — `pricePerUnit: 0.01` is exact per CLAUDE.md §5); pin real values on a live run. |
-| R6 | 28-day: `GET …/copilot/metrics/reports/users-28-day/latest` (documented) **or** `…/users-28-day/{day}` (**observed-live**); 1-day: `GET …/users-1-day?day=YYYY-MM-DD` (documented) **or** `…/users-1-day/{day}` (**inferred same-router twin**) — variant fallback, see note | `github-impl` credits-used (via `api-client/users-report.ts`) | Copilot metrics-reports REST + 2026-07-08 live smokes (two authed runs) | `live-confirmed` (envelope + divergence; **file format pin pending live**) | First authed smoke: our `404` was the missing `/latest` suffix. **Second authed smoke (2026-07-08, post-reconciliation): the DOCUMENTED `users-28-day/latest` route itself `400`'d** — `"Invalid day parameter… Expected format: YYYY-MM-DD"` with **no** day param sent. Diagnosis: **this tenant's router binds the literal `latest` segment into a `{day}` PATH parameter** — it serves `…/users-28-day/{day}` and has **no `/latest` route** — while docs.github.com `enterprise-cloud@latest` still documents `/latest` plus a `?day=` QUERY param on users-1-day. A genuine docs-vs-deployment divergence; **tenant type (github.com vs GHE.com data residency) is unconfirmed — the divergence is unexplained until that is answered** (open item, possibly GHE.com deployment lag). **Variant-fallback design** (`users-report.ts`): the documented form is always tried first; **only an HTTP 400/404 on it** triggers the path-param retry (any other status — 401/403/500 — propagates unmasked: a real error, not a routing divergence); if both variants fail, the second error is thrown; the winning variant is **memoised per Octokit instance** (module-level `WeakMap` — one ApiClient owns one Octokit, so a credential/tenant change rebuilds the client and starts a clean memo), and `fetchUserCreditsForDays` resolves the variant on the FIRST day sequentially before any concurrent wave, so a 92-106-day Sync backfill pays exactly ONE failed probe. Response (both variants) is the async report **envelope** `{download_links: string[], report_start_day, report_end_day}`; per-user records (`user_id`, `user_login`, `ai_credits_used` [added 2026-06-19 per changelog], `used_*`, `ai_adoption_phase`) live in the file behind the link (see R7). **Cycle-accuracy ruling (money-affecting):** the 28-day report is a TRAILING aggregate crossing the cycle boundary, so it is never the cycle-total source; cycle-accurate per-user totals come from users-1-day fanned out over elapsed cycle days (Sync-only). The smoke's R6 row is now a **four-variant probe** (28d/latest, 28d/{day}, 1d?day=, 1d/{day} — raw `octokit.request`, deliberately bypassing the fallback memo so all four statuses get pinned independently): it reports per-variant OK/HTTP-status plus `format=<json\|jsonl\|csv>` + first-record keys from the first working variant's file. `ok` iff ≥1 variant per report family works **and** the download-link follow succeeds (a failed format pin downgrades to `shape_mismatch` — it is this row's whole job). **That output IS both the tenant-surface map and the file-format pin** for the maintainer's next live run. |
-| R7 | `GET <download_links[0]>` (opaque signed URL, plain `fetch`, non-Octokit) | `users-report.ts` `downloadReportRecords` (used by `fetchUsersReport` + the smoke's four-variant probe) | GitHub docs describe the link as a short-lived signed URL; file format **undocumented** | `docs-indicated (summarizer)` — **format pin pending live** | **NEW hand-wrapped HTTP call (§6.9):** the only non-Octokit request in the codebase — a bare `fetch` following the R6 envelope's first download link (variant-independent: whichever R6 route form served the envelope, the file behind the link is the same report artifact). The file's format (JSON array vs JSONL vs CSV) could not be pinned from any reachable doc, so `parseUsersReportFile` sniffs defensively (leading `[` → JSON array, `{` → JSONL, else CSV-with-header); the MSW twin serves JSON arrays of `{user_id, user_login, ai_credits_used}` from a fake host (`results.download.github.test`) as the simplest defensible guess. The maintainer's next live smoke prints the real format + first-record keys (R6 row) — update this row and the mock's file shape from that output. **Call volume:** each users-1-day day costs an envelope request + a file download; `syncNow` fans out over elapsed cycle days (~15 at the June-14 anchor) **plus a 92-day prior-3-closed-cycle backfill** (2026-03-01..2026-05-31, from the clock seam) for per-user forecast history — ~214 HTTP requests per Sync, chunked at `USERS_REPORT_CONCURRENCY = 10` in-flight (`users-report.ts`) to stay under secondary rate limits; acceptable because Sync is an explicit job (CLAUDE.md §2), tune the knob if live rate-limiting bites. |
+| R6 | 28-day: `GET …/copilot/metrics/reports/users-28-day/latest`; 1-day: `GET …/users-1-day?day=YYYY-MM-DD` (both **documented forms live-confirmed working**; path-param variants `…/users-28-day/{day}` / `…/users-1-day/{day}` **live-404'd** — retained only as fallback insurance, see note) | `github-impl` credits-used (via `api-client/users-report.ts`) | Copilot metrics-reports REST + 2026-07-08 live smokes (four authed runs) | `live-confirmed` (routes, envelope, **and file format — pin CLOSED: JSONL**) | First authed smoke: our `404` was the missing `/latest` suffix. Second authed smoke: a `400` `"Invalid day parameter…"` briefly suggested the tenant's router bound `latest` as a `{day}` path param — **that diagnosis was WRONG** (see the corrected live-contact history): the third + fourth smokes' four-variant probes, twice identical, returned `28d/latest=OK; 28d/{day}=404; 1d?day==OK; 1d/{day}=404` — **the tenant (github.com GHEC, confirmed) is DOCS-FAITHFUL**; the `400` was the old probe sending `day=<today>` for a not-yet-generated report, mislabeled under the `/latest` row. **Variant-fallback design, retained as insurance** (`users-report.ts` — inert on this tenant, guards a future GHE.com deployment): documented form first; **only an HTTP 400/404 on it** triggers the path-param retry (any other status propagates unmasked); both-fail throws the second error; winning variant memoised per Octokit instance (WeakMap — client rebuild = clean memo); `fetchUserCreditsForDays` resolves the variant on the first day sequentially (one failed probe max per fan-out). Response is the async report **envelope** `{download_links: string[], report_start_day, report_end_day}`; per-user records live in the file behind the link (see R7) — **format LIVE-PINNED: JSONL, record keys exactly `[user_id, user_login, ai_credits_used]`** (1,111 records on the maintainer's tenant). **Cycle-accuracy ruling (money-affecting):** the 28-day report is a TRAILING aggregate crossing the cycle boundary, so it is never the cycle-total source; cycle-accurate per-user totals come from users-1-day fanned out over elapsed cycle days (Sync-only), with a **≤2-day trailing-gap tolerance** (see Live-wire limitations). The smoke's R6 row remains the four-variant probe (raw `octokit.request`, bypassing the memo) reporting per-variant status + format + first-record keys; `ok` iff ≥1 variant per report family works and the download-link follow succeeds. |
+| R7 | `GET <download_links[0]>` (opaque signed URL, plain `fetch`, non-Octokit) | `users-report.ts` `downloadReportRecords` (used by `fetchUsersReport` + the smoke's four-variant probe) | GitHub docs describe the link as a short-lived signed URL + 2026-07-08 live smokes (third/fourth runs) | `live-confirmed` — **format pin CLOSED: JSONL** | **Hand-wrapped HTTP call (§6.9):** the only non-Octokit request in the codebase — a bare `fetch` following the R6 envelope's first download link. **File format LIVE-PINNED (2026-07-08, two identical runs): JSONL** — one JSON object per line, first-record keys exactly `[user_id, user_login, ai_credits_used]`. `parseUsersReportFile`'s defensive sniff (leading `[` → JSON array, `{` → JSONL, else CSV-with-header) classifies it correctly and is retained as-is; the MSW twin (`msw/handlers.ts` `jsonlResponse`) is **realigned to emit the same JSONL** (one object/line, no trailing newline, `Content-Type: text/plain` — deliberately not `application/json`, so nothing can start trusting a header the live host may not send; empty day = empty body → sniffed `'empty'`). The mock's download *filenames* still end `.json` while carrying JSONL — intentional (the impl sniffs content, never filename/header; the live signed URLs' filenames are opaque anyway). **Call volume:** each users-1-day day costs an envelope request + a file download; `syncNow` fans out over elapsed cycle days (~15 at the June-14 anchor) **plus a 92-day prior-3-closed-cycle backfill** (2026-03-01..2026-05-31, from the clock seam) for per-user forecast history — ~214 HTTP requests per Sync, chunked at `USERS_REPORT_CONCURRENCY = 10` in-flight (`users-report.ts`) to stay under secondary rate limits; acceptable because Sync is an explicit job (CLAUDE.md §2), tune the knob if live rate-limiting bites. |
+
+### Assumptions pending live pin (cap mapping — `cost-center-cap.ts`)
+
+| # | Assumption | Basis | Risk if wrong | Pin mechanism |
+|---|---|---|---|---|
+| A1 | **`ai_credit_pool_state.target_amount` is denominated in USD dollars**; mapped to credits via `round(USD × 100)` (the platform-wide $0.01/credit rule). | Every other amount on the billing wire (`budget_amount`, `netAmount`, `pricePerUnit`) is USD; a lone credits-denominated field would be the inconsistency. | Displayed cap limits read **100× too high** if the field is actually credits. Money-critical. | The smoke R2 row dumps `ai_credit_pool_state` **verbatim, untransformed** — compare `target_amount` against the tenant's known license-derived pool (e.g. an 8-seat CC ⇒ $560 if USD, 56,000 if credits). |
+| A2 | **Overflow (block vs metered at cap exhaustion) defaults to `'block'`** when no wire field sniffs. Sniff rule: any key on the cost-center object or its `ai_credit_pool_state` matching `/overflow\|exceed\|block/i` whose value is literally `'block'` or `'metered'`; **boolean candidates deliberately unmapped** (`allow_overflow: true` vs `block_on_exceed: true` would mean opposite things — guessing polarity is worse than defaulting). | The real field is undocumented anywhere reachable. `'block'` matches the platform's default posture (pool exhaustion blocks unless paid-usage is enabled, CLAUDE.md §5) and **fails conservative**: a wrong `'block'` gives earlier exhaustion warnings; a wrong `'metered'` would project spend capacity a hard stop will deny. | A genuinely-metered CC is forecast as blocking (over-conservative alerts) until pinned. | The smoke R2 row lists every overflow-suggestive key + value on the first cost-center — if GitHub ships the field under any recognisable name, the dump surfaces it. |
+
+### Known divergence — cap WRITES (do not toggle a cap against live yet)
+
+| # | Method + path | Verdict | Note |
+|---|---|---|---|
+| W1 | `PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (cap toggle) | **`known-divergent (writes)` — blocked on the A2 overflow pin** | The READ path now maps the real wire (R2), but `write/engine.ts`'s cap-toggle PATCH body **still sends the internal nested `included_usage_cap` shape** — a live cap write would send a field GitHub doesn't recognise (at best ignored, at worst a 422). Live cap toggles are NOT safe from the app until this is reconciled — which is deliberately deferred to its own round because the write body needs the real overflow field name (A2) that only the R2 dump can pin. MSW mutation handlers stay on the internal shape (inference #2's ruling) until then. |
 
 ### Recorded, not adopted (docs-confirmed alternates)
 
@@ -150,18 +163,39 @@ R5 via camelCase field checks on the default + first-CC fan-out calls, R6 via
 the envelope + download-link follow (whose output pins the file format, R7).
 
 **Second AUTHENTICATED live smoke (2026-07-08, post-reconciliation) — the R6
-variant divergence.** The maintainer's re-run after the reconciliation landed:
-**R1–R5 all OK** — including R5's fan-out live-proven (default call: 15
-cost-center-*unassociated* items; per-CC call: 13 items) — but **R6 `400`'d on
-the documented `users-28-day/latest`** with `"Invalid day parameter… Expected
-format: YYYY-MM-DD"` despite no day being sent: the tenant's router binds the
-literal `latest` segment as a `{day}` path parameter (it serves
-`…/users-28-day/{day}`, no `/latest` route), while the docs still say
-otherwise. Fixed with the variant-fallback + per-client memo in
-`users-report.ts` and the smoke's four-variant R6 probe (see the R6 row).
-**Open item: the maintainer has not yet confirmed the tenant type (github.com
-vs GHE.com data residency) — the docs-vs-deployment divergence is unexplained
-until that's answered.**
+`400`.** The maintainer's re-run after the reconciliation landed: **R1–R5 all
+OK** — including R5's fan-out live-proven (default call: 15
+cost-center-*unassociated* items; per-CC call: 13 items) — but **R6 `400`'d**
+with `"Invalid day parameter… Expected format: YYYY-MM-DD"`. This prompted the
+variant-fallback + per-client memo in `users-report.ts` and the smoke's
+four-variant R6 probe, under a working diagnosis that the tenant's router
+bound the literal `latest` segment as a `{day}` path parameter. **That
+diagnosis was WRONG — corrected below.**
+
+**Third + fourth AUTHENTICATED live smokes (2026-07-08, four-variant probe;
+two identical runs) — CORRECTION: the tenant is DOCS-FAITHFUL.** Both runs:
+`28d/latest=OK; 28d/{2026-07-07}=404; 1d?day=2026-07-07=OK;
+1d/{2026-07-07}=404; format=jsonl, first-record keys=[user_id, user_login,
+ai_credits_used] (1,111 records, via 28d/latest)`. So: **the documented
+routes (`/latest`, `?day=`) work; the path-param variants do NOT exist
+(`404`)** — the earlier "router binds `latest` as `{day}`" reading (recorded
+in a previous revision of this doc and of the R6 row) is retracted. The
+second smoke's `400` was a **probe-day artifact**: the then-current probe
+sent `day=<today>` for a report GitHub had not yet generated, and the failure
+was mislabeled under the `/latest` row. **Tenant type is now answered:
+github.com (GHEC), confirmed 2026-07-08** — closing that open item; there is
+no docs-vs-deployment divergence to explain. Consequences, per maintainer
+decisions: (a) the **variant fallback is RETAINED as insurance** — on this
+(docs-faithful) tenant it is inert (the documented form succeeds first, the
+path forms are never tried), and it costs nothing while guarding against a
+future GHE.com data-residency deployment; (b) **the report-file format pin is
+CLOSED: JSONL**, one object per line, record keys exactly `[user_id,
+user_login, ai_credits_used]` (1,111 records on this tenant) — the MSW
+report-file twins now emit the same JSONL (empty day = empty body; the mock's
+download *filenames* still end `.json` while carrying JSONL — intentional,
+the impl sniffs content, never the filename or Content-Type); (c) a Sync run
+before GitHub generates the current day's report must not hard-fail — see
+the trailing-gap tolerance below.
 
 ### Live-wire limitations (documented, not deferred)
 
@@ -184,6 +218,24 @@ until that's answered.**
   items carry no user). The Drizzle column was already nullable
   (`db/schema.ts` — no `.notNull()`), so no schema/migration change; per-user
   facts continue to flow through `credits_used_fact` (R6) instead.
+- **Trailing-gap tolerance (maintainer decision, 2026-07-08).** Live, a Sync
+  run before GitHub has generated the current day's users-1-day report gets a
+  report-not-yet-available failure on it — one missing trailing day must not
+  fail the whole Sync. `fetchCycleUserCredits` (`users-report.ts`) therefore
+  tolerates **at most 2 consecutive trailing** 400/404s, strictly at the end
+  of the cycle window: the head of the window is fetched hard (any failure
+  there is a mid-window hole that would silently undercount money-affecting
+  per-user totals — hard error), a failed tail day followed by a successful
+  one throws (same hole logic), any non-400/404 anywhere throws, and the
+  historical backfill gets NO tolerance (deep-past reports must exist). The
+  coverage edge is surfaced honestly via the **maintainer-approved optional
+  `SyncStatus.perUserDataThroughDay`** (the ONLY sanctioned `ApiClient`
+  interface extension): process-lifetime, set only after a successful ingest,
+  absent before the first sync of a process (a restart reports "unknown", not
+  a guess); the Settings screen appends "— per-user data through <date>" to
+  its sync-status line when present. In simulation the mock serves the as-of
+  day, so no gap ever fires and the field always equals the clock seam's
+  as-of date post-sync — sim behaviour and all fixture pins are unchanged.
 
 ---
 
@@ -226,6 +278,21 @@ explicit charter for exactly this reconciliation, against live ground truth.
 model `enabled`; wire `ai_credit_pool_state.target_amount` → model
 `computed_limit_credits`; block-vs-overflow ← **resolve the real field first**
 (undocumented today).
+
+**STATUS UPDATE (2026-07-08, live crash round): PARTIALLY RECONCILED — reads
+done, writes pending.** The live crashes (`TypeError` reading
+`.included_usage_cap.enabled` in `getControls`/`syncNow`/`listCostCenters`)
+proved the divergence in production and forced the READ half of this mapping
+early: `normalizeIncludedUsageCap` (`api-client/cost-center-cap.ts`) now
+applies exactly the mapping above at both fetch boundaries
+(`fetchCostCentersRaw` + `fetchLiveControls`), as a total, never-throwing
+function — with `target_amount`'s **units USD-assumed** (row A1) and
+**overflow defaulted to `'block'`** behind a literal-value key sniff (row
+A2), both flagged pending the smoke R2 dump. The internal model, MSW, core,
+and UI remain unchanged per this ruling. **The WRITE half is still
+unreconciled** (row W1): `write/engine.ts`'s cap-toggle PATCH body sends the
+internal nested shape — live cap writes stay unsafe until the overflow field
+is pinned and the write body is mapped in its own round.
 
 **3 — PATCH /cost-centers/{id} existence.**
 **Confirmed real.** `PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}`
@@ -383,23 +450,34 @@ Remaining items, when the live tenant + classic PAT
     pending an explicit A1 check on the next authed run — the 2026-07-08 smoke
     proved the PAT authenticates the R1–R6 surface, which is necessary but not
     the header-mechanism pin.)*
-11. **R6 file-format pin (NEW)** — the download-link file's format (JSON array /
-    JSONL / CSV) and exact record keys are a defensive guess (R7). The rewritten
-    smoke's R6 row prints `format=…, first-record keys=[…]` on the next live
-    run — fold that output into R7 and the MSW file twin.
+11. ~~**R6 file-format pin**~~ **CLOSED 2026-07-08** (third + fourth authed
+    smokes, twice identical): **JSONL**, first-record keys exactly
+    `[user_id, user_login, ai_credits_used]`, 1,111 records on the tenant's
+    28-day report. MSW report-file twins realigned to emit JSONL (R7).
 12. **R5 placeholder values (NEW)** — pin real `unitType`/`organizationName`
     values from a live response (MSW currently emits placeholders `'Unit'` /
     `'dewr-digital'`; `pricePerUnit: 0.01` is exact per CLAUDE.md §5).
-13. **R6 four-variant tenant-surface map (NEW, next live run)** — capture the
-    smoke R6 row's per-variant output verbatim: the OK/HTTP-status for each of
-    `28d/latest`, `28d/{day}`, `1d?day=`, `1d/{day}` (this pins which route
-    forms the tenant actually serves — in particular whether the inferred
-    `1d/{day}` twin is real, and whether `/latest` is genuinely absent) plus
-    the `format=… first-record keys=[…]` file pin (item 11) it carries. Also
-    **confirm the tenant type (github.com vs GHE.com)** — until answered, the
-    docs-vs-deployment divergence behind the variant fallback is unexplained,
-    and we can't tell whether the fallback is a permanent fixture or a
-    deployment-lag workaround to retire.
+13. ~~**R6 four-variant tenant-surface map + tenant type**~~ **CLOSED
+    2026-07-08**: two identical runs returned `28d/latest=OK; 28d/{day}=404;
+    1d?day==OK; 1d/{day}=404` — the tenant is **docs-faithful**; the
+    path-param variants do not exist; the inferred `1d/{day}` twin is refuted;
+    the variant fallback is retained purely as insurance (inert on GHEC).
+    **Tenant type: github.com (GHEC), confirmed 2026-07-08** — the earlier
+    "router binds latest as {day}" diagnosis is retracted (probe-day artifact,
+    see the corrected live-contact history).
+14. **R2 cap-field dump (NEW — the A1/A2 pin, next live run)** — capture the
+    smoke R2 row's details verbatim: the first cost-center's full top-level
+    key list, `ai_credit_pool_enabled`, the entire `ai_credit_pool_state`
+    subobject untransformed, and every overflow-suggestive key/value. This
+    pins (a) `target_amount`'s units — compare the raw value against the CC's
+    known license-derived pool: an 8-seat CC reads $560 if USD (assumption A1
+    right) or 56,000 if credits (A1 wrong, limits displayed 100× too high) —
+    and (b) the real overflow field name (A2), which also unblocks the cap
+    WRITE reconciliation (W1).
+15. **Cap WRITE body (NEW — blocked on 14)** — map `write/engine.ts`'s
+    cap-toggle PATCH body from the internal nested `included_usage_cap` shape
+    to the real flat wire fields once A2 pins the overflow field. Until then,
+    live cap toggles from the app are unsafe (row W1).
 
 ## Sources consulted (2026-07-05)
 

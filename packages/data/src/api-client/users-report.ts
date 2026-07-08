@@ -298,21 +298,88 @@ export async function fetchUserCreditsForDays(
   return days.flatMap((day) => byDay.get(day) ?? []);
 }
 
+// ---------------------------------------------------------------------------
+// Trailing-gap tolerance (maintainer decision, 2026-07-08 final live round).
+// The live hazard: the cycle fan-out covers days through the as-of day, but a
+// Sync run before GitHub has generated TODAY's report gets a
+// report-not-yet-available failure on it (a 400 on the documented form; the
+// kept insurance fallback then converts it to the path variant's 404) -- and
+// one missing trailing day must not fail the whole Sync. Tolerance is
+// STRICTLY trailing-edge-only, max 2 consecutive days from the END of the
+// requested list: any failed EARLIER day (a mid-window hole would silently
+// undercount money-affecting per-user totals), any THIRD consecutive trailing
+// failure, or any non-400/404 status anywhere stays a hard error. The
+// historical backfill gets NO tolerance -- deep-past reports must exist
+// (fetchUserCreditsForDays above stays hard).
+// ---------------------------------------------------------------------------
+
+const TRAILING_GAP_MAX_DAYS = 2;
+
+export interface CycleUserCreditsResult {
+  records: DatedUsersReportRecord[];
+  /** Last requested day whose report actually existed (null only if NO day returned one -- possible only for cycles <= 2 days old). An empty report file still counts as coverage; only report-not-yet-available does not. */
+  coveredThroughDay: string | null;
+  /** Trailing days skipped as report-not-yet-available (400/404 after the variant chain), oldest first. Empty in simulation (the mock serves the as-of day) and on any live Sync run after GitHub's daily report generation. */
+  skippedTrailingDays: string[];
+}
+
 // Cycle-accurate per-user credits: fan users-1-day out over every elapsed cycle
 // day (dates from the caller's cycleBounds/clock seam -- NEVER wall-clock in
 // sim) and tag each record with its day. Summing these per user gives the
-// cross-phase cycle total a ULB binds on. Replaces the old bare users-28-day
-// array read (which returned a trailing-28-day aggregate that could not be
-// cycle-scoped).
+// cross-phase cycle total a ULB binds on. Tolerates a <=2-day trailing gap
+// (see the block comment above); everything earlier is fetched hard.
 export async function fetchCycleUserCredits(
   octokit: Octokit,
   enterprise: string,
   cycleStart: Date,
   daysElapsed: number,
-): Promise<DatedUsersReportRecord[]> {
+): Promise<CycleUserCreditsResult> {
   const days: string[] = [];
   for (let i = 0; i <= daysElapsed; i++) {
     days.push(new Date(cycleStart.getTime() + i * DAY_MS).toISOString().slice(0, 10));
   }
-  return fetchUserCreditsForDays(octokit, enterprise, days);
+  if (days.length === 0) return { records: [], coveredThroughDay: null, skippedTrailingDays: [] };
+
+  // Head (all but the last TRAILING_GAP_MAX_DAYS days): hard errors -- a
+  // failure here is a mid-window hole, never a not-yet-generated report. This
+  // is also what makes a THIRD consecutive trailing failure hard: the
+  // third-from-last day lives in the head.
+  const tolerableCount = Math.min(TRAILING_GAP_MAX_DAYS, days.length);
+  const headDays = days.slice(0, days.length - tolerableCount);
+  const tailDays = days.slice(days.length - tolerableCount);
+  const headRecords = await fetchUserCreditsForDays(octokit, enterprise, headDays);
+
+  // Tail (the last 1-2 days): sequential, in day order. A 400/404 (after the
+  // variant chain -- fetchUsersReport already retried the path form) marks the
+  // day as report-not-yet-available; any other error propagates immediately.
+  const tailRecords: DatedUsersReportRecord[] = [];
+  const tailOutcomes: Array<{ day: string; error?: unknown }> = [];
+  for (const day of tailDays) {
+    try {
+      const { records } = await fetchUsersReport(octokit, enterprise, 'users-1-day', { day });
+      tailRecords.push(...records.map((r) => ({ ...r, date: day })));
+      tailOutcomes.push({ day });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status !== 400 && status !== 404) throw err;
+      tailOutcomes.push({ day, error: err });
+    }
+  }
+
+  // The skipped days must form a SUFFIX: a failed day FOLLOWED by a
+  // successful one is a mid-window hole (the report for a later day exists,
+  // so the earlier one wasn't "not yet generated") -- hard error.
+  const firstFailureIdx = tailOutcomes.findIndex((o) => o.error !== undefined);
+  if (firstFailureIdx !== -1) {
+    const laterSuccess = tailOutcomes.slice(firstFailureIdx + 1).find((o) => o.error === undefined);
+    if (laterSuccess) throw tailOutcomes[firstFailureIdx]!.error;
+  }
+  const skippedTrailingDays = tailOutcomes.filter((o) => o.error !== undefined).map((o) => o.day);
+
+  const succeededDays = [...headDays, ...tailOutcomes.filter((o) => o.error === undefined).map((o) => o.day)];
+  return {
+    records: [...headRecords, ...tailRecords],
+    coveredThroughDay: succeededDays.length > 0 ? succeededDays[succeededDays.length - 1]! : null,
+    skippedTrailingDays,
+  };
 }

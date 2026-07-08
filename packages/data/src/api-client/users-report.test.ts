@@ -3,7 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { server } from '../msw/server.js';
 import { ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
-import { fetchUserCreditsForDays, fetchUsersReport } from './users-report.js';
+import { fetchCycleUserCredits, fetchUserCreditsForDays, fetchUsersReport } from './users-report.js';
 
 // Endpoint-variant fallback proof (2026-07-08 second live smoke: the
 // maintainer's tenant serves /users-28-day/{day} and 400s on the DOCUMENTED
@@ -170,5 +170,96 @@ describe('fetchUsersReport variant fallback', () => {
     await expect(fetchUsersReport(octokit, ENTERPRISE_SLUG, 'users-28-day', { day: '2026-06-12' })).rejects.toMatchObject({
       status: 422,
     });
+  });
+});
+
+// Trailing-gap tolerance (maintainer decision, 2026-07-08 final live round):
+// a live Sync run before GitHub generates the as-of day's report must skip up
+// to the last 2 consecutive trailing days -- and NOTHING else. These tests
+// simulate the live "report not yet available" world with test-local
+// overrides: the documented query form 400s for the given days (the live
+// signature: "Date must be ... not in the future"), and the path-param
+// variant 404s everywhere (docs-faithful tenant), so the kept fallback chain
+// runs and both variants fail exactly as they would live.
+describe('fetchCycleUserCredits trailing-gap tolerance', () => {
+  const CYCLE_START = new Date('2026-06-10T00:00:00.000Z');
+  const DAYS_ELAPSED = 4; // requested days: 2026-06-10 .. 2026-06-14
+
+  function reportsNotYetAvailable(days: string[], status = 400): void {
+    server.use(
+      http.get(`${REPORTS_BASE}/users-1-day`, ({ request }) => {
+        const day = new URL(request.url).searchParams.get('day');
+        if (day && days.includes(day)) {
+          return HttpResponse.json(
+            { message: 'Invalid day parameter. Expected format: YYYY-MM-DD (e.g., 2025-10-10). Date must be within the last year and not in the future.' },
+            { status },
+          );
+        }
+        return undefined; // fall through to the canonical query handler
+      }),
+      http.get(`${REPORTS_BASE}/users-1-day/:day`, () => HttpResponse.json({ message: 'Not Found' }, { status: 404 })),
+    );
+  }
+
+  it('skips ONE not-yet-available trailing day, recording the gap and honest coverage', async () => {
+    reportsNotYetAvailable(['2026-06-14']);
+    const result = await fetchCycleUserCredits(testClient(), ENTERPRISE_SLUG, CYCLE_START, DAYS_ELAPSED);
+
+    expect(result.skippedTrailingDays).toEqual(['2026-06-14']);
+    expect(result.coveredThroughDay).toBe('2026-06-13');
+    // Earlier days' data is intact (2026-06-10/11/12 are fixture days with
+    // rows; 13 is a weekend fixture day whose report EXISTS but is empty --
+    // it still counts as covered) and nothing from the skipped day leaked in.
+    expect(result.records.some((r) => r.date === '2026-06-12')).toBe(true);
+    expect(result.records.every((r) => r.date !== '2026-06-14')).toBe(true);
+  });
+
+  it('skips TWO consecutive not-yet-available trailing days (the tolerance maximum)', async () => {
+    reportsNotYetAvailable(['2026-06-13', '2026-06-14']);
+    const result = await fetchCycleUserCredits(testClient(), ENTERPRISE_SLUG, CYCLE_START, DAYS_ELAPSED);
+
+    expect(result.skippedTrailingDays).toEqual(['2026-06-13', '2026-06-14']);
+    expect(result.coveredThroughDay).toBe('2026-06-12');
+    expect(result.records.some((r) => r.date === '2026-06-12')).toBe(true);
+  });
+
+  it('a MID-WINDOW failure is a hard error even inside the trailing pair (a later day has a report, so the earlier one was not "not yet generated")', async () => {
+    reportsNotYetAvailable(['2026-06-13']); // 2026-06-14 still succeeds
+    await expect(fetchCycleUserCredits(testClient(), ENTERPRISE_SLUG, CYCLE_START, DAYS_ELAPSED)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('a THIRD consecutive trailing failure is a hard error (the tolerance window is strictly 2 days)', async () => {
+    reportsNotYetAvailable(['2026-06-12', '2026-06-13', '2026-06-14']);
+    // 2026-06-12 falls in the hard-fetched head. The earlier head days already
+    // memoised the working day-query variant, so its 400 propagates directly
+    // (a memoised variant's failure is never re-fallback'd -- by design).
+    await expect(fetchCycleUserCredits(testClient(), ENTERPRISE_SLUG, CYCLE_START, DAYS_ELAPSED)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('a non-400/404 status on the trailing day is a hard error (tolerance never masks real failures)', async () => {
+    server.use(
+      http.get(`${REPORTS_BASE}/users-1-day`, ({ request }) => {
+        if (new URL(request.url).searchParams.get('day') === '2026-06-14') {
+          return HttpResponse.json({ message: 'Server Error' }, { status: 500 });
+        }
+        return undefined;
+      }),
+    );
+    await expect(fetchCycleUserCredits(testClient(), ENTERPRISE_SLUG, CYCLE_START, DAYS_ELAPSED)).rejects.toMatchObject({
+      status: 500,
+    });
+  });
+
+  it('the historical backfill path (fetchUserCreditsForDays) gets NO tolerance: a failing deep-past day is a hard error', async () => {
+    reportsNotYetAvailable(['2026-03-06']);
+    await expect(
+      fetchUserCreditsForDays(testClient(), ENTERPRISE_SLUG, ['2026-03-05', '2026-03-06', '2026-03-07']),
+      // The first day's success memoised the day-query variant, so the failing
+      // day's 400 propagates directly -- and hard, with no trailing tolerance.
+    ).rejects.toMatchObject({ status: 400 });
   });
 });

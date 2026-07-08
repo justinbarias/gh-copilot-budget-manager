@@ -50,6 +50,22 @@ describe('runReadSmoke', () => {
     }
   });
 
+  // R2 is the cap-shape pin for the maintainer's next live run: it must dump
+  // the first cost-center's top-level keys and the raw ai_credit_pool_* fields
+  // verbatim (the two unpinned facts: the overflow wire field and
+  // target_amount's units). Against the canonical (internal-shape) mock world
+  // that reads as included_usage_cap present + pool fields absent; against a
+  // real tenant the same code prints the live values.
+  it('R2 dumps the first cost-center key list and the raw cap fields verbatim (the overflow/units pin)', async () => {
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r2 = results.find((r) => r.docRef === 'R2');
+    expect(r2?.status, r2?.details).toBe('ok');
+    expect(r2?.details).toMatch(/first-cc keys=\[.*included_usage_cap.*\]/);
+    expect(r2?.details).toMatch(/ai_credit_pool_enabled=<absent>/);
+    expect(r2?.details).toMatch(/ai_credit_pool_state=<absent>/);
+    expect(r2?.details).toMatch(/overflow-suggestive keys: /);
+  });
+
   // The R6 row's job is now twofold: PIN the (undocumented) downloaded report
   // file format AND decisively map which of the four candidate wire forms this
   // tenant serves (the second live smoke proved /latest can be absent).

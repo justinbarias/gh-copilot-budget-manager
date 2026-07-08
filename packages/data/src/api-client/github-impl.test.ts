@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { desc } from 'drizzle-orm';
 import { driftedControlIds, poolAllowanceLine } from '@copilot-budget/core';
 import { assembleEnterpriseSeries, computeScopeForecast } from '../forecast/compute.js';
 import { server } from '../msw/server.js';
-import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, HISTORICAL_USAGE_ITEMS, SIM_CURRENT_DATE, USAGE_ITEMS } from '../msw/fixtures/index.js';
+import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE, HISTORICAL_USAGE_ITEMS, SIM_CURRENT_DATE, USAGE_ITEMS } from '../msw/fixtures/index.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { costCenter, costCenterMember, forecast as forecastTable, license, snapshot } from '../db/schema.js';
 import { createGitHubApiClient, type GitHubApiClientConfig } from './github-impl.js';
@@ -104,6 +105,53 @@ describe('createGitHubApiClient', () => {
     const dataEval = centers.find((c) => c.id === COST_CENTER_IDS.dataEval);
     expect(dataEval?.mtdBurnCredits).toBe(57_400);
     expect(dataEval?.includedUsageCap).toEqual({ enabled: true, computedLimitCredits: 63_000, overflow: 'block' });
+  });
+
+  // --- Live crash repro (2026-07-08): real GHEC cost centers carry flat
+  // ai_credit_pool_enabled + ai_credit_pool_state, NOT the internal
+  // included_usage_cap -- reading .included_usage_cap.enabled crashed
+  // listCostCenters/getControls/syncNow live. The shared mapper
+  // (cost-center-cap.ts, unit-pinned in cost-center-cap.test.ts) folds both
+  // dialects; this proves it through the real listCostCenters path. ---------
+  it('listCostCenters does not crash on real-wire cost centers (no included_usage_cap) and maps the ai_credit_pool_* fields', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/cost-centers`, () =>
+        HttpResponse.json({
+          costCenters: [
+            {
+              // The exact live crash shape: NONE of the cap fields at all.
+              id: 'cc-real-bare',
+              name: 'Real Wire Bare',
+              state: 'active',
+              resources: [{ type: 'User', name: 'monalisa' }],
+            },
+            {
+              // Cap enabled on the real wire: flat flag + read-only state.
+              id: 'cc-real-capped',
+              name: 'Real Wire Capped',
+              state: 'active',
+              resources: [{ type: 'User', name: 'hubot' }],
+              ai_credit_pool_enabled: true,
+              ai_credit_pool_state: { target_amount: 560, current_amount: 123.45 },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const centers = await client.listCostCenters();
+    expect(centers).toHaveLength(2);
+
+    // No cap fields -> the disabled default world, never a throw.
+    const bare = centers.find((c) => c.id === 'cc-real-bare');
+    expect(bare?.includedUsageCap).toEqual({ enabled: false, computedLimitCredits: 0, overflow: 'block' });
+    expect(bare?.members.map((m) => m.login)).toEqual(['monalisa']);
+
+    // ai_credit_pool_* mapped: enabled true; $560.00 target -> 56,000 credits
+    // (FLAGGED USD unit assumption); overflow 'block' (FLAGGED default -- no
+    // overflow-suggestive key on this object).
+    const capped = centers.find((c) => c.id === 'cc-real-capped');
+    expect(capped?.includedUsageCap).toEqual({ enabled: true, computedLimitCredits: 56_000, overflow: 'block' });
   });
 
   it('joins per-member cycle burn and enterprise-team provenance into the membership list', async () => {
@@ -221,6 +269,46 @@ describe('createGitHubApiClient', () => {
     expect(db.select().from(costCenter).all()).toHaveLength(6);
     expect(db.select().from(license).all()).toHaveLength(81);
     expect(db.select().from(costCenterMember).all()).toHaveLength(81);
+  });
+
+  // --- Trailing-gap surface (SyncStatus.perUserDataThroughDay, maintainer-
+  // approved optional extension 2026-07-08). The tolerance MECHANICS are
+  // pinned by users-report.test.ts; these two prove the wiring through the
+  // real ApiClient surface: absent pre-sync, full coverage in sim, and the
+  // honest earlier day when the as-of day's report is not yet available. ---
+
+  it('perUserDataThroughDay: absent before any sync, then the as-of day after a sim sync (no gap fires in simulation)', async () => {
+    expect((await client.getSyncStatus()).perUserDataThroughDay).toBeUndefined();
+
+    const result = await client.syncNow();
+    expect(result.perUserDataThroughDay).toBe(SIM_CURRENT_DATE); // mock serves the as-of day -> full coverage
+    expect((await client.getSyncStatus()).perUserDataThroughDay).toBe(SIM_CURRENT_DATE);
+  });
+
+  it('perUserDataThroughDay: a live-shaped not-yet-available as-of day is skipped and coverage honestly reports the prior day', async () => {
+    // The live signature: the as-of day's users-1-day 400s on the documented
+    // query form ("Date must be ... not in the future"-class failure) and the
+    // path-param fallback 404s (docs-faithful tenant).
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day`, ({ request }) => {
+        if (new URL(request.url).searchParams.get('day') === SIM_CURRENT_DATE) {
+          return HttpResponse.json({ message: 'Invalid day parameter. Date must be within the last year and not in the future.' }, { status: 400 });
+        }
+        return undefined; // fall through to the canonical handler
+      }),
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/copilot/metrics/reports/users-1-day/:day`, () =>
+        HttpResponse.json({ message: 'Not Found' }, { status: 404 }),
+      ),
+    );
+
+    const result = await client.syncNow();
+    // The Sync SUCCEEDED (rows landed, status is real) despite the trailing gap...
+    expect(result.lastSyncedAt).not.toBeNull();
+    expect(db.select().from(license).all()).toHaveLength(81);
+    // ...and coverage reports the last day that actually had a report:
+    // 2026-06-13, the day before the SIM_CURRENT_DATE (2026-06-14) as-of day.
+    expect(result.perUserDataThroughDay).toBe('2026-06-13');
+    expect((await client.getSyncStatus()).perUserDataThroughDay).toBe('2026-06-13');
   });
 
   // --- Task 4.15: syncNow's controls phase + getLastSyncedControls, wired

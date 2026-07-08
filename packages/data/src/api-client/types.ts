@@ -210,6 +210,21 @@ export interface Alert {
 export interface SyncStatus {
   lastSyncedAt: string | null;
   inProgress: boolean;
+  /**
+   * Trailing-gap surface (maintainer-approved optional extension, 2026-07-08):
+   * the last cycle day whose per-user report (users-1-day) actually existed in
+   * the most recent Sync THIS process performed. Live, a Sync run before
+   * GitHub generates today's report legitimately skips up to the last 2 cycle
+   * days (see users-report.ts's trailing-gap tolerance) -- this field is how
+   * that coverage edge is surfaced honestly instead of implying the per-user
+   * totals run through the as-of day. ABSENT (not null) when no Sync has run
+   * in this process yet: the value is process-lifetime state, not persisted
+   * (no schema change was sanctioned), so a restart honestly reports
+   * "unknown" rather than a guessed coverage day. In simulation the mock
+   * serves the as-of day, so this always equals the clock seam's as-of date
+   * after a sync.
+   */
+  perUserDataThroughDay?: string;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { Octokit } from 'octokit';
+import { http, HttpResponse } from 'msw';
 import { beforeAll, afterAll, afterEach, describe, expect, it } from 'vitest';
 import { server } from '../msw/server.js';
 import { ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
@@ -95,5 +96,59 @@ describe('assembleUsageState', () => {
     // Enterprise-wide metered total: only faisal-noor's in-cycle 2,300 --
     // noah-tanaka's Sep 1 metered row (234) is cycle-filtered out too.
     expect(usage.enterprise.meteredCreditsUsed).toBe(2_300);
+  });
+});
+
+// Live crash repro (2026-07-08): real GHEC cost centers carry flat
+// ai_credit_pool_enabled + ai_credit_pool_state, NOT the internal
+// included_usage_cap -- toCapControl's .included_usage_cap.enabled read was
+// the TypeError that killed getControls/syncNow/dryRun live. The shared
+// mapper (api-client/cost-center-cap.ts) normalizes at the fetch boundary;
+// this proves it through fetchLiveControls, the exact crashing path.
+describe('fetchLiveControls against real-wire cost centers', () => {
+  it('does not crash on cost centers without included_usage_cap and builds cap/cost-center controls from the mapped shape', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/cost-centers`, () =>
+        HttpResponse.json({
+          costCenters: [
+            {
+              // The exact live crash shape: none of the cap fields at all.
+              id: 'cc-real-bare',
+              name: 'Real Wire Bare',
+              state: 'active',
+              resources: [{ type: 'User', name: 'monalisa' }],
+            },
+            {
+              id: 'cc-real-capped',
+              name: 'Real Wire Capped',
+              state: 'active',
+              resources: [],
+              ai_credit_pool_enabled: true,
+              ai_credit_pool_state: { target_amount: 560, current_amount: 0 },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+
+    // No-cap-fields CC -> the disabled default, and the roster still maps.
+    const bareCap = live.controls.find((c) => c.kind === 'included_cap' && c.costCenterName === 'Real Wire Bare');
+    expect(bareCap).toMatchObject({ enabled: false, computedLimitCredits: 0, overflow: 'block' });
+    const bareCc = live.controls.find((c) => c.kind === 'cost_center' && c.name === 'Real Wire Bare');
+    expect(bareCc).toMatchObject({
+      members: [{ type: 'User', name: 'monalisa' }],
+      includedUsageCap: { enabled: false, overflow: 'block' },
+    });
+
+    // ai_credit_pool_* -> mapped per the FLAGGED assumptions ($560 USD ->
+    // 56,000 credits; 'block' overflow default).
+    const cappedCap = live.controls.find((c) => c.kind === 'included_cap' && c.costCenterName === 'Real Wire Capped');
+    expect(cappedCap).toMatchObject({ enabled: true, computedLimitCredits: 56_000, overflow: 'block' });
+
+    // The wire-id map still resolves (writes target the right cost center).
+    expect(live.costCenterIdByName.get('Real Wire Bare')).toBe('cc-real-bare');
   });
 });

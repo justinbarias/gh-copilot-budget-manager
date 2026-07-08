@@ -11,6 +11,7 @@ import {
   type UsageState,
   type UserUsage,
 } from '@copilot-budget/core';
+import { normalizeIncludedUsageCap } from '../api-client/cost-center-cap.js';
 import { paginateAll } from '../api-client/paginate.js';
 import { fetchUsageFanout } from '../api-client/usage-fetch.js';
 import { fetchCycleUserCredits } from '../api-client/users-report.js';
@@ -167,7 +168,16 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string, _a
       const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', {
         enterprise,
       });
-      return (response.data as { costCenters: WireCostCenter[] }).costCenters;
+      // Cap normalization at the fetch boundary: the SAME shared mapper
+      // github-impl.ts's fetchCostCentersRaw uses (cost-center-cap.ts) folds
+      // the internal `included_usage_cap` (MSW) and real GHEC's flat
+      // `ai_credit_pool_*` dialects into the internal shape -- the live
+      // `.included_usage_cap.enabled` TypeError (2026-07-08) is impossible
+      // past this line, whatever the tenant sends.
+      return (response.data as { costCenters: WireCostCenter[] }).costCenters.map((cc) => ({
+        ...cc,
+        included_usage_cap: normalizeIncludedUsageCap(cc),
+      }));
     })(),
   ]);
 
@@ -257,12 +267,15 @@ export async function assembleUsageState(
   const costCenterIds = [...costCenterIdByName.values()];
   const bounds = cycleBounds(asOfDate);
 
-  const [usageItems, creditRecords, seats, costCenterList] = await Promise.all([
+  const [usageItems, { records: creditRecords }, seats, costCenterList] = await Promise.all([
     // R5: enterprise usage via the default + per-cost-center fan-out (the only
     // correct enterprise-wide read now the default call excludes CC usage).
     fetchUsageFanout(octokit, enterprise, costCenterIds),
     // R6: cycle-accurate per-user totals via the users-1-day fan-out over the
     // elapsed cycle days -- the SAME source github-impl's read paths now use.
+    // The <=2-day trailing-gap tolerance applies here too (a live dry-run
+    // preview shouldn't hard-fail on today's not-yet-generated report); the
+    // coverage day is only SURFACED via syncNow (SyncStatus), not previews.
     fetchCycleUserCredits(octokit, enterprise, bounds.cycleStart, bounds.daysElapsed),
     // Full licensed roster, so the fold seeds every seat (below).
     paginateAll<WireSeat>(

@@ -7,7 +7,12 @@ function formatSyncStatus(status: SyncStatus | null): string {
   if (!status) return 'Loading…';
   if (status.inProgress) return 'Syncing…';
   if (!status.lastSyncedAt) return 'Never synced';
-  return `Last synced: ${new Date(status.lastSyncedAt).toLocaleString()}`;
+  // Trailing-gap surface (SyncStatus.perUserDataThroughDay): live, a Sync run
+  // before GitHub generates today's per-user report legitimately covers only
+  // through an earlier day — say so instead of implying full coverage. Absent
+  // (undefined) before the first sync of this process; omitted then.
+  const coverage = status.perUserDataThroughDay ? ` — per-user data through ${status.perUserDataThroughDay}` : '';
+  return `Last synced: ${new Date(status.lastSyncedAt).toLocaleString()}${coverage}`;
 }
 
 type HostKind = TenantConfig['hostKind'];

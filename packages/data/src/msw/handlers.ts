@@ -491,9 +491,14 @@ function toWireUsageItem(item: UsageItem): WireUsageItem {
 // R6 (wire-contract-r3-r5-r6.md): users-1-day / users-28-day/latest return an
 // async report ENVELOPE; the per-user rows live in a file behind
 // `download_links`, served below by a companion handler on DOWNLOAD_HOST.
-// Format is a JSON array of records -- "pick ONE format ... leave a comment
-// that the real format gets pinned by the maintainer's live smoke" (R6):
-// this is that placeholder, not a confirmed live shape.
+// File format: LIVE-PINNED (maintainer's 2026-07-08 authenticated smoke
+// against the real tenant): **JSONL** -- one JSON object per line, first
+// record's keys exactly [user_id, user_login, ai_credits_used] (1,111 records
+// on their tenant). The mock emits the same JSONL (plus the sim-only `model`
+// enrichment where a fixture row carries it -- parsed optionally impl-side).
+// A day with no records is an EMPTY body (zero lines), which the impl's
+// sniffReportFormat (api-client/users-report.ts) classifies as 'empty' ->
+// zero records.
 // ---------------------------------------------------------------------------
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -537,6 +542,20 @@ function toReportRecord(item: CreditsUsedItem): UsersReportRecord {
 
 function allCreditsUsedItems(): CreditsUsedItem[] {
   return [...getActiveFixtures().creditsUsedItems, ...HISTORICAL_CREDITS_USED_ITEMS];
+}
+
+// JSONL response body (the live-pinned report-file format, above): one JSON
+// object per line, no trailing newline; zero records -> empty body ('empty'
+// to the impl's sniffer, never `[]`). Content-Type is text/plain: the impl
+// reads the file via `response.text()` + sniff, never the header, and the
+// real signed-URL host's header is unknown -- deliberately NOT application/
+// json, so nothing can accidentally start trusting a header the live host
+// may not send.
+function jsonlResponse(records: readonly unknown[]) {
+  return new HttpResponse(records.map((r) => JSON.stringify(r)).join('\n'), {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
 }
 
 export const handlers = [
@@ -879,11 +898,13 @@ export const handlers = [
   // HISTORICAL_CREDITS_USED_ITEMS fixtures the old bare-array endpoint read,
   // so every committed per-user sum survives the reshape. Two distinct route
   // patterns (not one shared `:report/:file`) because the two files need
-  // different aggregation, not just different filenames.
+  // different aggregation, not just different filenames. Emission is JSONL
+  // (live-pinned 2026-07-08 -- see the R6 block comment above); an empty day
+  // emits an empty body, matching sniffReportFormat('') === 'empty'.
   http.get(`${DOWNLOAD_HOST}/reports/users-1-day/:dayFile`, ({ params }) => {
     const day = (params.dayFile as string).replace(/\.json$/, '');
     const rows = allCreditsUsedItems().filter((item) => item.date === day);
-    return HttpResponse.json(rows.map(toReportRecord));
+    return jsonlResponse(rows.map(toReportRecord));
   }),
 
   http.get(`${DOWNLOAD_HOST}/reports/users-28-day/latest.json`, () => {
@@ -896,6 +917,6 @@ export const handlers = [
       if (existing) existing.ai_credits_used += row.ai_credits_used;
       else totals.set(row.user_login, { user_id: row.user_id, user_login: row.user_login, ai_credits_used: row.ai_credits_used });
     }
-    return HttpResponse.json(Array.from(totals.values()));
+    return jsonlResponse(Array.from(totals.values()));
   }),
 ];

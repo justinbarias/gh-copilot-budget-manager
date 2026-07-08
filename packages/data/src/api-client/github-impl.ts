@@ -40,8 +40,9 @@ import { runReadSmoke } from '../smoke/read-smoke.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
+import { normalizeIncludedUsageCap } from './cost-center-cap.js';
 import { fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
-import { fetchCycleUserCredits, fetchUserCreditsForDays } from './users-report.js';
+import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
 import type {
@@ -113,6 +114,12 @@ export interface GitHubApiClientConfig {
 // moved to R6's users reports (see fetchCycleCredits below).
 type UsageItem = AttributedUsageItem;
 
+// The NORMALIZED cost-center shape github-impl works with. The wire delivers
+// two cap dialects -- the internal `included_usage_cap` (MSW/sim) vs real
+// GHEC's flat `ai_credit_pool_enabled` + `ai_credit_pool_state` (the live
+// TypeError of 2026-07-08) -- so fetchCostCentersRaw normalizes every row
+// through the ONE shared mapper (cost-center-cap.ts) before anything else
+// reads it; downstream code only ever sees `included_usage_cap`.
 interface CostCenter {
   id: string;
   name: string;
@@ -394,9 +401,14 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     });
     // R3: `resources` is embedded on each cost-center object; default it to []
     // defensively so a cost center with no members never yields undefined.
+    // Cap normalization: the shared mapper (cost-center-cap.ts) folds BOTH cap
+    // dialects -- internal `included_usage_cap` (MSW) and real GHEC's flat
+    // `ai_credit_pool_*` fields -- into the internal shape here, at the fetch
+    // boundary, so no downstream read can ever hit the live TypeError again.
     return (response.data as { costCenters: CostCenter[] }).costCenters.map((cc) => ({
       ...cc,
       resources: cc.resources ?? [],
+      included_usage_cap: normalizeIncludedUsageCap(cc),
     }));
   }
 
@@ -429,12 +441,26 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return fetchUsageFanout(octokit, enterprise, costCenterIds, { year: currentDate().slice(0, 4) });
   }
 
+  // Trailing-gap surface (users-report.ts's tolerance + types.ts's
+  // SyncStatus.perUserDataThroughDay): the coverage day of the most recent
+  // Sync THIS process ran. Process-lifetime closure state, deliberately not
+  // persisted (no schema change sanctioned) -- absent before the first sync /
+  // after a restart, which the field's doc comment declares as "unknown".
+  let lastPerUserDataThroughDay: string | undefined;
+
+  function withPerUserCoverage(status: SyncStatus): SyncStatus {
+    return lastPerUserDataThroughDay === undefined ? status : { ...status, perUserDataThroughDay: lastPerUserDataThroughDay };
+  }
+
   // R6: cycle-accurate per-user credits via the users-1-day fan-out over the
   // elapsed cycle days (users-report.ts). Replaces the old bare users-28-day
   // array read; the fan-out is inherently cycle-scoped, so downstream cycle
   // filters remain correct (and redundant) rather than needing a trailing-28d
-  // window trimmed by hand.
-  async function fetchCycleCredits(): Promise<CreditsUsedItem[]> {
+  // window trimmed by hand. Tolerates a <=2-day trailing report-not-yet-
+  // available gap (live only; the mock always serves the as-of day) -- the
+  // full result (records + coverage) is returned so syncNow can surface the
+  // gap; read-path callers use .records.
+  async function fetchCycleCredits(): Promise<CycleUserCreditsResult> {
     const { cycleStart, daysElapsed } = cycleBounds(currentDateObj());
     return fetchCycleUserCredits(octokit, enterprise, cycleStart, daysElapsed);
   }
@@ -508,7 +534,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listCostCenters(): Promise<CostCenterSummary[]> {
-    const [costCenters, creditsUsedItems] = await Promise.all([fetchCostCentersRaw(), fetchCycleCredits()]);
+    const [costCenters, { records: creditsUsedItems }] = await Promise.all([fetchCostCentersRaw(), fetchCycleCredits()]);
 
     // Per-member cycle-to-date burn: same cycle window as getUsageSummary
     // (anchored to the deterministic fixture date, never wall-clock), so a
@@ -553,7 +579,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listHeavyUsers(): Promise<HeavyUser[]> {
-    const [creditsUsedItems, seats, costCentersRaw, budgetsRaw] = await Promise.all([
+    const [{ records: creditsUsedItems }, seats, costCentersRaw, budgetsRaw] = await Promise.all([
       fetchCycleCredits(),
       fetchSeats(),
       fetchCostCentersRaw(),
@@ -644,7 +670,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function getSyncStatus(): Promise<SyncStatus> {
-    return readSyncStatus(config.db);
+    return withPerUserCoverage(readSyncStatus(config.db));
   }
 
   async function syncNow(): Promise<SyncStatus> {
@@ -705,7 +731,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       // Prior-cycle backfill + current cycle -- the full user-scope training
       // window (disjoint by construction: the backfill ends the day before
       // cycleStart, so this concatenation never double-counts a day).
-      userCreditItems: [...historicalCredits, ...cycleCredits],
+      userCreditItems: [...historicalCredits, ...cycleCredits.records],
       costCentersRaw,
       resourcesByCostCenter,
       seats,
@@ -727,7 +753,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
         quantity: item.quantity,
         netAmountUsd: item.netAmount,
       })),
-      creditsUsedItems: cycleCredits.map((item) => ({
+      creditsUsedItems: cycleCredits.records.map((item) => ({
         date: item.date,
         userId: item.user_id,
         creditsUsed: item.ai_credits_used,
@@ -748,7 +774,14 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     };
 
     ingestSnapshot(config.db, config.source, data);
-    return readSyncStatus(config.db);
+    // Record this Sync's per-user coverage AFTER the ingest committed, so the
+    // surfaced day can never describe a Sync that failed to persist. null
+    // coverage (possible only for a <=2-day-old cycle whose every day was
+    // skipped) leaves the previous value in place rather than fabricating one.
+    if (cycleCredits.coveredThroughDay !== null) {
+      lastPerUserDataThroughDay = cycleCredits.coveredThroughDay;
+    }
+    return withPerUserCoverage(readSyncStatus(config.db));
   }
 
   // Task 4.15: the Controls screen's "last synced" baseline for browse-time

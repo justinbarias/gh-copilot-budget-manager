@@ -86,8 +86,8 @@ interface SmokeEndpoint {
   fields: Record<string, FieldType>;
 }
 
-// R1/R2/R4 are independent, single-call, enveloped list reads. R3/R5/R6 are
-// custom (dependent or multi-call) and run explicitly below.
+// R1/R4 are independent, single-call, enveloped list reads. R2/R3/R5/R6 are
+// custom (pin-dumping, dependent, or multi-call) and run explicitly below.
 const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
   {
     key: 'seats',
@@ -96,14 +96,6 @@ const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
     path: 'GET /enterprises/{enterprise}/copilot/billing/seats',
     extract: (d) => (d as { seats?: unknown[] }).seats ?? [],
     fields: { created_at: 'string' },
-  },
-  {
-    key: 'cost-centers',
-    docRef: 'R2',
-    endpoint: '/enterprises/{enterprise}/settings/billing/cost-centers',
-    path: 'GET /enterprises/{enterprise}/settings/billing/cost-centers',
-    extract: (d) => (d as { costCenters?: unknown[] }).costCenters ?? [],
-    fields: { id: 'string', name: 'string', state: 'string' },
   },
   {
     key: 'budgets',
@@ -133,6 +125,55 @@ async function runOne(octokit: Octokit, enterprise: string, ep: SmokeEndpoint): 
     return { endpoint: ep.path, docRef: ep.docRef, status, details };
   } catch (err) {
     return { endpoint: ep.path, docRef: ep.docRef, status: 'http_error', details: httpErrorDetails(err) };
+  }
+}
+
+// R2: list cost centers, check the coded-to fields (id/name/state) -- AND dump
+// the cap-related raw wire verbatim. The 2026-07-08 live run proved real GHEC
+// cost centers carry flat `ai_credit_pool_enabled` + `ai_credit_pool_state`
+// instead of the internal `included_usage_cap` shape, leaving two facts
+// unpinned: (a) which wire field carries the block-vs-metered overflow choice
+// (undocumented anywhere), and (b) the UNITS of ai_credit_pool_state.
+// target_amount (USD vs credits -- money-critical). This row's details are the
+// pin for both on the maintainer's next run: the first cost-center object's
+// full top-level key list, ai_credit_pool_enabled verbatim, the ENTIRE
+// ai_credit_pool_state subobject verbatim, and every key whose name suggests
+// overflow/exceed/block behavior with its value.
+async function runR2(octokit: Octokit, enterprise: string): Promise<ReadSmokeEndpointResult> {
+  const path = 'GET /enterprises/{enterprise}/settings/billing/cost-centers';
+  try {
+    const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/cost-centers', { enterprise });
+    const costCenters = (response.data as { costCenters?: unknown[] }).costCenters ?? [];
+    const { status, details } = summarizeItems(costCenters, { id: 'string', name: 'string', state: 'string' });
+    if (costCenters.length === 0 || typeof costCenters[0] !== 'object' || costCenters[0] === null) {
+      return { endpoint: path, docRef: 'R2', status, details };
+    }
+
+    const first = costCenters[0] as Record<string, unknown>;
+    const parts: string[] = [details];
+    parts.push(`first-cc keys=[${Object.keys(first).join(', ')}]`);
+    parts.push(`ai_credit_pool_enabled=${'ai_credit_pool_enabled' in first ? JSON.stringify(first.ai_credit_pool_enabled) : '<absent>'}`);
+    parts.push(`ai_credit_pool_state=${'ai_credit_pool_state' in first ? JSON.stringify(first.ai_credit_pool_state) : '<absent>'}`);
+
+    // Overflow-candidate sweep: the top-level object AND the pool-state
+    // subobject (same scope the parse-layer sniff covers).
+    const overflowPattern = /overflow|exceed|block/i;
+    const candidates: string[] = [];
+    const sweep = (obj: Record<string, unknown>, prefix: string): void => {
+      for (const [key, value] of Object.entries(obj)) {
+        if (overflowPattern.test(key)) candidates.push(`${prefix}${key}=${JSON.stringify(value)}`);
+      }
+    };
+    sweep(first, '');
+    const poolState = first.ai_credit_pool_state;
+    if (typeof poolState === 'object' && poolState !== null && !Array.isArray(poolState)) {
+      sweep(poolState as Record<string, unknown>, 'ai_credit_pool_state.');
+    }
+    parts.push(`overflow-suggestive keys: ${candidates.length > 0 ? candidates.join(', ') : 'none'}`);
+
+    return { endpoint: path, docRef: 'R2', status, details: parts.join('; ') };
+  } catch (err) {
+    return { endpoint: path, docRef: 'R2', status: 'http_error', details: httpErrorDetails(err) };
   }
 }
 
@@ -323,11 +364,12 @@ export async function runReadSmoke(
   enterprise: string,
   probeDay: string = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
 ): Promise<ReadSmokeEndpointResult[]> {
-  const [r1, r2, r4] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
+  const [r1, r4] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
+  const r2 = await runR2(octokit, enterprise);
   const r3 = await runR3(octokit, enterprise);
   const r5 = await runR5(octokit, enterprise);
   const r6 = await runR6(octokit, enterprise, probeDay);
 
   // Inventory order: R1, R2, R3, R4, R5, R6.
-  return [r1!, r2!, r3, r4!, r5, r6];
+  return [r1!, r2, r3, r4!, r5, r6];
 }
