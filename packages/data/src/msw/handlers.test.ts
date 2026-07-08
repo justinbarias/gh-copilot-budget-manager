@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { server } from './server';
 import { AI_CREDITS_SKU, API_VERSION, BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from './fixtures';
 import { HISTORICAL_USAGE_ITEMS } from './fixtures/usage-history.js';
+import { LIVE_GRAIN_ENTERPRISE } from './fixtures/usage-live-grain.js';
 
 const headers = {
   Authorization: 'Bearer fake-pat-for-tests',
@@ -382,6 +383,113 @@ describe('usage reporting handler (R5: camelCase, projected, default-excludes-co
     expect(body.usageItems.length).toBe(
       HISTORICAL_USAGE_ITEMS.filter((item) => item.date === '2026-03-02' && item.cost_center_id === COST_CENTER_IDS.workforce).length,
     );
+  });
+});
+
+// LIVE-GRAIN world (fixtures/usage-live-grain.ts): the 2026-07-09 live smoke
+// pinned three R5 semantics the canonical per-day world diverges from --
+// (1) monthly-aggregate rows, (2) ISO-datetime dates, (3) YTD default span.
+// Served by the same handler for the LIVE_GRAIN_ENTERPRISE slug; the
+// canonical 'dewr' world keeps per-day bare dates as a documented sim
+// convention (its pins are asserted in the suite above, untouched).
+describe('usage reporting handler -- live-grain world (monthly aggregates, ISO dates, YTD)', () => {
+  const LIVE_URL = `${GITHUB_API_BASE}/enterprises/${LIVE_GRAIN_ENTERPRISE}/settings/billing/usage`;
+
+  async function fetchAllLiveGrain(query = ''): Promise<WireUsageItemShape[]> {
+    const rows: WireUsageItemShape[] = [];
+    for (let page = 1; ; page++) {
+      const res = await fetch(`${LIVE_URL}?${query ? `${query}&` : ''}page=${page}&per_page=100`, { headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { usageItems: WireUsageItemShape[] };
+      rows.push(...body.usageItems);
+      if (!res.headers.get('link')?.includes('rel="next"')) break;
+    }
+    return rows;
+  }
+
+  it('the default (unparameterized) call returns the full YEAR-TO-DATE monthly set: 38 first-of-month rows with ISO-datetime dates', async () => {
+    const rows = await fetchAllLiveGrain();
+    expect(rows).toHaveLength(38); // 7 AI + 21 Business + 10 Premium
+
+    for (const row of rows) {
+      // Pin #2: ISO time suffix, verbatim -- never a bare YYYY-MM-DD.
+      expect(row.date).toMatch(/^2026-\d{2}-01T00:00:00Z$/);
+    }
+    // Pin #3: YTD span -- months January through July present.
+    const months = new Set(rows.map((r) => r.date.slice(5, 7)));
+    expect([...months].sort()).toEqual(['01', '02', '03', '04', '05', '06', '07']);
+  });
+
+  it('mirrors the pinned per-sku month histogram: AI [Jun x4, Jul x3]; Business [Jan..Jul x3]; Premium [Jan..May x2]', async () => {
+    const rows = await fetchAllLiveGrain();
+    const histogram = (sku: string) => {
+      const byMonth = new Map<string, number>();
+      for (const r of rows.filter((row) => row.sku === sku)) {
+        byMonth.set(r.date.slice(0, 10), (byMonth.get(r.date.slice(0, 10)) ?? 0) + 1);
+      }
+      return Object.fromEntries([...byMonth.entries()].sort());
+    };
+    expect(histogram('Copilot AI Credits')).toEqual({ '2026-06-01': 4, '2026-07-01': 3 });
+    expect(histogram('Copilot Business')).toEqual({
+      '2026-01-01': 3, '2026-02-01': 3, '2026-03-01': 3, '2026-04-01': 3, '2026-05-01': 3, '2026-06-01': 3, '2026-07-01': 3,
+    });
+    expect(histogram('Copilot Premium Request')).toEqual({
+      '2026-01-01': 2, '2026-02-01': 2, '2026-03-01': 2, '2026-04-01': 2, '2026-05-01': 2,
+    });
+  });
+
+  it('carries the hand-computed monthly money: June AI disc $2,400.00 / July MTD AI disc $1,450.00; Business gross==net; Premium split intact', async () => {
+    const rows = await fetchAllLiveGrain();
+
+    const ai = rows.filter((r) => r.sku === 'Copilot AI Credits');
+    const juneAi = ai.filter((r) => r.date.startsWith('2026-06'));
+    const julyAi = ai.filter((r) => r.date.startsWith('2026-07'));
+    expect(juneAi.reduce((sum, r) => sum + r.discountAmount, 0)).toBeCloseTo(2_400, 6);
+    expect(juneAi.reduce((sum, r) => sum + r.quantity, 0)).toBe(240_000);
+    expect(julyAi.reduce((sum, r) => sum + r.discountAmount, 0)).toBeCloseTo(1_450, 6);
+    expect(julyAi.reduce((sum, r) => sum + r.quantity, 0)).toBe(145_000);
+    expect(ai.every((r) => r.netAmount === 0 && r.grossAmount === r.discountAmount)).toBe(true);
+
+    const business = rows.filter((r) => r.sku === 'Copilot Business');
+    expect(business.every((r) => r.discountAmount === 0 && r.grossAmount === r.netAmount)).toBe(true);
+    expect(business.reduce((sum, r) => sum + r.quantity, 0)).toBeCloseTo(287, 6); // 7 x 41.00 fractional seats
+    expect(business.reduce((sum, r) => sum + r.grossAmount, 0)).toBeCloseTo(5_453, 6); // 7 x 779.00
+
+    const premium = rows.filter((r) => r.sku === 'Copilot Premium Request');
+    expect(premium.reduce((sum, r) => sum + r.quantity, 0)).toBeCloseTo(7_503.75, 6); // 5 x 1,500.75
+    expect(premium.reduce((sum, r) => sum + r.grossAmount, 0)).toBeCloseTo(300.15, 6);
+    expect(premium.reduce((sum, r) => sum + r.discountAmount, 0)).toBeCloseTo(225, 6);
+    expect(premium.reduce((sum, r) => sum + r.netAmount, 0)).toBeCloseTo(75.15, 6);
+
+    // Per-row price coherence survives the projection for every sku.
+    for (const r of rows) {
+      expect(r.grossAmount).toBeCloseTo(r.quantity * r.pricePerUnit, 6);
+    }
+    // Monthly buckets are per-organization -- distinct orgs within a month.
+    expect(new Set(juneAi.map((r) => r.organizationName)).size).toBe(4);
+  });
+
+  it('every live-grain row is cost-center-unassociated: a cost_center_id-filtered call returns nothing', async () => {
+    const res = await fetch(`${LIVE_URL}?cost_center_id=${COST_CENTER_IDS.workforce}`, { headers });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { usageItems: unknown[] };
+    expect(body.usageItems).toHaveLength(0);
+  });
+
+  it('year/month narrowing works on the monthly grain (June 2026 -> exactly the 4 AI + 3 Business rows)', async () => {
+    const rows = await fetchAllLiveGrain('year=2026&month=6');
+    expect(rows).toHaveLength(7);
+    expect(rows.every((r) => r.date === '2026-06-01T00:00:00Z')).toBe(true);
+  });
+
+  it('does not leak into the canonical world: the dewr slug still serves per-day rows with bare YYYY-MM-DD dates', async () => {
+    const res = await fetch(
+      `${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/usage?cost_center_id=${COST_CENTER_IDS.capBound}`,
+      { headers },
+    );
+    const body = (await res.json()) as { usageItems: WireUsageItemShape[] };
+    expect(body.usageItems.length).toBeGreaterThan(0);
+    expect(body.usageItems.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.date))).toBe(true);
   });
 });
 

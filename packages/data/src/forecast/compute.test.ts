@@ -6,6 +6,7 @@ import {
   assembleEnterpriseSeries,
   assembleUserSeries,
   computeScopeForecast,
+  expandMonthlyAggregates,
   toDailyBurn,
 } from './compute.js';
 
@@ -147,5 +148,76 @@ describe('computeScopeForecast', () => {
       horizonDays: 7,
     });
     expect(result.dailySeries.at(-1)?.date).toBe('2026-06-21');
+  });
+});
+
+// Item 23 (live-pinned 2026-07-09): live R5 months arrive as ONE aggregate
+// row per (month x bucket), first-of-month-dated, the current month
+// MTD-cumulative. Fed raw into toDailyBurn, core's trailing-7 run-rate reads
+// a month total as a daily rate (the live P50 ~= total x 31 forecast
+// blow-up). expandMonthlyAggregates spreads aggregates into flat daily rows;
+// per-day rows pass through untouched. Every expectation hand-computed.
+describe('expandMonthlyAggregates', () => {
+  const asOf = new Date('2026-07-09T00:00:00.000Z'); // day 9 of July
+
+  it('spreads a CLOSED month aggregate evenly across every calendar day (June: 300,000 / 30 = 10,000/day)', () => {
+    const rows = expandMonthlyAggregates([{ date: '2026-06-01', costCenterId: 'cc-1', quantity: 300_000 }], asOf);
+    expect(rows).toHaveLength(30);
+    expect(rows[0]).toEqual({ date: '2026-06-01', costCenterId: 'cc-1', quantity: 10_000 });
+    expect(rows[29]).toEqual({ date: '2026-06-30', costCenterId: 'cc-1', quantity: 10_000 });
+    // The spread is total-preserving.
+    expect(rows.reduce((s, r) => s + r.quantity, 0)).toBeCloseTo(300_000, 6);
+  });
+
+  it('spreads the CURRENT month MTD-cumulative across the elapsed days only (July day 9: 90,000 / 9 = 10,000/day)', () => {
+    const rows = expandMonthlyAggregates([{ date: '2026-07-01', costCenterId: null, quantity: 90_000 }], asOf);
+    expect(rows).toHaveLength(9);
+    expect(rows[0]).toEqual({ date: '2026-07-01', costCenterId: null, quantity: 10_000 });
+    expect(rows[8]).toEqual({ date: '2026-07-09', costCenterId: null, quantity: 10_000 });
+  });
+
+  it('groups per (costCenterId, month): two cost centers in the same aggregate month spread independently', () => {
+    const rows = expandMonthlyAggregates(
+      [
+        { date: '2026-06-01', costCenterId: 'cc-a', quantity: 3_000 },
+        { date: '2026-06-01', costCenterId: 'cc-b', quantity: 6_000 },
+      ],
+      asOf,
+    );
+    const a = rows.filter((r) => r.costCenterId === 'cc-a');
+    const b = rows.filter((r) => r.costCenterId === 'cc-b');
+    expect(a).toHaveLength(30);
+    expect(b).toHaveLength(30);
+    expect(a[0]!.quantity).toBeCloseTo(100, 9);
+    expect(b[0]!.quantity).toBeCloseTo(200, 9);
+  });
+
+  it('passes PER-DAY groups through untouched (the whole fixture world -- simulation stays byte-identical)', () => {
+    const perDay = [
+      { date: '2026-06-02', costCenterId: 'cc-1', quantity: 2_876 },
+      { date: '2026-06-04', costCenterId: 'cc-1', quantity: 4_314 },
+      // A single row NOT on the 1st (the Aug-31 cliff fixture shape) is
+      // per-day too -- the aggregate signature requires first-of-month.
+      { date: '2026-08-31', costCenterId: 'cc-1', quantity: 468 },
+    ];
+    expect(expandMonthlyAggregates(perDay, asOf)).toEqual(perDay);
+  });
+
+  it('run-rate sanity end to end: an expanded live-shaped history yields a daily-rate series, not a month-total spike', () => {
+    // June closed aggregate (300,000) + July MTD aggregate (90,000 by day 9):
+    // the enterprise series must read 10,000/day THROUGHOUT -- the trailing-7
+    // rate a forecast sees is 10,000/day, never 90,000/day.
+    const series = assembleEnterpriseSeries(
+      expandMonthlyAggregates(
+        [
+          { date: '2026-06-01', costCenterId: 'cc-1', quantity: 300_000 },
+          { date: '2026-07-01', costCenterId: 'cc-1', quantity: 90_000 },
+        ],
+        asOf,
+      ),
+      asOf,
+    );
+    expect(series).toHaveLength(39); // 30 June days + 9 elapsed July days
+    expect(series.every((d) => Math.abs(d.credits - 10_000) < 1e-6)).toBe(true);
   });
 });

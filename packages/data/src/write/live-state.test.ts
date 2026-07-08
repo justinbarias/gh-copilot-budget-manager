@@ -337,3 +337,63 @@ describe('assembleUsageState AI-credit sku filter + fractional amounts', () => {
     expect(usage.enterprise.meteredCreditsUsed).toBe(103_496);
   });
 });
+
+// Item 23 (live-pinned 2026-07-09): the REAL tenant's R5 shape -- YEAR-TO-DATE
+// MONTHLY AGGREGATES with ISO-datetime dates ("2026-07-01T00:00:00Z"). The old
+// cycle math NaN'd on those dates (every row silently dropped -> live actual
+// burn = 0); the fix is fetch-boundary date normalization + month-bucket
+// cycle scoping. Magnitudes from the maintainer's real July data.
+describe('assembleUsageState against live-shaped monthly aggregates (ISO datetimes)', () => {
+  it('buckets by cycle month: the July MTD aggregate counts, June and pollution rows do not', async () => {
+    const aggregate = (over: Record<string, unknown>) => ({
+      product: 'copilot',
+      sku: 'Copilot AI Credits',
+      quantity: 0,
+      unitType: 'credits',
+      pricePerUnit: 0.01,
+      grossAmount: 0,
+      discountAmount: 0,
+      netAmount: 0,
+      organizationName: 'dewr-digital',
+      ...over,
+    });
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/usage`, ({ request }) => {
+        const ccId = new URL(request.url).searchParams.get('cost_center_id');
+        if (ccId === 'cc-live') {
+          return HttpResponse.json({
+            usageItems: [
+              // Closed June aggregate -- OUTSIDE the July cycle, must not count.
+              aggregate({ date: '2026-06-01T00:00:00Z', quantity: 486_084.5584155, grossAmount: 4860.84, discountAmount: 3500, netAmount: 1360.84 }),
+              // July month-to-date cumulative (the maintainer's real magnitudes):
+              // pool = round(3825.88 x 100) = 382,588; metered = round(1042.72
+              // x 100) = 104,272.
+              aggregate({ date: '2026-07-01T00:00:00Z', quantity: 486_860, grossAmount: 4868.6, discountAmount: 3825.88, netAmount: 1042.72 }),
+            ],
+          });
+        }
+        // Default (unassociated) call: a July POLLUTION aggregate -- proves the
+        // sku filter also holds on ISO-dated rows.
+        return HttpResponse.json({
+          usageItems: [aggregate({ date: '2026-07-01T00:00:00Z', sku: 'Copilot Business', quantity: 24.5, grossAmount: 465.5, netAmount: 465.5 })],
+        });
+      }),
+    );
+
+    const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+    const usage = await assembleUsageState(
+      octokit,
+      ENTERPRISE_SLUG,
+      new Map([['Live CC', 'cc-live']]),
+      new Date('2026-07-09T00:00:00.000Z'),
+    );
+
+    // The OLD code produced 0/0 here (NaN dayIndex on ISO dates) -- the exact
+    // live "actual burn = 0" money bug this round fixes.
+    const liveCc = usage.costCenters.find((cc) => cc.costCenterName === 'Live CC');
+    expect(liveCc).toEqual({ costCenterName: 'Live CC', poolCreditsUsed: 382_588, meteredCreditsUsed: 104_272 });
+    // June's aggregate (metered $1,360.84) is month-bucketed out; the July
+    // Business pollution row ($465.50 net) is sku-filtered out.
+    expect(usage.enterprise.meteredCreditsUsed).toBe(104_272);
+  });
+});

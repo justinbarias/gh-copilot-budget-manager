@@ -79,15 +79,57 @@ function extractUsageItems(data: unknown): WireUsageItem[] {
   return (data as { usageItems?: WireUsageItem[] }).usageItems ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// Date normalization + grain detection (item 23, live-pinned 2026-07-09 by
+// the maintainer's R5 date histogram):
+//   (a) Live item dates carry ISO TIME SUFFIXES ("2026-06-01T00:00:00Z").
+//       Our cycle math did Date.parse(`${date}T00:00:00.000Z`), which is NaN
+//       on that form -- every live row silently failed the inCycle/dayIndex
+//       checks, which is why the live Overview showed actual burn = 0 (a
+//       real money bug). Every fetched item's date is therefore normalized
+//       to day precision HERE, at the one fetch boundary, so no downstream
+//       consumer ever sees a datetime-suffixed date.
+//   (b) Live items are MONTHLY AGGREGATES: one row per (month x bucket),
+//       dated first-of-month, with the current month's row GROWING between
+//       calls (month-to-date cumulative). Our fixtures are per-day rows.
+//       isMonthlyAggregateGrain is the shared detector downstream consumers
+//       branch on (per-day math for per-day feeds; month-bucket + synthetic
+//       daily shape for aggregate feeds).
+// ---------------------------------------------------------------------------
+
+/** Day-precision date: tolerant of both "YYYY-MM-DD" and full ISO datetimes; anything else passes through untouched (defensive). */
+export function normalizeUsageDate(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : date;
+}
+
+/**
+ * The monthly-aggregate signature over a set of SAME-MONTH items (dates
+ * already normalized): every row falls on ONE distinct date and that date is
+ * the first of the month. Per-day feeds (our fixtures; any real per-day
+ * tenant) have many distinct dates. Edge case (documented): a genuine per-day
+ * feed whose only usage so far fell on the 1st reads as aggregate -- the
+ * synthetic spread then covers exactly that one elapsed day, which is
+ * numerically the same series.
+ */
+export function isMonthlyAggregateGrain(items: ReadonlyArray<{ date: string }>): boolean {
+  if (items.length === 0) return false;
+  const distinct = new Set(items.map((i) => i.date));
+  if (distinct.size !== 1) return false;
+  const only = [...distinct][0]!;
+  return only.endsWith('-01');
+}
+
 // The default (no cost_center_id) call -- returns ONLY cost-center-unassociated
 // usage per GitHub's docs. `extra` carries any year/month/day window params.
+// NOTE (item 23, fact 3): live, the unparameterized call returns YEAR-TO-DATE
+// monthly aggregates, not just the current cycle.
 export async function fetchUsageDefault(
   octokit: Octokit,
   enterprise: string,
   extra: Record<string, string | number | undefined> = {},
 ): Promise<AttributedUsageItem[]> {
   const raw = await paginateAll<WireUsageItem>(octokit, USAGE_PATH, { enterprise, ...extra }, extractUsageItems);
-  return raw.map((item) => ({ ...item, costCenterId: null }));
+  return raw.map((item) => ({ ...item, date: normalizeUsageDate(item.date), costCenterId: null }));
 }
 
 // One cost center's usage -- `cost_center_id=<id>`; every returned item is
@@ -104,7 +146,7 @@ export async function fetchUsageForCostCenter(
     { enterprise, cost_center_id: costCenterId, ...extra },
     extractUsageItems,
   );
-  return raw.map((item) => ({ ...item, costCenterId }));
+  return raw.map((item) => ({ ...item, date: normalizeUsageDate(item.date), costCenterId }));
 }
 
 // Enterprise-wide read = default (unassociated) + one call per known cost

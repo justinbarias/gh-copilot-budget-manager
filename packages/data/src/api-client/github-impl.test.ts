@@ -100,6 +100,51 @@ describe('createGitHubApiClient', () => {
     expect(summary.totalQuantity).toBe(0);
   });
 
+  // Item 23 (live-pinned 2026-07-09): the real tenant's R5 shape -- YTD
+  // MONTHLY aggregates, ISO-datetime dates, the current month's row
+  // month-to-date cumulative. The old buildDailyBurn NaN'd on the dates and
+  // windowed by day: live Overview showed actual burn = 0. Grain-adaptive
+  // path: month-bucket the cycle rows, take the LEVEL from the R5 MTD pool
+  // total, and synthesize the daily SHAPE (R6 daily sums where present; a
+  // flat MTD/elapsed ramp otherwise -- July has no R6 fixture rows, so this
+  // exercises the flat fallback). Magnitudes from the maintainer's real data.
+  it('getUsageSummary builds a live-shaped burn-down from monthly aggregates: MTD level, flat ramp shape', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/usage`, ({ request }) => {
+        const ccId = new URL(request.url).searchParams.get('cost_center_id');
+        if (ccId !== null) return HttpResponse.json({ usageItems: [] });
+        // Default call: YTD monthly aggregates (June closed + July MTD).
+        return HttpResponse.json({
+          usageItems: [
+            { date: '2026-06-01T00:00:00Z', product: 'copilot', sku: 'Copilot AI Credits', quantity: 486_084.5584155, unitType: 'credits', pricePerUnit: 0.01, grossAmount: 4860.84, discountAmount: 3500, netAmount: 1360.84, organizationName: 'dewr-digital' },
+            { date: '2026-07-01T00:00:00Z', product: 'copilot', sku: 'Copilot AI Credits', quantity: 486_860, unitType: 'credits', pricePerUnit: 0.01, grossAmount: 4868.6, discountAmount: 3825.88, netAmount: 1042.72, organizationName: 'dewr-digital' },
+          ],
+        });
+      }),
+    );
+
+    // nowDate pins the clock seam to the live run's day (July 9) without
+    // touching the scenario state.
+    const liveShapedClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw', nowDate: '2026-07-09' });
+    const summary = await liveShapedClient.getUsageSummary();
+
+    // Totals span whatever the report returned (YTD -- unchanged semantics):
+    // qty 486,084.5584155 + 486,860 (fractional survives), net $1,360.84 +
+    // $1,042.72 = $2,403.56.
+    expect(summary.totalQuantity).toBeCloseTo(972_944.5584155, 6);
+    expect(summary.totalNetAmountUsd).toBeCloseTo(2_403.56, 5);
+    expect(summary.asOfDate).toBe('2026-07-01'); // normalized to day precision
+
+    // The burn-down: July cycle, day 9 -> 9 points (Jul 1..Jul 9). Level =
+    // July's MTD pool total round(3825.88 x 100) = 382,588 -- NOT zero (the
+    // old NaN bug) and NOT June-polluted. Shape = flat ramp (no July R6 rows):
+    // point i = round(382,588 x i/8); midpoint i=4 -> 191,294.
+    expect(summary.dailyBurn).toHaveLength(9);
+    expect(summary.dailyBurn[0]).toEqual({ date: '2026-07-01', cumulativePoolCredits: 0 });
+    expect(summary.dailyBurn[4]).toEqual({ date: '2026-07-05', cumulativePoolCredits: 191_294 });
+    expect(summary.dailyBurn.at(-1)).toEqual({ date: '2026-07-09', cumulativePoolCredits: 382_588 });
+  });
+
   it('lists cost centers with member counts from the resource endpoint', async () => {
     const centers = await client.listCostCenters();
     const workforce = centers.find((c) => c.id === COST_CENTER_IDS.workforce);

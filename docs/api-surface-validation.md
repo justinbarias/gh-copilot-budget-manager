@@ -646,29 +646,82 @@ Remaining items, when the live tenant + classic PAT
     ai_credits budgets are all stop=true (incl. three $0), while our
     Family-B keeps 3-of-4 stop=false — deliberate §6.3 narrative fixtures
     (the hard-stop-OFF default story), not drift; posture note only.
-23. **R5 DATE GRANULARITY (NEW OPEN ITEM — MONEY-CRITICAL, fix next
-    round).** The maintainer's live-synced Forecast/Overview screens show a
-    blow-up: P50 cycle-end ≈ **11,865,710 ≈ their 382,588 cycle total ×
-    31**, projected metered **$360,624** — i.e. run-rate math treating a
-    CUMULATIVE total as a DAILY rate. **Hypothesis:** live R5 usage items
-    are month-to-date AGGREGATES (their tenant returned only n=7 AI-credit
-    items across 8 elapsed days — one per cost center), not the per-day
-    rows our fixtures model and `buildDailyBurn` assumes. **The pin:** the
-    smoke R5 row now appends a per-sku DATE histogram
-    (`<sku> [date×n, …]; range=min..max`) — a per-day feed shows many
-    distinct dates per sku (the fixture world pins exactly that side:
-    AI Credits on 8 distinct dates, 6/6/6/6/6/7 across June + the two
-    cliff rows, range 2026-06-02..2026-09-01 — validator hand-recomputed);
-    an aggregate feed shows ONE date carrying the whole count. **The fix is
-    deliberately deferred until pinned.** Candidate designs: (a) per-day
-    `?day=` fan-out on the R5 read (same pattern as the R6 users-1-day
-    fan-out), or (b) run-rate = cumulative ÷ daysElapsed at the derivation
-    boundary. If confirmed, the blast radius is every consumer of the
-    daily series: `buildDailyBurn`, series assembly, run-rate, and the
-    backtest's training inputs.
-24. **MODE-BLIND PERSISTENCE (NEW OPEN ITEM — §6.8-adjacent
-    display-integrity bug, elevated from the deferred list; fix next round
-    alongside 23).** The same screenshots show live-synced PERSISTED rows
+23. ~~**R5 DATE GRANULARITY**~~ **CLOSED 2026-07-09 — hypothesis CONFIRMED
+    by the maintainer's histogram and fixed.** The live pins (histogram
+    verbatim in the builders' comments): live R5 items are **monthly
+    aggregates dated first-of-month with ISO time suffixes**
+    (`"2026-06-01T00:00:00Z"`); the unparameterized call returns
+    **year-to-date**; the current-month row is **MTD-cumulative and grows
+    between calls**. Two live money bugs, both fixed:
+    (1) `Date.parse(date + "T00:00:00.000Z")` was **NaN** on live dates —
+    every live row silently fell out of the cycle window (the actual-burn=0
+    Overview); (2) month totals read as daily burn (the P50 ≈ total×31 /
+    $360,624 blow-up). **The design:**
+    - **Normalization boundary:** `normalizeUsageDate` (day-precision
+      slice, datetime-tolerant) applied inside BOTH shared fetch functions
+      (`usage-fetch.ts`) — github-impl's single-CC path refactored onto the
+      shared helper, closing the one bypass; no downstream consumer ever
+      sees a datetime date. NaN regression test-pinned against the OLD
+      construction.
+    - **Grain signature:** `isMonthlyAggregateGrain` — all same-month rows
+      on ONE distinct date that is the first of the month. **Documented
+      edge:** a genuine per-day feed whose only usage fell on the 1st reads
+      as aggregate — numerically identical series, harmless. (Validator
+      swept the fixture/scenario worlds: none can trip it — canonical June
+      has 6 distinct dates; every scenario world spreads via `splitDaily`
+      over multiple weekdays; the lone Aug-31 cliff row is not
+      first-of-month; the Sep-01 cliff row does trip the expansion but is
+      post-as-of and dropped by the series fold — the enterprise byte-equal
+      forecast test passes UNMODIFIED, verified purely-additive in the
+      diff.)
+    - **Month-bucket cycle scoping** (`date.slice(0,7) === cycleMonth`) in
+      `assembleUsageState` + `getUsageSummary`'s burn-down — provably
+      identical to the old day-window for per-day rows (a cycle IS a
+      calendar month; the cliff rows still fall out) and correct for live
+      YTD (keeps January..June out of July's line).
+    - **Grain-adaptive `buildDailyBurn`:** per-day months use the original
+      fold byte-identically; aggregate months take the **level** from R5's
+      MTD pool total (money truth) and the **daily shape** from R6
+      users-1-day per-user sums scaled to end exactly at that total, with
+      a flat MTD/elapsed ramp fallback when R6 has no cycle data. **R6 is
+      fetched LAZILY only on aggregate detection** — validator traced the
+      gate: simulation never pays the extra fan-out.
+    - **`expandMonthlyAggregates`** (pure, forecast/compute.ts): per
+      (costCenterId, month) group — closed months → total/daysInMonth;
+      current month → MTD/elapsed over days 1..as-of; per-day groups pass
+      through untouched (validator hand-verified total preservation and ran
+      the 300,000/30=10,000-per-day and run-rate-sanity pins).
+    **Documented statistical consequences:** live enterprise/CC forecasts
+    run **without weekday seasonality by construction** (unrecoverable from
+    monthly aggregates — flat spread); the R6-derived burn-down shape is
+    pool+metered-**undifferentiated** (level is money-true); live MAPE
+    becomes **level accuracy** against equally-flat actuals
+    (self-consistent). User-scope forecasts keep real seasonality (R6 is
+    genuinely daily).
+    **Mock live-grain world:** `fixtures/usage-live-grain.ts` — a
+    slug-discriminated regression world (`dewr-live`), 38 hand-computable
+    monthly ISO-dated YTD rows (AI June $2,400 closed + July $1,450 MTD;
+    Business Jan–Jul ×3/mo; Premium Jan–May ×2/mo — validator recomputed
+    every line), served by the same handler/projection; **deliberately NOT
+    a scenario-selector entry** (the renderer-facing selector + its e2e
+    pins stay untouched; tests reach it by slug); a no-leak guard pins the
+    canonical `dewr` world still per-day/bare-dated; canonical fixtures
+    byte-untouched. **Unpinned-dimension flag:** the live-grain world's
+    per-row `organization_name` bucket values are a modeled guess (the live
+    histogram pinned counts and dates, not bucket names).
+    **Collapse blocker (flagged):** `fetchHistoricalUsageItems`' `year`
+    call is live-redundant (the unparameterized call is already YTD) but
+    the mock's default is current-cycle-only, so collapsing the two reads
+    is blocked on a mock-side YTD-default switch — a separate decision.
+    **New minor open items:** (a) `getUsageSummary`'s HEADLINE totals
+    remain report-span (live: YTD) rather than cycle-scoped — the burn-down
+    is now MTD-correct, but whether the Overview tiles should be
+    cycle-scoped is a **product call for the maintainer**; (b) fixture
+    ALERTS render even in live mode — pre-baked by design until Task 7.6
+    (PLAN.md Architecture Decision), recorded so it stops surprising.
+24. **MODE-BLIND PERSISTENCE (OPEN — §6.8-adjacent display-integrity bug,
+    elevated from the deferred list; explicitly NEXT ROUND, not touched by
+    the item-23 fix).** The same screenshots show live-synced PERSISTED rows
     rendering inside a SIMULATION session: sim banner + the 672,000 live
     allowance + the $360,624 live forecast tile + June-14 fixture alerts on
     one screen. Persisted forecasts/snapshots are read back without scoping

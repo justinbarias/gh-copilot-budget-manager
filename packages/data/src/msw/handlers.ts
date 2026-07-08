@@ -5,6 +5,8 @@ import {
   AI_CREDITS_SKU,
   COPILOT_BUSINESS_SKU,
   COPILOT_PREMIUM_REQUEST_SKU,
+  LIVE_GRAIN_ENTERPRISE,
+  LIVE_GRAIN_USAGE_ITEMS,
   DEFAULT_ENTERPRISE_TEAM_SEATS,
   DOWNLOAD_HOST,
   ENTERPRISE_TEAM_SEAT_COUNTS,
@@ -636,7 +638,9 @@ function toWireUsageItem(item: UsageItem): WireUsageItem {
     grossAmount: item.gross_amount,
     discountAmount: item.discount_amount,
     netAmount: item.net_amount,
-    organizationName: USAGE_ORGANIZATION_NAME,
+    // Live-grain rows carry per-row org buckets (one row per month x org);
+    // canonical rows fall back to the single-org default.
+    organizationName: item.organization_name ?? USAGE_ORGANIZATION_NAME,
   };
 }
 
@@ -989,7 +993,7 @@ export const handlers = [
   // (handlers.test.ts asserts this explicitly). `cost_center_id=<id>` still
   // returns exactly that CC's rows, byte-identical to the pre-fix filter.
   // Task 5.1's `year`/`month`/`day` historical-cycle behavior is unchanged.
-  http.get(`${ENTERPRISE_BASE}/settings/billing/usage`, ({ request }) => {
+  http.get(`${ENTERPRISE_BASE}/settings/billing/usage`, ({ request, params }) => {
     const url = new URL(request.url);
     const { page, perPage } = pageParams(url);
     const costCenterId = url.searchParams.get('cost_center_id');
@@ -997,8 +1001,16 @@ export const handlers = [
     const month = url.searchParams.get('month');
     const day = url.searchParams.get('day');
 
+    // LIVE-GRAIN world (fixtures/usage-live-grain.ts): a different enterprise
+    // slug serves the live-pinned MONTHLY-aggregate/ISO-datetime/YTD shape
+    // through this same handler + projection -- the permanent regression
+    // target for the real grain, with zero coupling to the scenario selector.
+    // Its rows are all cost-center-unassociated, so the default-excludes-
+    // cost-center semantics below apply unchanged; date filters split on '-'
+    // and therefore still match its year/month segments.
+    const liveGrain = params.enterprise === LIVE_GRAIN_ENTERPRISE;
     const { usageItems: USAGE_ITEMS } = getActiveFixtures();
-    const source = year ? [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS] : USAGE_ITEMS;
+    const source = liveGrain ? LIVE_GRAIN_USAGE_ITEMS : year ? [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS] : USAGE_ITEMS;
     let filtered = costCenterId
       ? source.filter((item) => item.cost_center_id === costCenterId)
       : source.filter((item) => item.cost_center_id === null || item.cost_center_id === undefined);

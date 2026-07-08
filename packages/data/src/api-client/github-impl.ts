@@ -17,6 +17,7 @@ import {
   assembleEnterpriseSeries,
   assembleUserSeries,
   computeScopeForecast,
+  expandMonthlyAggregates,
   type AssembleCreditsUsedRow,
   type AssembleUsageRow,
 } from '../forecast/compute.js';
@@ -48,7 +49,13 @@ import {
   type InternalBudgetScope,
 } from './budget-scope.js';
 import { normalizeIncludedUsageCap } from './cost-center-cap.js';
-import { aiCreditItems, fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
+import {
+  aiCreditItems,
+  fetchUsageFanout,
+  fetchUsageForCostCenter,
+  isMonthlyAggregateGrain,
+  type AttributedUsageItem,
+} from './usage-fetch.js';
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
@@ -243,7 +250,51 @@ function buildUlbCandidates(budgetsRaw: readonly BudgetItem[]): UlbCandidate[] {
 // (inclusive), cumulative -- days with no matching usage row legitimately
 // carry the prior total forward rather than being omitted, so the actual
 // line reflects "no observed usage" instead of a misleading gap.
-function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: number): DailyBurnPoint[] {
+//
+// Grain-adaptive (item 23, live-pinned): `items` are the CYCLE-MONTH,
+// AI-credit rows.
+//   - PER-DAY grain (the fixture world; any per-day tenant --
+//     `r6DailyTotals === null`): the original per-day fold, byte-identical.
+//     R5's own daily rows are the best source here: they carry the true
+//     pool-only (discountAmount) split per day.
+//   - MONTHLY-AGGREGATE grain (the live tenant; `r6DailyTotals` supplied):
+//     the aggregate rows give the LEVEL only (MTD pool total); the daily
+//     SHAPE comes from R6's users-1-day per-user sums -- TOTAL credits,
+//     pool+metered undifferentiated, acceptable for shape (documented design
+//     choice) -- scaled so the cumulative line ends at exactly the R5 MTD
+//     pool total (the money truth). If R6 carried no data for the cycle, the
+//     fallback is a flat MTD/elapsed linear ramp.
+function buildDailyBurn(
+  items: UsageItem[],
+  cycleStart: Date,
+  daysElapsed: number,
+  r6DailyTotals: ReadonlyMap<string, number> | null,
+): DailyBurnPoint[] {
+  const dayDate = (i: number): string => new Date(cycleStart.getTime() + i * DAY_MS).toISOString().slice(0, 10);
+
+  if (r6DailyTotals !== null) {
+    const mtdPoolCredits = items.reduce((sum, item) => sum + poolCreditsForItem(item), 0);
+
+    // R6 cumulative shape over the elapsed cycle days.
+    const cumulativeR6: number[] = [];
+    let running = 0;
+    for (let i = 0; i <= daysElapsed; i++) {
+      running += r6DailyTotals.get(dayDate(i)) ?? 0;
+      cumulativeR6.push(running);
+    }
+    const totalR6 = running;
+
+    return Array.from({ length: daysElapsed + 1 }, (_, i) => ({
+      date: dayDate(i),
+      cumulativePoolCredits:
+        totalR6 > 0
+          ? Math.round((mtdPoolCredits * cumulativeR6[i]!) / totalR6)
+          : daysElapsed === 0
+            ? mtdPoolCredits
+            : Math.round((mtdPoolCredits * i) / daysElapsed),
+    }));
+  }
+
   const creditsByDate = new Map<string, number>();
   for (const item of items) {
     const itemTime = Date.parse(`${item.date}T00:00:00.000Z`);
@@ -255,7 +306,7 @@ function buildDailyBurn(items: UsageItem[], cycleStart: Date, daysElapsed: numbe
   const points: DailyBurnPoint[] = [];
   let cumulative = 0;
   for (let i = 0; i <= daysElapsed; i++) {
-    const date = new Date(cycleStart.getTime() + i * DAY_MS).toISOString().slice(0, 10);
+    const date = dayDate(i);
     cumulative += creditsByDate.get(date) ?? 0;
     points.push({ date, cumulativePoolCredits: cumulative });
   }
@@ -298,11 +349,20 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
   // series derive from "Copilot AI Credits" rows only -- a Copilot
   // Business/Premium Request row in the history would inflate every
   // enterprise/cost-center burn projection.
-  const usageRows: AssembleUsageRow[] = aiCreditItems(params.historicalUsageItems).map((i) => ({
-    date: i.date,
-    costCenterId: i.costCenterId,
-    quantity: i.quantity,
-  }));
+  // Monthly-aggregate expansion (item 23): live months arrive as one
+  // aggregate row -- expandMonthlyAggregates spreads them into a flat daily
+  // series (closed month: total/daysInMonth; current month: MTD/elapsed) so
+  // core's trailing-7 run-rate never mistakes a month total for a daily rate
+  // (the live P50 ~= total x 31 blow-up). Per-day fixture rows pass through
+  // untouched -- simulation stays byte-identical.
+  const usageRows: AssembleUsageRow[] = expandMonthlyAggregates(
+    aiCreditItems(params.historicalUsageItems).map((i) => ({
+      date: i.date,
+      costCenterId: i.costCenterId,
+      quantity: i.quantity,
+    })),
+    params.asOfDate,
+  );
   const creditRows: AssembleCreditsUsedRow[] = params.userCreditItems.map((i) => ({
     date: i.date,
     userId: i.user_id,
@@ -432,13 +492,9 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // the default call returns ONLY cost-center-unassociated usage.
   async function fetchUsageItems(params: UsageSummaryParams = {}): Promise<UsageItem[]> {
     if (params.costCenterId) {
-      const raw = await paginateAll<AttributedUsageItem>(
-        octokit,
-        '/enterprises/{enterprise}/settings/billing/usage',
-        { enterprise, cost_center_id: params.costCenterId },
-        (data) => (data as { usageItems?: AttributedUsageItem[] }).usageItems ?? [],
-      );
-      return raw.map((item) => ({ ...item, costCenterId: params.costCenterId! }));
+      // The shared usage-fetch helper (not a local paginateAll) so the item-23
+      // date normalization applies on this path too.
+      return fetchUsageForCostCenter(octokit, enterprise, params.costCenterId);
     }
     const costCenters = await fetchCostCentersRaw();
     return fetchUsageFanout(octokit, enterprise, costCenters.map((cc) => cc.id));
@@ -451,6 +507,15 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // concatenate the plain current-cycle fetch -- it would double-count). Now a
   // fan-out too (the default call still excludes cost-center usage), so it takes
   // the already-fetched cost-center ids to avoid re-listing them.
+  //
+  // Item 23 redundancy ruling (FLAGGED, kept deliberately): live, the
+  // UNPARAMETERIZED call already returns year-to-date months (pinned fact 3),
+  // making this `year` call redundant against a real tenant -- but the mock's
+  // default deliberately returns only the current cycle (every committed
+  // current-cycle pin is computed from a no-param fetch), so collapsing the
+  // two reads would break the sim history superset. Collapse only if/when the
+  // mock's default is switched to YTD emission -- a mock-side decision, not
+  // this round's.
   async function fetchHistoricalUsageItems(costCenterIds: readonly string[]): Promise<UsageItem[]> {
     return fetchUsageFanout(octokit, enterprise, costCenterIds, { year: currentDate().slice(0, 4) });
   }
@@ -572,7 +637,28 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
 
     const cycleAsOfDate = currentDate();
     const bounds = cycleBounds(currentDateObj());
-    const dailyBurn = buildDailyBurn(items, bounds.cycleStart, bounds.daysElapsed);
+
+    // Grain-agnostic cycle scoping (item 23): the burn-down derives from rows
+    // whose MONTH equals the cycle month -- identical to the old day-window
+    // for per-day rows (a cycle IS a calendar month), and correct for live
+    // monthly aggregates (one first-of-month row per bucket, month-to-date
+    // cumulative). Live's unparameterized read returns YEAR-TO-DATE months,
+    // so this filter is what keeps January..June out of July's line.
+    const cycleMonth = cycleAsOfDate.slice(0, 7);
+    const monthItems = items.filter((item) => item.date.slice(0, 7) === cycleMonth);
+
+    // Aggregate grain -> fetch the R6 daily sums for the burn-down's SHAPE
+    // (see buildDailyBurn's doc). Lazy: per-day worlds (simulation) never pay
+    // the users-1-day fan-out here, and stay byte-identical.
+    let r6DailyTotals: Map<string, number> | null = null;
+    if (isMonthlyAggregateGrain(monthItems)) {
+      const { records } = await fetchCycleCredits();
+      r6DailyTotals = new Map<string, number>();
+      for (const record of records) {
+        r6DailyTotals.set(record.date, (r6DailyTotals.get(record.date) ?? 0) + record.ai_credits_used);
+      }
+    }
+    const dailyBurn = buildDailyBurn(monthItems, bounds.cycleStart, bounds.daysElapsed, r6DailyTotals);
 
     return {
       asOfDate,

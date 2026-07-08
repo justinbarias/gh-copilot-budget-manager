@@ -66,6 +66,69 @@ export interface AssembleUsageRow {
   quantity: number;
 }
 
+// ---------------------------------------------------------------------------
+// Monthly-aggregate expansion (item 23, live-pinned 2026-07-09): live R5
+// usage items are MONTHLY AGGREGATES -- one row per (month x bucket), dated
+// first-of-month, the current month's row month-to-date cumulative. Fed raw
+// into toDailyBurn, each month would read as a single enormous "day" and
+// core's trailing-7 run-rate would treat a month total as a daily rate (the
+// live P50 ~= cycle-total x 31 forecast blow-up). This transform detects the
+// aggregate signature PER (costCenterId, month) GROUP -- all of a group's
+// rows on ONE first-of-month date -- and spreads the group's total evenly
+// across the days it covers:
+//   - CLOSED months (before the as-of month): total / daysInMonth on every
+//     calendar day (a complete aggregate).
+//   - the CURRENT month: MTD-cumulative / elapsed-days across days
+//     1..asOfDate's day-of-month (item 23's "run-rate = current-month
+//     cumulative / daysElapsed").
+// Per-day groups (the whole fixture world; any per-day tenant) pass through
+// UNTOUCHED -- fixture-world series stay byte-identical.
+//
+// STATISTICAL NOTE (documented design choice): a flat spread carries NO
+// weekday-seasonality signal -- monthly aggregates cannot recover it. Live
+// enterprise/cost-center forecasts therefore run without weekday shape (the
+// run-rate/level math is unaffected), and their backtest MAPE evaluates
+// level accuracy against equally-flat actuals (self-consistent). User-scope
+// forecasts are untouched: they train on R6's genuinely-daily per-user rows
+// and keep real seasonality.
+export function expandMonthlyAggregates(rows: readonly AssembleUsageRow[], asOfDate: Date): AssembleUsageRow[] {
+  const asOfMonth = `${asOfDate.getUTCFullYear()}-${String(asOfDate.getUTCMonth() + 1).padStart(2, '0')}`;
+  const asOfDayOfMonth = asOfDate.getUTCDate();
+
+  const groups = new Map<string, AssembleUsageRow[]>();
+  for (const row of rows) {
+    const key = `${row.costCenterId ?? '<none>'}|${row.date.slice(0, 7)}`;
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+
+  const result: AssembleUsageRow[] = [];
+  for (const group of groups.values()) {
+    const distinctDates = new Set(group.map((r) => r.date));
+    const isAggregate = distinctDates.size === 1 && [...distinctDates][0]!.endsWith('-01');
+    if (!isAggregate) {
+      result.push(...group); // per-day grain: untouched (fixture identity)
+      continue;
+    }
+
+    const month = group[0]!.date.slice(0, 7);
+    const year = Number(month.slice(0, 4));
+    const monthNum = Number(month.slice(5, 7));
+    const daysInMonth = new Date(Date.UTC(year, monthNum, 0)).getUTCDate();
+    // Future months (relative to as-of) keep the full-month spread too --
+    // toDailyBurn drops post-as-of rows anyway, so only closed/current matter.
+    const spreadDays = month === asOfMonth ? Math.max(1, Math.min(asOfDayOfMonth, daysInMonth)) : daysInMonth;
+    const total = group.reduce((sum, r) => sum + r.quantity, 0);
+    const perDay = total / spreadDays;
+    const costCenterId = group[0]!.costCenterId;
+    for (let day = 1; day <= spreadDays; day++) {
+      result.push({ date: `${month}-${String(day).padStart(2, '0')}`, costCenterId, quantity: perDay });
+    }
+  }
+  return result;
+}
+
 // Enterprise-scope series: total credits burned per day across every cost
 // center (both pool-covered AND metered draw -- `quantity`, not the
 // `discountAmount`-derived pool-only credits; see this module's README note

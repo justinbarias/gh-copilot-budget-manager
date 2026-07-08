@@ -23,7 +23,6 @@ import { paginateAll } from '../api-client/paginate.js';
 import { fetchUsageFanout, isAiCreditUsageItem } from '../api-client/usage-fetch.js';
 import { fetchCycleUserCredits } from '../api-client/users-report.js';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Task 4.8's write engine needs a strictly richer live-read than the existing
 // read-path fetchers in api-client/github-impl.ts (getUsageSummary/
@@ -343,15 +342,17 @@ export async function assembleUsageState(
 
   const toCredits = (amountUsd: number): number => Math.round(amountUsd * 100);
 
-  // Same cycle window as listHeavyUsers/listCostCenters -- anchored to the
-  // caller-supplied `asOfDate` clock seam (never wall-clock in sim). The
-  // per-user report (R6) is already cycle-scoped by the fan-out; the usage
-  // report (R5) is not, so its rows are cycle-filtered here (e.g. noah-tanaka's
-  // Aug 31/Sep 1 allowance-cliff rows fall outside the June cycle).
-  const inCycle = (date: string): boolean => {
-    const dayIndex = Math.floor((Date.parse(`${date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
-    return dayIndex >= 0 && dayIndex <= bounds.daysElapsed;
-  };
+  // GRAIN-AGNOSTIC cycle scoping (item 23, live-pinned 2026-07-09): the old
+  // day-window filter (Date.parse(`${date}T00:00:00.000Z`)) additionally
+  // NaN'd on live's ISO-datetime dates -- now normalized at the fetch
+  // boundary -- but the deeper fix is bucketing by MONTH: a billing cycle IS
+  // a calendar month, so "row's month == cycle month" is identical to the
+  // old window for per-day rows (noah-tanaka's Aug 31/Sep 1 cliff rows still
+  // fall out) AND correct for live's monthly-aggregate rows (one
+  // first-of-month row per bucket, month-to-date cumulative). The per-user
+  // report (R6) needs no filter here -- its fan-out is inherently
+  // cycle-scoped.
+  const cycleMonth = asOfDate.toISOString().slice(0, 7);
 
   const costCenterTotals = new Map<string, { poolCreditsUsed: number; meteredCreditsUsed: number }>();
   let enterpriseMeteredCreditsUsed = 0;
@@ -362,7 +363,7 @@ export async function assembleUsageState(
     // Request (and every other product a live tenant returns on this
     // endpoint) must never pollute the preview's money math.
     if (!isAiCreditUsageItem(item)) continue;
-    if (!inCycle(item.date)) continue;
+    if (item.date.slice(0, 7) !== cycleMonth) continue;
     const pool = toCredits(item.discountAmount);
     const metered = toCredits(item.netAmount);
     enterpriseMeteredCreditsUsed += metered;

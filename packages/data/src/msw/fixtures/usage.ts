@@ -16,8 +16,19 @@ export const COPILOT_PREMIUM_REQUEST_SKU = 'Copilot Premium Request';
 
 // Mirrors GitHub's enterprise billing usage/summary item shape (PRD §2.3):
 // one row per date/product/SKU/entity, filterable by cost_center_id.
+//
+// GRAIN -- documented SIM CONVENTION (live-pinned divergence, 2026-07-09
+// smoke): the REAL endpoint returns MONTHLY AGGREGATES (one row per month x
+// bucket, dated first-of-month with an ISO time suffix, e.g.
+// "2026-06-01T00:00:00Z") and its unparameterized call spans YEAR-TO-DATE
+// months. This canonical world deliberately keeps PER-DAY rows with bare
+// YYYY-MM-DD dates: the daily grain is load-bearing for every committed
+// burn-down/sparkline/forecast pin, and the impl parse/aggregation layer is
+// grain-agnostic + date-normalizing, so both grains exercise the same code.
+// The live monthly grain has its own permanently-runnable regression world:
+// fixtures/usage-live-grain.ts (served for LIVE_GRAIN_ENTERPRISE).
 export interface UsageItem {
-  date: string; // YYYY-MM-DD
+  date: string; // canonical world: YYYY-MM-DD; live-grain world: ISO datetime
   product: string;
   sku: string;
   cost_center_id: string | null;
@@ -26,6 +37,11 @@ export interface UsageItem {
   gross_amount: number;
   discount_amount: number;
   net_amount: number;
+  // Per-row organization bucket (live-grain world only): the real monthly
+  // aggregate carries one row per month x org bucket, so the live-grain rows
+  // pin distinct organizationName values. Canonical rows omit it and fall
+  // back to the handler's single-org default.
+  organization_name?: string;
 }
 
 // Mirrors a row of the Copilot usage metrics API's per-user daily report
