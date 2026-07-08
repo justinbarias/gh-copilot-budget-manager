@@ -81,19 +81,54 @@ and therefore none are exempt).
 | # | Assumption | Basis | Risk if wrong | Pin mechanism |
 |---|---|---|---|---|
 | A1 | ~~USD-dollars assumption~~ **CLOSED 2026-07-08 — machine-verified:** the OpenAPI schema states `ai_credit_pool_state.target_amount`/`current_amount` are **"in dollars" (verbatim)**. The `round(USD × 100)` mapping in `cost-center-cap.ts` is confirmed correct. | OpenAPI `ghec.2026-03-10.json` | (was: limits 100× off) — risk retired. | Closed by the OpenAPI pass; the R2 dump remains useful only as a live sanity echo. |
-| A2 | **Overflow (block vs metered at cap exhaustion) defaults to `'block'`** when no wire field sniffs. Sniff rule: any key on the cost-center object or its `ai_credit_pool_state` matching `/overflow\|exceed\|block/i` whose value is literally `'block'` or `'metered'`; **boolean candidates deliberately unmapped** (`allow_overflow: true` vs `block_on_exceed: true` would mean opposite things — guessing polarity is worse than defaulting). | The real field is undocumented anywhere reachable. `'block'` matches the platform's default posture (pool exhaustion blocks unless paid-usage is enabled, CLAUDE.md §5) and **fails conservative**: a wrong `'block'` gives earlier exhaustion warnings; a wrong `'metered'` would project spend capacity a hard stop will deny. | A genuinely-metered CC is forecast as blocking (over-conservative alerts) until pinned. | The smoke R2 row lists every overflow-suggestive key + value on the first cost-center — if GitHub ships the field under any recognisable name, the dump surfaces it. |
+| A2 | ~~Overflow-field sniff + `'block'` default~~ **CLOSED 2026-07-09 — NEGATIVE, doubly confirmed:** the OpenAPI schema has **no overflow/block-vs-metered field anywhere** (exhaustive machine search) AND the maintainer's live R2 dump showed the real cost-center object carries only `[id, name, state, ai_credit_pool_enabled, azure_subscription, resources]` — no `ai_credit_pool_state` on their (cap-disabled) CC, **zero overflow-suggestive keys**. Block-vs-metered at pool exhaustion is governed by the **enterprise-level "AI credit paid usage" policy** (docs verbatim: *"If this policy is disabled, usage is blocked when the shared pool is exhausted, regardless of your budget configuration"*), which itself has **NO REST surface at all** (exhaustive schema + docs search) — a UI-only toggle. | OpenAPI `ghec.2026-03-10.json` + live R2 dump (2026-07-09) + docs | Risk retired: the mapper's `'block'` default + literal-value sniff stay as written (the sniff can never fire on the real wire; harmless). | **Maintainer decision:** the internal per-CC `overflow` knob is a **SIM-ONLY what-if lever** (rebalancer scenarios) — live-disabled in the Controls caps grid with the sub-line "Governed by the enterprise \"AI credit paid usage\" policy"; never serialized to the wire. The app can only be *told* the policy's state or *infer* it (metered charges posting ⇒ ON — proven for this tenant by the live $1,034.96 AI-credit net). **Task 7.2's paid-usage card should become admin-declared-or-inferred state, not an API read.** |
 
-### Known divergence — cap WRITES (do not toggle a cap against live yet)
+### Cap WRITES — W1 CLOSED (2026-07-09)
 
 | # | Method + path | Verdict | Note |
 |---|---|---|---|
-| W1 | `PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (cap toggle) | **`known-divergent (writes)` — blocked on the A2 overflow pin** | The READ path now maps the real wire (R2), but `write/engine.ts`'s cap-toggle PATCH body **still sends the internal nested `included_usage_cap` shape** — a live cap write would send a field GitHub doesn't recognise (at best ignored, at worst a 422). Live cap toggles are NOT safe from the app until this is reconciled — which is deliberately deferred to its own round because the write body needs the real overflow field name (A2) that only the R2 dump can pin. MSW mutation handlers stay on the internal shape (inference #2's ruling) until then. |
+| W1 | `PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}` (cap toggle) | **CLOSED — `machine-verified (OpenAPI)` write body** | `write/engine.ts`'s `executeCapMutation` now sends **exactly `{ai_credit_pool_enabled: <boolean>}`** — the flat, machine-verified wire field. MSW's PATCH allow-list **rejects** the old nested internal shape, any `overflow` key, and non-boolean values, all with `400` (the same loud drift-guard pattern as the budget-scope 422s; all three rejections test-pinned). **Overflow-only change entries issue ZERO wire mutations** and produce one audit event (validator-ratified below). **Known dialect inconsistency, flagged:** the cost-center **CREATE** body still accepts the internal nested cap shape in MSW — the create body's cap field wasn't in any live dump yet; pin on a future smoke. |
+
+**Validator ratifications (2026-07-09 round):**
+
+- **Persist-raw (snapshots keep the whole bill): RATIFIED.** `syncNow` persists
+  the RAW, unfiltered usage item set — every product/sku exactly as the wire
+  returned it, each row's identity recoverable via the `sku` column — while
+  the AI-credit filter applies at the three DERIVATION boundaries only
+  (`getUsageSummary`, `computeSyncForecasts`, `assembleUsageState`'s rollup).
+  Money math is clean; future chargeback/audit phases keep the full,
+  append-only billing picture. **Growth note:** on live tenants every Sync now
+  persists whole-bill rows (licenses, premium requests, and any other
+  enhanced-billing product) — snapshot growth tracks the tenant's full bill,
+  not just AI credits; revisit retention if it ever matters.
+- **Audit-without-mutation for overflow-only entries: RATIFIED**, with the
+  record spread across three mutually-reinforcing surfaces: (1) the audit
+  event carries actor / action / before→after (including the internal
+  overflow change) / trigger / data-snapshot — §6.5-complete; (2) the
+  per-entry **mutation log is empty** — the zero-wire-requests fact, asserted
+  in e2e (the plan rail renders no request body and no PATCH for the entry);
+  (3) the lever is **live-disabled in the UI**, so overflow-only entries are
+  effectively sim-only, where the persistent banner already marks every apply
+  simulated (§6.8). Honest caveat: the audit event *body* alone does not say
+  "zero wire requests" — the mutation log is that record.
 
 ### Recorded, not adopted (docs-confirmed alternates)
 
 | # | Method + path | Doc source | Verdict | Note |
 |---|---|---|---|---|
 | N1 | `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` (+ siblings `…/premium_request/usage`, `…/usage/summary`) | Billing usage REST `2026-03-10` (docs, 2026-07-08) | `docs-confirmed, unadopted` | **Resolves old checklist item #7 — the PRD §2.3 paths are real.** Per-call filters: `user`, `organization`, `model`, `product`, `cost_center_id`. Response: `{timePeriod, enterprise, user, organization, product, model, costCenter, usageItems[]}` with items `{product, sku, model, unitType, pricePerUnit, grossQuantity, grossAmount, discountQuantity, discountAmount, netQuantity, netAmount}` — note **no per-item date**; the top-level `timePeriod` carries year/month/day. Deliberately NOT integrated in the R5 reconciliation; recorded so Phase 4+ can reach for the `user`/`model` filters when per-user/per-model drill-down is needed — in particular the `user` filter is the **recovery path for the per-user pool-vs-metered split limitation** (see "Live-wire limitations" below). |
+| N2 | `GET /enterprises/{enterprise}/settings/billing/budgets/{budget_id}/user-states` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | **Per-user budget state for a given budget** — a machine-verified endpoint we had no inventory row for. **Candidate recovery path for per-user visibility** (blocked-user detection, per-user headroom), possibly BETTER than N1's `user` filter: it reads a budget's own user-state list directly instead of re-aggregating usage. Evaluate N1-vs-N2 when the per-user metered-split/block-status work is scheduled. |
+| N3 | `GET /enterprises/{enterprise}/settings/billing/reports` + `…/reports/{report_id}` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | Enterprise billing report generation/retrieval — likely the bulk/export sibling of the usage endpoints. Relevant to Phase 8 (chargeback + audit export); recorded for that round. |
+| N4 | `GET /enterprises/{enterprise}/copilot/metrics/reports/enterprise-1-day` + `…/enterprise-28-day/latest` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | Enterprise-AGGREGATE siblings of the per-user R6 reports (same envelope pattern). A cheap cross-check for the enterprise burn series without the per-user fan-out; unadopted while R5 (billing usage) serves that role. |
+
+**Pricing-model enum (machine-verified, 2026-07-09 research pass).** Budgets
+carry a `budget_type` pricing-model enum: **`BundlePricing`** covers AI-credit
+SKUs via `budget_product_sku: 'ai_credits'`; **`ProductPricing`** targets a
+product (e.g. `actions`); **`SkuPricing`** targets a single SKU (e.g.
+`actions_linux`). This **confirms our budget fixtures'
+`budget_product_sku: 'ai_credits'` stays correct as-is** — note the budget
+API's product-sku identifier space (`ai_credits`) is distinct from the usage
+report's display-sku space (`"Copilot AI Credits"`); do not conflate them.
 
 ### Mutations (new — Tasks 4.1/4.2; MSW-only today, consumed by the write engine in Task 4.8)
 
@@ -471,9 +506,12 @@ Remaining items, when the live tenant + classic PAT
     smokes, twice identical): **JSONL**, first-record keys exactly
     `[user_id, user_login, ai_credits_used]`, 1,111 records on the tenant's
     28-day report. MSW report-file twins realigned to emit JSONL (R7).
-12. **R5 placeholder values (NEW)** — pin real `unitType`/`organizationName`
-    values from a live response (MSW currently emits placeholders `'Unit'` /
-    `'dewr-digital'`; `pricePerUnit: 0.01` is exact per CLAUDE.md §5).
+12. **R5 placeholder values — PARTIALLY closed 2026-07-09.** The sku strings
+    are now live-pinned (item 16); `unitType`/`organizationName` remain
+    placeholders (`'Unit'` / `'dewr-digital'`) — pin from a live item dump
+    when convenient. `pricePerUnit` is now a per-sku map in MSW ($0.01 AI
+    credits — exact per CLAUDE.md §5 — $19 Copilot Business, $0.04 Premium
+    Request; every fixture row satisfies gross = qty × rate exactly).
 13. ~~**R6 four-variant tenant-surface map + tenant type**~~ **CLOSED
     2026-07-08**: two identical runs returned `28d/latest=OK; 28d/{day}=404;
     1d?day==OK; 1d/{day}=404` — the tenant is **docs-faithful**; the
@@ -488,34 +526,38 @@ Remaining items, when the live tenant + classic PAT
     provably dead code, kept by explicit maintainer ruling (aware of this
     evidence). Also machine-verified: the 1-day envelope carries `report_day`
     (not `report_start_day`/`report_end_day` — those are the 28-day pair).
-14. **R2 cap-field dump — A1 CLOSED by the OpenAPI pass; the dump now pins A2
-    only.** The schema says `ai_credit_pool_state.target_amount`/
-    `current_amount` are **"in dollars" (verbatim)** — the USD×100 mapping is
-    machine-confirmed (assumption A1 CLOSED; row A1 below stands as record).
-    Still capture the smoke R2 dump verbatim on the next live run for **A2**:
-    the overflow field is confirmed ABSENT from the schema (exhaustive
-    search), so the dump is the last place a real field could surface; if it
-    also shows nothing, the per-CC `overflow` knob may not exist on the real
-    API (behavior may hang off the enterprise paid-usage policy) — a
-    PRD-level modeling question for the maintainer, not to be resolved
-    unilaterally.
-15. **Cap WRITE body (blocked on 14/A2)** — map `write/engine.ts`'s
-    cap-toggle PATCH body from the internal nested `included_usage_cap` shape
-    to the real flat wire fields once A2 resolves. Until then, live cap
-    toggles from the app are unsafe (row W1). Explicitly untouched in the
-    write-shape round per contract.
-16. **(product, sku) usage filter (NEW — the maintainer's CURRENT dashboard
-    symptom).** Live, the R5 usage endpoint returns EVERY enhanced-billing
-    product (Actions, storage, …) and ingestion has NO product/sku filter —
-    pool/metered sums are polluted with the whole GitHub bill (the observed
-    "0 pool consumed / ~$64k phantom metered" dashboard). The smoke R5 row now
-    prints a per-(product, sku) inventory line (n/qty/gross/disc/net sums;
-    fixture pin `copilot/ai_credits n=39 qty=193036 gross=1930.36
-    disc=1905.02 net=25.34`, validator-recomputed). **Capture that line on the
-    next live run — it pins the real Copilot AI-credit (product, sku) pair**
-    (our fixtures' `copilot`/`ai_credits` is a PRD guess; filtering on a wrong
-    guess would zero real data), and the ingestion filter lands in its own
-    round against that pin.
+14. ~~**R2 cap-field dump**~~ **CLOSED 2026-07-09** (maintainer's third live
+    smoke): first-cc keys = `[id, name, state, ai_credit_pool_enabled,
+    azure_subscription, resources]`; `ai_credit_pool_enabled=false`;
+    `ai_credit_pool_state=<absent>` (cap disabled); **overflow-suggestive
+    keys: NONE**. Combined with the schema search this closes **A2
+    negatively** — no per-CC overflow field exists; see the A2 row for the
+    maintainer's sim-only-what-if ruling and the paid-usage-policy
+    consequence.
+15. ~~**Cap WRITE body**~~ **CLOSED 2026-07-09 (W1):** `executeCapMutation`
+    sends exactly `{ai_credit_pool_enabled}`; overflow-only entries issue
+    zero mutations + one audit event (ratified); MSW 400s the old nested
+    shape, any overflow key, and non-boolean values. Remaining flag: the
+    cc CREATE body's cap dialect (see W1 row).
+16. ~~**(product, sku) usage filter**~~ **CLOSED 2026-07-09 — the dashboard
+    fix landed.** The maintainer's third smoke pinned the live inventory
+    verbatim: `copilot/"Copilot AI Credits" n=7 qty=486084.5584155
+    gross=4860.85 disc=3825.88 net=1034.96; copilot/"Copilot Business" n=27
+    qty=487.325 gross=9259.18 disc=0 net=9259.18; copilot/"Copilot Premium
+    Request" n=12 qty=65288.79 gross=2611.55 disc=1753.40 net=858.15`.
+    **Maintainer decision: pool/metered derive from "Copilot AI Credits"
+    ONLY** — `isAiCreditUsageItem` (usage-fetch.ts, exact case-sensitive
+    match) applied at the three derivation boundaries (getUsageSummary,
+    computeSyncForecasts, assembleUsageState); fetches + snapshot persistence
+    stay RAW (persist-raw ratification above). Fixtures realigned to the real
+    sku strings (VALUES byte-identical — all AI-filtered pins hold: 193,036
+    qty, per-CC 31,136·18,900·58,300·57,400·15,000·12,300) plus four
+    POLLUTION rows (Business/Premium, fractional quantities; unfiltered they
+    would add +514.5 qty / +1,400 phantom pool credits / +83,608 phantom
+    metered credits — validator-recomputed) as a permanent regression guard.
+    Live-magnitude conversions test-pinned: disc $3,825.88 → 382,588 pool,
+    net $1,034.96 → 103,496 metered, unfiltered enterprise metered would
+    read 150,248 in the live-shaped test world.
 17. **`reassigned_resources` sub-shapes (NEW, next smoke/write):** is
     `previous_cost_center` an id or a name, and what is `resource_type`'s
     exact casing (`User` vs `user`)? The schema leaves both loose; pin from a
@@ -526,10 +568,28 @@ Remaining items, when the live tenant + classic PAT
     two-op remove→add sequence for drift-detection and per-CC audit-event
     semantics. Revisit only if live rate limits ever make the extra call
     matter.
-19. **Transitional internal-spelling read-tolerance (NEW — removal note):**
+19. **Transitional internal-spelling read-tolerance (removal note):**
     `budget-scope.ts` still accepts `universal`/`individual` as read
     passthrough (mock-cutover safety; real GitHub never sends them). Remove
     after one full-green live cycle so drift-guarding is total on reads too.
+20. **Budgets have a PRODUCT dimension (NEW OPEN ITEM — from the maintainer's
+    live Controls screenshot).** A tenant can hold multiple same-scope
+    budgets, one per product (`budget_type` pricing-model enum +
+    `budget_product_sku` — see the pricing-model note above). Today those
+    render as **identical rows** in Controls (the internal identity is
+    scope+entity only), and budget **utilization is paired with UNFILTERED
+    spend** — the maintainer's tenant shows "1,115,229 of 100,000" = the
+    whole $11,152.29 bill × 100 against a single budget's amount. Next
+    round: (a) an R4 smoke sampler dumping `(budget_type,
+    budget_product_sku, budget_scope, budget_amount)` per budget; (b) label
+    disambiguation in Controls; (c) pair each budget's utilization with
+    ITS product's spend; (d) scope the control families to AI-credit
+    budgets. The maintainer has sanctioned **ONE optional product-sku
+    display field** on the returned control shape for this.
+21. **cc CREATE cap dialect (NEW, flagged by the mock side):** MSW's
+    cost-center CREATE body still accepts the internal nested
+    `included_usage_cap` shape (only the PATCH body was pinned this round);
+    pin the create body's cap field on a future smoke/write and align.
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 

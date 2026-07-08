@@ -1,5 +1,19 @@
 import { COST_CENTER_IDS, ENTERPRISE_SLUG } from './constants.js';
 
+// REAL SKU STRINGS -- live-pinned (maintainer's 2026-07-09 authenticated
+// smoke against the real tenant's usage report). The AI-credit sku is the
+// title-case "Copilot AI Credits" (product 'copilot'); our old 'ai_credits'
+// was a PRD guess. Real tenants ALSO carry "Copilot Business" (license
+// spend: gross == net, discount 0) and "Copilot Premium Request" (a separate
+// meter with its own discount/net split) rows on the SAME endpoint, with
+// FRACTIONAL quantities -- see the POLLUTION FIXTURES appended to
+// USAGE_ITEMS below. Pool/metered money math derives from "Copilot AI
+// Credits" rows ONLY (maintainer decision, 2026-07-09); the impl-side sku
+// filter is written against these exported constants.
+export const AI_CREDITS_SKU = 'Copilot AI Credits';
+export const COPILOT_BUSINESS_SKU = 'Copilot Business';
+export const COPILOT_PREMIUM_REQUEST_SKU = 'Copilot Premium Request';
+
 // Mirrors GitHub's enterprise billing usage/summary item shape (PRD §2.3):
 // one row per date/product/SKU/entity, filterable by cost_center_id.
 export interface UsageItem {
@@ -50,45 +64,67 @@ export interface CreditsUsedItem {
 // day before, tipped into metered the day after -- both fall OUTSIDE the June
 // cycle window (cycleBounds(SIM_CURRENT_DATE)), so they never touch the burn-down.
 export const USAGE_ITEMS: UsageItem[] = [
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 2876, gross_amount: 28.76, discount_amount: 28.76, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5753, gross_amount: 57.53, discount_amount: 57.53, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 7191, gross_amount: 71.91, discount_amount: 71.91, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5752, gross_amount: 57.52, discount_amount: 57.52, net_amount: 0 },
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 1800, gross_amount: 18, discount_amount: 18, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 4500, gross_amount: 45, discount_amount: 45, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 5333, gross_amount: 53.33, discount_amount: 53.33, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 13333, gross_amount: 133.33, discount_amount: 133.33, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 5467, gross_amount: 54.67, discount_amount: 54.67, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 13667, gross_amount: 136.67, discount_amount: 136.67, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 1429, gross_amount: 14.29, discount_amount: 14.29, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 3571, gross_amount: 35.71, discount_amount: 35.71, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
-  { date: '2026-06-02', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1171, gross_amount: 11.71, discount_amount: 11.71, net_amount: 0 },
-  { date: '2026-06-04', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
-  { date: '2026-06-05', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
-  { date: '2026-06-09', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
-  { date: '2026-06-11', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2929, gross_amount: 29.29, discount_amount: 29.29, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
-  { date: '2026-06-12', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.capBound, user_login: 'faisal-noor', quantity: 2300, gross_amount: 23, discount_amount: 0, net_amount: 23 },
-  { date: '2026-08-31', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 4.68, net_amount: 0 },
-  { date: '2026-09-01', product: 'copilot', sku: 'ai_credits', cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 2.34, net_amount: 2.34 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 2876, gross_amount: 28.76, discount_amount: 28.76, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 4314, gross_amount: 43.14, discount_amount: 43.14, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5753, gross_amount: 57.53, discount_amount: 57.53, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 7191, gross_amount: 71.91, discount_amount: 71.91, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 5752, gross_amount: 57.52, discount_amount: 57.52, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 1800, gross_amount: 18, discount_amount: 18, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 2700, gross_amount: 27, discount_amount: 27, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 4500, gross_amount: 45, discount_amount: 45, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.employer, user_login: null, quantity: 3600, gross_amount: 36, discount_amount: 36, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 5333, gross_amount: 53.33, discount_amount: 53.33, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 8000, gross_amount: 80, discount_amount: 80, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 13333, gross_amount: 133.33, discount_amount: 133.33, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: null, quantity: 10667, gross_amount: 106.67, discount_amount: 106.67, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 5467, gross_amount: 54.67, discount_amount: 54.67, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 8200, gross_amount: 82, discount_amount: 82, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 13667, gross_amount: 136.67, discount_amount: 136.67, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.dataEval, user_login: null, quantity: 10933, gross_amount: 109.33, discount_amount: 109.33, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 1429, gross_amount: 14.29, discount_amount: 14.29, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2143, gross_amount: 21.43, discount_amount: 21.43, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 3571, gross_amount: 35.71, discount_amount: 35.71, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.cyber, user_login: null, quantity: 2857, gross_amount: 28.57, discount_amount: 28.57, net_amount: 0 },
+  { date: '2026-06-02', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1171, gross_amount: 11.71, discount_amount: 11.71, net_amount: 0 },
+  { date: '2026-06-04', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
+  { date: '2026-06-05', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 1757, gross_amount: 17.57, discount_amount: 17.57, net_amount: 0 },
+  { date: '2026-06-09', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
+  { date: '2026-06-11', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2929, gross_amount: 29.29, discount_amount: 29.29, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.corporate, user_login: null, quantity: 2343, gross_amount: 23.43, discount_amount: 23.43, net_amount: 0 },
+  { date: '2026-06-12', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.capBound, user_login: 'faisal-noor', quantity: 2300, gross_amount: 23, discount_amount: 0, net_amount: 23 },
+  { date: '2026-08-31', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 4.68, net_amount: 0 },
+  { date: '2026-09-01', product: 'copilot', sku: AI_CREDITS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: 'noah-tanaka', quantity: 468, gross_amount: 4.68, discount_amount: 2.34, net_amount: 2.34 },
+  // ---- POLLUTION FIXTURES (live-pinned regression guard, 2026-07-09) ----
+  // The real usage endpoint mixes NON-AI-credit skus into the same report:
+  // "Copilot Business" license rows (gross == net, discount 0) and "Copilot
+  // Premium Request" rows (own discount/net split), both with FRACTIONAL
+  // quantities. These four rows reproduce that pollution in sim so the
+  // impl-side "Copilot AI Credits"-only filter has something real to
+  // exclude. They must NOT enter any pool/metered pin (189,800 burn,
+  // 193,036 AI-credit quantity, per-CC splits) -- every committed sum is an
+  // AI-credit-sku-filtered sum. Hand-computable numbers (documented for the
+  // impl builder's filter tests):
+  //   UNASSOCIATED world (cost_center_id null; the endpoint's default view):
+  //     Business:        qty 19.25  x $19.00 = gross 365.75, disc 0,    net 365.75
+  //     Premium Request: qty 150.50 x $0.04  = gross   6.02, disc 4.00, net   2.02
+  //     -> unassociated pollution totals: qty 169.75, gross 371.77, net 367.77
+  //   WORKFORCE world (cc-workforce-australia):
+  //     Business:        qty 24.50  x $19.00 = gross 465.50, disc 0,     net 465.50
+  //     Premium Request: qty 320.25 x $0.04  = gross  12.81, disc 10.00, net   2.81
+  //     -> workforce pollution totals: qty 344.75, gross 478.31, net 468.31
+  { date: '2026-06-05', product: 'copilot', sku: COPILOT_BUSINESS_SKU, cost_center_id: null, user_login: null, quantity: 19.25, gross_amount: 365.75, discount_amount: 0, net_amount: 365.75 },
+  { date: '2026-06-10', product: 'copilot', sku: COPILOT_PREMIUM_REQUEST_SKU, cost_center_id: null, user_login: null, quantity: 150.5, gross_amount: 6.02, discount_amount: 4, net_amount: 2.02 },
+  { date: '2026-06-09', product: 'copilot', sku: COPILOT_BUSINESS_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 24.5, gross_amount: 465.5, discount_amount: 0, net_amount: 465.5 },
+  { date: '2026-06-11', product: 'copilot', sku: COPILOT_PREMIUM_REQUEST_SKU, cost_center_id: COST_CENTER_IDS.workforce, user_login: null, quantity: 320.25, gross_amount: 12.81, discount_amount: 10, net_amount: 2.81 },
 ];
 
 

@@ -234,15 +234,6 @@ function budgetPatchBody(changes: readonly BudgetFieldChange[]): Record<string, 
   return body;
 }
 
-function capPatchBody(changes: readonly CapFieldChange[]): { enabled?: boolean; overflow?: 'block' | 'metered' } {
-  const body: { enabled?: boolean; overflow?: 'block' | 'metered' } = {};
-  for (const change of changes) {
-    if (change.field === 'enabled') body.enabled = change.new;
-    else body.overflow = change.new;
-  }
-  return body;
-}
-
 interface ExecutedMutation {
   method: 'POST' | 'PATCH' | 'DELETE';
   path: string;
@@ -337,7 +328,7 @@ async function executeCapMutation(
   enterprise: string,
   entry: Extract<PlanEntry, { controlKind: 'included_cap' }>,
   live: LiveControlsResult,
-): Promise<ExecutedMutation> {
+): Promise<ExecutedMutation[]> {
   if (entry.action === 'add' || entry.action === 'delete') {
     throw new Error(
       `applyPlan: included_cap "${entry.action}" for "${entry.costCenterName}" is not supported -- cost-center lifecycle is Task 4.13's scope, not Task 4.8's.`,
@@ -349,14 +340,26 @@ async function executeCapMutation(
     throw new Error(`applyPlan: no live cost center found named "${entry.costCenterName}" -- the drift check should have caught this`);
   }
 
-  const capBody = capPatchBody(entry.changes);
-  const requestBody = { included_usage_cap: capBody };
+  // A2 RESOLVED (2026-07-08 third live run + the OpenAPI schema, both): NO
+  // per-CC overflow wire field exists anywhere -- block-vs-metered at cap
+  // exhaustion is governed by the ENTERPRISE "AI credit paid usage" policy,
+  // not per cost center. Maintainer decisions: the cap write sends ONLY the
+  // machine-verified flat `ai_credit_pool_enabled` field; the internal
+  // `overflow` knob is a SIM-ONLY what-if lever (live-disabled in the UI) and
+  // is NEVER serialized to the wire. An overflow-ONLY change entry therefore
+  // issues NO wire mutation at all -- its audit event (appended by applyPlan's
+  // per-entry loop regardless of how many requests the entry issued, same as
+  // a zero-removal membership change) is the record of the internal what-if.
+  const enabledChange = entry.changes.find((c): c is Extract<CapFieldChange, { field: 'enabled' }> => c.field === 'enabled');
+  if (!enabledChange) return [];
+
+  const requestBody = { ai_credit_pool_enabled: enabledChange.new };
   const response = await octokit.request('PATCH /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}', {
     enterprise,
     cost_center_id: costCenterId,
-    included_usage_cap: capBody,
+    ...requestBody,
   });
-  return { method: 'PATCH', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data };
+  return [{ method: 'PATCH', path: response.url, requestBody, responseStatus: response.status, responseBody: response.data }];
 }
 
 // Task 4.13 cost-center lifecycle executor. Unlike budgets/caps (exactly one
@@ -496,7 +499,7 @@ async function executeMutation(
   live: LiveControlsResult,
 ): Promise<ExecutedMutation[]> {
   if (entry.controlKind === 'budget') return [await executeBudgetMutation(octokit, enterprise, entry, live)];
-  if (entry.controlKind === 'included_cap') return [await executeCapMutation(octokit, enterprise, entry, live)];
+  if (entry.controlKind === 'included_cap') return executeCapMutation(octokit, enterprise, entry, live);
   return executeCostCenterMutation(octokit, enterprise, entry, live);
 }
 

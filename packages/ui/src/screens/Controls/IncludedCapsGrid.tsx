@@ -58,6 +58,16 @@ interface IncludedCapsGridProps {
   rows: IncludedCapRowModel[];
   onToggle: (id: string) => void;
   onOverflowChange: (id: string, overflow: CapOverflow) => void;
+  /**
+   * A2 resolved (2026-07-08/09 live + OpenAPI): NO per-CC overflow wire field
+   * exists -- block-vs-metered at cap exhaustion is governed by the
+   * enterprise "AI credit paid usage" policy. In LIVE mode the overflow
+   * segment control renders disabled with that explanation; in SIMULATION it
+   * stays the what-if lever the rebalancer scenarios use (maintainer
+   * decision). Wired from Controls.tsx's existing api.getMode() read -- the
+   * same signal the sim banner already keys off.
+   */
+  liveMode: boolean;
   /** "Controls scale features": free-text cost-center-name filter only -- no sort/pagination at 6 cards. */
   search: string;
   onSearchChange: (value: string) => void;
@@ -77,6 +87,7 @@ export function IncludedCapsGrid({
   rows,
   onToggle,
   onOverflowChange,
+  liveMode,
   search,
   onSearchChange,
   driftCollisionId,
@@ -161,6 +172,7 @@ export function IncludedCapsGrid({
                   aria-pressed={row.overflow === 'block'}
                   className={`included-caps__seg-btn ${row.overflow === 'block' ? 'included-caps__seg-btn--active' : ''}`}
                   onClick={() => onOverflowChange(row.id, 'block')}
+                  disabled={liveMode}
                 >
                   Block
                 </button>
@@ -169,11 +181,17 @@ export function IncludedCapsGrid({
                   aria-pressed={row.overflow === 'metered'}
                   className={`included-caps__seg-btn ${row.overflow === 'metered' ? 'included-caps__seg-btn--active' : ''}`}
                   onClick={() => onOverflowChange(row.id, 'metered')}
+                  disabled={liveMode}
                 >
                   Overflow → metered
                 </button>
               </div>
             </div>
+            {liveMode && (
+              <div className="included-caps__policy-note mono">
+                Governed by the enterprise “AI credit paid usage” policy
+              </div>
+            )}
 
             {row.staged && <div className="included-caps__staged">● staged change</div>}
             {row.drifted && driftCollisionId !== row.id && (

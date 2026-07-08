@@ -127,19 +127,25 @@ describe('runReadSmoke', () => {
     expect(r6?.details).toMatch(/via 28d\/\{2026-06-12\}/);
   });
 
-  // Addendum (2026-07-08 live finding): ingestion has no product/sku filter,
-  // so live pool/metered sums are polluted by every enhanced-billing product.
-  // R5's sku inventory is the pin for the deferred filter fix: one line per
-  // distinct (product, sku) pair across the full fan-out. Fixture world is
-  // Copilot-only -- all 39 USAGE_ITEMS rows are copilot/ai_credits, and every
-  // row's gross is quantity/100: qty 193,036 -> gross 1930.36; net 25.34
-  // (faisal-noor's $23 overflow + the Sep-1 cliff row's $2.34); disc =
-  // 1930.36 - 25.34 = 1905.02.
-  it('R5 reports the distinct (product, sku) inventory with summed quantities/amounts (the sku-filter pin)', async () => {
+  // The R5 sku inventory (2026-07-08 addendum; sku live-pinned 2026-07-09):
+  // one line per distinct (product, sku) pair across the full fan-out,
+  // name-sorted. The fixture world now reproduces live pollution: 39
+  // AI-credit rows (every row's gross = quantity/100: qty 193,036 -> gross
+  // 1930.36; net 25.34 = faisal-noor's $23 overflow + the Sep-1 cliff $2.34;
+  // disc = 1930.36 - 25.34 = 1905.02) + 2 Copilot Business rows (qty 19.25 +
+  // 24.5 = 43.75; gross = net = 365.75 + 465.5 = 831.25; disc 0) + 2 Premium
+  // Request rows (qty 150.5 + 320.25 = 470.75; gross 6.02 + 12.81 = 18.83;
+  // disc 14.00; net 4.83) -- all hand-derived from the pollution fixtures.
+  it('R5 reports the distinct (product, sku) inventory with summed quantities/amounts (the sku pin)', async () => {
     const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
     const r5 = results.find((r) => r.docRef === 'R5');
     expect(r5?.status, r5?.details).toBe('ok');
-    expect(r5?.details).toMatch(/skus: copilot\/ai_credits n=39 qty=193036 gross=1930\.36 disc=1905\.02 net=25\.34/);
+    expect(r5?.details).toMatch(/skus: copilot\/Copilot AI Credits n=39 qty=193036 gross=1930\.36 disc=1905\.02 net=25\.34/);
+    expect(r5?.details).toMatch(/copilot\/Copilot Business n=2 qty=43\.75 gross=831\.25 disc=0\.00 net=831\.25/);
+    expect(r5?.details).toMatch(/copilot\/Copilot Premium Request n=2 qty=470\.75 gross=18\.83 disc=14\.00 net=4\.83/);
+    // The default (unassociated) call now legitimately returns the two
+    // cost-center-unassociated pollution rows.
+    expect(r5?.details).toMatch(/default call: 2 cost-center-unassociated item\(s\)/);
   });
 
   it('catches a wrong shape (missing required field) as shape_mismatch', async () => {

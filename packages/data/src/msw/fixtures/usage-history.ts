@@ -106,7 +106,7 @@ function generateClosedCycleUsageItems(plan: ClosedCyclePlan): UsageItem[] {
       items.push({
         date: `${plan.year}-${pad2(plan.month)}-${pad2(day)}`,
         product: 'copilot',
-        sku: 'ai_credits',
+        sku: 'Copilot AI Credits',
         cost_center_id: COST_CENTER_IDS[key],
         user_login: null,
         quantity,

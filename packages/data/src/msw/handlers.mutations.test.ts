@@ -383,18 +383,63 @@ describe('Task 4.2 -- cost center mutations: delete', () => {
   });
 });
 
-describe('Task 4.2 -- cost center mutations: edit (PATCH) / included-usage-cap toggle', () => {
-  it('toggles enabled/overflow, recomputing the limit from canonical membership (unspecified sub-field keeps its value)', async () => {
+describe('Task 4.2 -- cost center mutations: edit (PATCH) / cap toggle (wire body: ai_credit_pool_enabled)', () => {
+  // LIVE-PINNED (2026-07-09 R2 cap dump + machine-verified schema): the cap
+  // toggle's PATCH request body is the FLAT {ai_credit_pool_enabled: bool};
+  // no overflow field exists anywhere on the wire. The RESPONSE echo stays in
+  // the internal included_usage_cap dialect (dual-dialect read arrangement --
+  // the sim what-if overflow knob still reads it; impl's
+  // normalizeIncludedUsageCap maps it).
+  it('accepts {ai_credit_pool_enabled: false}, echoing enabled=false with overflow retained and the limit recomputed from canonical membership', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ai_credit_pool_enabled: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { included_usage_cap: { enabled: boolean; overflow: string; computed_limit_credits: number } };
+    expect(body.included_usage_cap.enabled).toBe(false);
+    expect(body.included_usage_cap.overflow).toBe('block'); // no wire field exists -> always retains canonical fixture value
+    expect(body.included_usage_cap.computed_limit_credits).toBe(24 * PROMO_CREDITS_PER_SEAT);
+  });
+
+  it('accepts {ai_credit_pool_enabled: true} alongside other editable fields', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ name: 'Workforce Australia Platform (renamed)', ai_credit_pool_enabled: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; included_usage_cap: { enabled: boolean } };
+    expect(body.name).toBe('Workforce Australia Platform (renamed)');
+    expect(body.included_usage_cap.enabled).toBe(true);
+  });
+
+  it('rejects the OLD nested included_usage_cap shape loudly (400) -- any missed impl callsite must surface', async () => {
     const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ included_usage_cap: { enabled: false } }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { included_usage_cap: { enabled: boolean; overflow: string; computed_limit_credits: number } };
-    expect(body.included_usage_cap.enabled).toBe(false);
-    expect(body.included_usage_cap.overflow).toBe('block'); // unspecified -> retains canonical fixture value
-    expect(body.included_usage_cap.computed_limit_credits).toBe(24 * PROMO_CREDITS_PER_SEAT);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an overflow key in the PATCH body (400) -- machine-verified: no overflow field exists on the wire', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ai_credit_pool_enabled: true, overflow: 'metered' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-boolean ai_credit_pool_enabled (400)', async () => {
+    const res = await fetch(`${COST_CENTERS_URL}/${COST_CENTER_IDS.workforce}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ai_credit_pool_enabled: 'yes' }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('rejects any attempt to set a cap amount on edit, under any guessed field name (400 -- §4 status-list ruling)', async () => {
@@ -581,13 +626,14 @@ describe('Task 4.2 -- cost center mutations: statelessness', () => {
       const cc = centersBody.costCenters.find((c) => c.id === id);
       expect(cc?.included_usage_cap.computed_limit_credits).toBe(expected);
 
-      // A zero-member-delta PATCH (only overflow re-asserted) recomputes to the
-      // exact same committed number -- proves the recompute formula agrees
-      // with the frozen fixture values rather than merely echoing them back.
+      // A zero-member-delta PATCH (the wire cap toggle re-asserted to its
+      // canonical value) recomputes to the exact same committed number --
+      // proves the recompute formula agrees with the frozen fixture values
+      // rather than merely echoing them back.
       const editRes = await fetch(`${COST_CENTERS_URL}/${id}`, {
         method: 'PATCH',
         headers,
-        body: JSON.stringify({ included_usage_cap: { overflow: cc?.included_usage_cap.overflow } }),
+        body: JSON.stringify({ ai_credit_pool_enabled: true }),
       });
       const edited = (await editRes.json()) as { included_usage_cap: { computed_limit_credits: number } };
       expect(edited.included_usage_cap.computed_limit_credits).toBe(expected);

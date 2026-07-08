@@ -20,6 +20,35 @@ import { paginateAll } from './paginate.js';
 
 const USAGE_PATH = '/enterprises/{enterprise}/settings/billing/usage';
 
+// ---------------------------------------------------------------------------
+// AI-credit sku filter (live-pinned 2026-07-08, third smoke run's R5
+// inventory). The usage endpoint returns EVERY enhanced-billing product; on
+// the maintainer's tenant three Copilot skus coexist:
+//   copilot / "Copilot AI Credits"       <- THE pool/metered meter (this one)
+//   copilot / "Copilot Business"        <- seat licenses (pure metered $)
+//   copilot / "Copilot Premium Request" <- a separate meter, own allowance
+// Deriving pool/metered from unfiltered items polluted every rollup with the
+// whole GitHub bill (the 0-pool / $64k-phantom-metered dashboard). Pool/
+// metered/forecast money math therefore filters to EXACTLY this (product,
+// sku) pair -- CASE-SENSITIVE, verbatim from the live inventory pin (title
+// case with spaces; NOT the PRD's guessed 'ai_credits'; exact match because
+// sku strings are opaque platform identifiers, and a fuzzy match could
+// silently swallow a future "Copilot AI Credits (something)" sku whose
+// billing semantics we have not verified). Maintainer decision: pool/metered
+// derive from "Copilot AI Credits" ONLY.
+// ---------------------------------------------------------------------------
+export const COPILOT_PRODUCT = 'copilot';
+export const AI_CREDITS_SKU = 'Copilot AI Credits';
+
+export function isAiCreditUsageItem(item: Pick<WireUsageItem, 'product' | 'sku'>): boolean {
+  return item.product === COPILOT_PRODUCT && item.sku === AI_CREDITS_SKU;
+}
+
+/** The derivation-boundary filter every pool/metered/forecast consumer applies (fetches stay RAW -- see github-impl syncNow's persist-raw ruling). */
+export function aiCreditItems<T extends Pick<WireUsageItem, 'product' | 'sku'>>(items: readonly T[]): T[] {
+  return items.filter(isAiCreditUsageItem);
+}
+
 // The camelCase item shape real GitHub returns (2026-03-10). `net_amount`/
 // `discount_amount`/`gross_amount` (our old snake_case parse) do not exist on
 // the wire -- reading them yielded `Math.round(undefined * 100) === NaN`

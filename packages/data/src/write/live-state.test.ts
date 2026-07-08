@@ -225,3 +225,65 @@ describe('fetchLiveControls against real-wire cost centers', () => {
     expect(live.costCenterIdByName.get('Real Wire Bare')).toBe('cc-real-bare');
   });
 });
+
+// The dashboard fix (sku live-pinned 2026-07-09): pool/metered rollups derive
+// from copilot/"Copilot AI Credits" rows ONLY, and live quantities/amounts are
+// FRACTIONAL (the pinned inventory's qty 486084.5584155 / disc 3825.88). This
+// drives a live-shaped world through assembleUsageState: one fractional
+// AI-credit row + Business/Premium pollution on both the default and per-CC
+// calls -- the money math must round per item at the cent boundary and never
+// count a polluting row.
+describe('assembleUsageState AI-credit sku filter + fractional amounts', () => {
+  it('derives pool/metered from AI-credit rows only, rounding fractional USD at the cent boundary', async () => {
+    const item = (over: Record<string, unknown>) => ({
+      date: '2026-06-10',
+      product: 'copilot',
+      sku: 'Copilot AI Credits',
+      quantity: 0,
+      unitType: 'credits',
+      pricePerUnit: 0.01,
+      grossAmount: 0,
+      discountAmount: 0,
+      netAmount: 0,
+      organizationName: 'dewr-digital',
+      ...over,
+    });
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/usage`, ({ request }) => {
+        const ccId = new URL(request.url).searchParams.get('cost_center_id');
+        if (ccId === 'cc-frac') {
+          return HttpResponse.json({
+            usageItems: [
+              // The live-pinned fractional shape ($3,825.88 pool-covered,
+              // $1,034.96 metered): per-item rounding at the cent boundary
+              // gives round(3825.88 x 100) = 382,588 pool credits and
+              // round(1034.96 x 100) = 103,496 metered credits.
+              item({ quantity: 486084.5584155, grossAmount: 4860.84, discountAmount: 3825.88, netAmount: 1034.96 }),
+              // Pollution attributed to the SAME cost center -- must not count.
+              item({ sku: 'Copilot Business', quantity: 24.5, grossAmount: 465.5, netAmount: 465.5 }),
+            ],
+          });
+        }
+        // Default (unassociated) call: pollution only -- must not count.
+        return HttpResponse.json({
+          usageItems: [item({ sku: 'Copilot Premium Request', quantity: 150.5, grossAmount: 6.02, discountAmount: 4, netAmount: 2.02 })],
+        });
+      }),
+    );
+
+    const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+    const usage = await assembleUsageState(
+      octokit,
+      ENTERPRISE_SLUG,
+      new Map([['Frac CC', 'cc-frac']]),
+      new Date('2026-06-14T00:00:00.000Z'),
+    );
+
+    const fracCc = usage.costCenters.find((cc) => cc.costCenterName === 'Frac CC');
+    expect(fracCc).toEqual({ costCenterName: 'Frac CC', poolCreditsUsed: 382_588, meteredCreditsUsed: 103_496 });
+    // Enterprise metered counts ONLY the AI-credit row's $1,034.96 -- the
+    // Business row's $465.50 and the unassociated Premium row's $2.02 are
+    // filtered out (unfiltered this would read 150,248 credits, not 103,496).
+    expect(usage.enterprise.meteredCreditsUsed).toBe(103_496);
+  });
+});

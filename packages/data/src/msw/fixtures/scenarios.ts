@@ -135,7 +135,7 @@ function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedIt
       usageItems.push({
         date: day,
         product: 'copilot',
-        sku: 'ai_credits',
+        sku: 'Copilot AI Credits',
         cost_center_id: ccId,
         user_login: null,
         quantity: credits,
@@ -152,7 +152,7 @@ function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedIt
       usageItems.push({
         date: day,
         product: 'copilot',
-        sku: 'ai_credits',
+        sku: 'Copilot AI Credits',
         cost_center_id: ccId,
         user_login: null,
         quantity: credits,
@@ -169,7 +169,7 @@ function buildWire(seed: ScenarioSeed): { usageItems: UsageItem[]; creditsUsedIt
     usageItems.push({
       date,
       product: 'copilot',
-      sku: 'ai_credits',
+      sku: 'Copilot AI Credits',
       cost_center_id: CC_ID_BY_LOGIN[u.login] ?? null,
       user_login: u.login,
       quantity: u.metered,

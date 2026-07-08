@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { server } from './server';
-import { API_VERSION, BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from './fixtures';
+import { AI_CREDITS_SKU, API_VERSION, BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from './fixtures';
 import { HISTORICAL_USAGE_ITEMS } from './fixtures/usage-history.js';
 
 const headers = {
@@ -205,35 +205,48 @@ describe('usage reporting handler (R5: camelCase, projected, default-excludes-co
     }
     // Edge fixture: cap-bound cost center's draw has already tipped into metered spend.
     expect(body.usageItems.some((item) => item.netAmount > 0)).toBe(true);
-    // pricePerUnit is the domain-fixed $0.01/credit rate (CLAUDE.md §5), and
-    // grossAmount reconciles with it for every row (quantity * 0.01).
+    // The cap-bound world carries only AI-credit rows: the live-pinned sku
+    // string (never the old 'ai_credits' guess), the domain-fixed $0.01/
+    // credit rate (CLAUDE.md §5), and grossAmount reconciling for every row.
     for (const item of body.usageItems) {
+      expect(item.sku).toBe(AI_CREDITS_SKU);
       expect(item.pricePerUnit).toBe(0.01);
       expect(item.grossAmount).toBeCloseTo(item.quantity * 0.01, 6);
     }
   });
 
   // Docs verbatim (wire-contract-r3-r5-r6.md's R5): "By default this endpoint
-  // will return usage that does not have a cost center." Every DEWR fixture
-  // row (usage.ts's USAGE_ITEMS) IS cost-center-attributed, so the honest,
-  // correct default response here is an EMPTY page -- this is the behavior
-  // change from the pre-fix "return everything" default.
-  it('the default call (no cost_center_id param) returns ONLY cost-center-unassociated rows -- empty for this fixture set', async () => {
+  // will return usage that does not have a cost center." Every AI-CREDIT
+  // fixture row is cost-center-attributed, so the default view carries ONLY
+  // the two unassociated POLLUTION rows (live-pinned 2026-07-09: real tenants
+  // mix "Copilot Business" and "Copilot Premium Request" skus into the same
+  // report, with fractional quantities). Hand-computed from usage.ts's
+  // pollution block: Business qty 19.25 x $19 = 365.75 (gross == net, disc
+  // 0); Premium Request qty 150.5 x $0.04 = 6.02 gross, 4.00 disc, 2.02 net.
+  it('the default call (no cost_center_id param) returns ONLY cost-center-unassociated rows -- the two pollution rows, no AI-credit rows', async () => {
     const res = await fetch(`${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/usage`, { headers });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { usageItems: unknown[] };
-    expect(body.usageItems).toHaveLength(0);
+    const body = (await res.json()) as { usageItems: WireUsageItemShape[] };
+    expect(body.usageItems).toHaveLength(2);
+    expect(body.usageItems.every((item) => item.sku !== AI_CREDITS_SKU)).toBe(true);
+
+    const business = body.usageItems.find((item) => item.sku === 'Copilot Business');
+    expect(business).toMatchObject({ quantity: 19.25, pricePerUnit: 19, grossAmount: 365.75, discountAmount: 0, netAmount: 365.75 });
+    const premium = body.usageItems.find((item) => item.sku === 'Copilot Premium Request');
+    expect(premium).toMatchObject({ quantity: 150.5, pricePerUnit: 0.04, grossAmount: 6.02, discountAmount: 4, netAmount: 2.02 });
   });
 
-  // Regression guard for the money-critical current-cycle total (previously
-  // asserted via one unfiltered call; now the correct live-shaped fetch is
-  // one call per known cost-center id, attributed by which call returned the
-  // item -- summed here to prove the reshape preserved every fixture value.
-  // Hand-computed per-CC quantities (packages/data/src/msw/fixtures/usage.ts,
+  // Regression guard for the money-critical current-cycle total. Every pin is
+  // an AI-CREDIT-SKU-FILTERED sum (maintainer decision 2026-07-09: pool/
+  // metered money math derives from "Copilot AI Credits" rows only) -- the
+  // workforce world deliberately also carries two non-AI-credit POLLUTION
+  // rows (Business qty 24.5 / Premium Request qty 320.25) that the filter
+  // must exclude for the pins to hold.
+  // Hand-computed per-CC AI-credit quantities (fixtures/usage.ts,
   // COST_CENTER_IDS): workforce 31,136 (incl. the two Aug/Sep cliff rows) +
   // employer 18,900 + capBound 58,300 (56,000 pool + 2,300 metered overflow)
   // + dataEval 57,400 + cyber 15,000 + corporate 12,300 = 193,036.
-  it('per-cost-center calls sum to the pinned enterprise total quantity: 193,036 across all six CCs', async () => {
+  it('per-cost-center calls, filtered to the AI-credit sku, sum to the pinned 193,036 -- pollution rows excluded', async () => {
     const perCcExpected: Record<string, number> = {
       [COST_CENTER_IDS.workforce]: 31_136,
       [COST_CENTER_IDS.employer]: 18_900,
@@ -254,9 +267,21 @@ describe('usage reporting handler (R5: camelCase, projected, default-excludes-co
         rows.push(...body.usageItems);
         if (!res.headers.get('link')?.includes('rel="next"')) break;
       }
-      const total = rows.reduce((sum, row) => sum + row.quantity, 0);
+      const total = rows.filter((row) => row.sku === AI_CREDITS_SKU).reduce((sum, row) => sum + row.quantity, 0);
       expect(total).toBe(expectedQuantity);
       grandTotal += total;
+
+      if (ccId === COST_CENTER_IDS.workforce) {
+        // The pollution rows ARE served in this world (the regression guard's
+        // whole point) -- 2 non-AI-credit rows, fractional quantities summing
+        // to 344.75, gross 465.50 + 12.81 = 478.31.
+        const pollution = rows.filter((row) => row.sku !== AI_CREDITS_SKU);
+        expect(pollution).toHaveLength(2);
+        expect(pollution.reduce((sum, row) => sum + row.quantity, 0)).toBeCloseTo(344.75, 6);
+        expect(pollution.reduce((sum, row) => sum + row.grossAmount, 0)).toBeCloseTo(478.31, 6);
+      } else {
+        expect(rows.every((row) => row.sku === AI_CREDITS_SKU)).toBe(true);
+      }
     }
     expect(grandTotal).toBe(193_036);
   });

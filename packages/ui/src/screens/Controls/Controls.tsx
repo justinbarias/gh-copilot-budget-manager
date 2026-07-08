@@ -1045,6 +1045,10 @@ export function Controls({ onNavigateToAutoBalance, initialFamily }: ControlsPro
               rows={capsFiltered}
               onToggle={onCapToggle}
               onOverflowChange={onCapOverflowChange}
+              // A2 resolved: overflow is enterprise-policy-governed on the
+              // real API -- the knob is a sim-only what-if, disabled live.
+              // Same mode signal the screen already resolves via api.getMode().
+              liveMode={mode === 'live'}
               search={capsSearch}
               onSearchChange={setCapsSearch}
               driftCollisionId={driftCollisionId}

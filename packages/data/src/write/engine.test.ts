@@ -317,10 +317,13 @@ describe('applyPlan', () => {
     expect(verifyStoredChain(db)).toEqual({ ok: true });
   });
 
-  it('toggles an included-usage cap: PATCHes cost-centers/{id} with the nested included_usage_cap body (M7) and audits included_cap.update', async () => {
+  // W1 closed (2026-07-09; A2 resolved by the OpenAPI schema + the third live
+  // run's R2 dump, both showing NO per-CC overflow field anywhere): the cap
+  // toggle's wire body is the machine-verified flat `ai_credit_pool_enabled`.
+  it('toggles an included-usage cap OFF: PATCHes cost-centers/{id} with the flat ai_credit_pool_enabled body and audits included_cap.update', async () => {
     const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
     const desiredControls: ControlState[] = live.controls.map((c) =>
-      c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC ? { ...c, overflow: 'metered' as const } : c,
+      c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC ? { ...c, enabled: false } : c,
     );
     const stagedPlan = diffControls(live.controls, desiredControls);
     expect(stagedPlan.entries).toHaveLength(1);
@@ -336,13 +339,42 @@ describe('applyPlan', () => {
     const mutation = result.mutationLog[0]!;
     expect(mutation.method).toBe('PATCH');
     expect(mutation.path).toContain(`/settings/billing/cost-centers/${platformId}`);
-    // The engine sends the nested internal model; the 4.2 handler reads it here (block-vs-overflow
-    // wire reconciliation is a Task 9.2 item -- see docs/api-surface-validation.md M7).
-    expect(mutation.requestBody).toEqual({ included_usage_cap: { overflow: 'metered' } });
+    // The REAL wire body -- flat, machine-verified; the internal nested
+    // included_usage_cap shape never reaches the wire (a live tenant would
+    // reject it).
+    expect(mutation.requestBody).toEqual({ ai_credit_pool_enabled: false });
     expect(mutation.responseStatus).toBe(200);
 
     expect(result.auditEvents[0]!.action).toBe('included_cap.update');
     expect(result.auditEvents[0]!.entityRef).toBe(`included_cap:${WORKFORCE_CC}`);
+    expect(result.auditEvents[0]!.before).toMatchObject({ enabled: true });
+    expect(result.auditEvents[0]!.after).toMatchObject({ enabled: false });
+    expect(verifyStoredChain(db)).toEqual({ ok: true });
+  });
+
+  // Maintainer decision (A2 resolution): the internal `overflow` knob is a
+  // SIM-ONLY what-if -- NO wire field exists to carry it, so an overflow-only
+  // change issues ZERO HTTP mutations; its audit event is the record of the
+  // internal what-if. (The UI additionally disables the knob in live mode.)
+  it('an overflow-only cap change issues NO wire mutation -- audit-only (the sim what-if record)', async () => {
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+    const desiredControls: ControlState[] = live.controls.map((c) =>
+      c.kind === 'included_cap' && c.costCenterName === WORKFORCE_CC ? { ...c, overflow: 'metered' as const } : c,
+    );
+    const stagedPlan = diffControls(live.controls, desiredControls);
+    expect(stagedPlan.entries).toHaveLength(1);
+
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error(`expected 'applied', got ${result.status}`);
+
+    // No HTTP request was issued -- there is no wire field for overflow.
+    expect(result.mutationLog).toHaveLength(0);
+    expect(result.appliedCount).toBe(1);
+
+    // The audit event still records the internal what-if change.
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0]!.action).toBe('included_cap.update');
     expect(result.auditEvents[0]!.before).toMatchObject({ overflow: 'block' });
     expect(result.auditEvents[0]!.after).toMatchObject({ overflow: 'metered' });
     expect(verifyStoredChain(db)).toEqual({ ok: true });

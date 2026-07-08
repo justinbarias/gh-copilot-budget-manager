@@ -66,7 +66,32 @@ describe('createGitHubApiClient', () => {
   it('filters usage by cost center', async () => {
     const summary = await client.getUsageSummary({ costCenterId: COST_CENTER_IDS.workforce });
     // Workforce's June pool rows (30,200) + noah-tanaka's Aug31/Sep1 cliff rows (468 + 468).
+    // The Workforce POLLUTION rows (Copilot Business qty 24.5 + Premium
+    // Request qty 320.25, net $468.31 combined) are sku-filtered out -- an
+    // unfiltered sum would read 31,480.75 / $470.65 instead.
     expect(summary.totalQuantity).toBe(30_200 + 468 + 468);
+    expect(summary.totalNetAmountUsd).toBeCloseTo(2.34, 5);
+  });
+
+  // The dashboard fix (live-pinned 2026-07-09): pool/metered money math
+  // derives from copilot/"Copilot AI Credits" rows ONLY. The fixture world
+  // now carries live-shaped pollution (Copilot Business + Premium Request,
+  // fractional quantities) -- this test proves the pins hold BECAUSE of the
+  // filter, not vacuously.
+  it('getUsageSummary excludes non-AI-credit skus from every money sum (the 0-pool/$64k-phantom-metered live bug)', async () => {
+    // Guard against vacuity: the fixture world genuinely contains pollution.
+    expect(USAGE_ITEMS.some((i) => i.sku !== 'Copilot AI Credits')).toBe(true);
+
+    const summary = await client.getUsageSummary();
+    // AI-credit rows only: 193,036 credits, $1,930.36 gross, $25.34 net.
+    // Unfiltered, pollution would add qty 514.5, gross $850.08, net $836.08.
+    expect(summary.totalQuantity).toBe(193_036);
+    expect(summary.totalGrossAmountUsd).toBeCloseTo(1_930.36, 5);
+    expect(summary.totalNetAmountUsd).toBeCloseTo(25.34, 5);
+    // The burn-down is filtered too: still exactly 189,800 pool credits by
+    // day 13 (the Business/Premium rows carry discount $4 + $10 that would
+    // otherwise add 1,400 phantom pool credits).
+    expect(summary.dailyBurn.at(-1)).toEqual({ date: '2026-06-14', cumulativePoolCredits: 189_800 });
   });
 
   it('returns an empty-but-valid summary when nothing matches the filter', async () => {
@@ -404,13 +429,18 @@ describe('createGitHubApiClient', () => {
       // forecast+backtest glue on it -- github-impl's persisted row must
       // match this byte-for-byte, proving the ONLY thing github-impl adds is
       // correct wiring (roster size, allowance basis, paid-usage flag), not a
-      // second, independently-computed answer.
+      // second, independently-computed answer. The AI-credit sku filter
+      // (usage-fetch.ts's live pin) is part of the derivation rule this test
+      // hand-reproduces: the fixture world's Copilot Business / Premium
+      // Request pollution rows must NOT train the forecast.
       const asOfDate = new Date(`${SIM_CURRENT_DATE}T00:00:00.000Z`);
-      const usageRows = [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS].map((i) => ({
-        date: i.date,
-        costCenterId: i.cost_center_id,
-        quantity: i.quantity,
-      }));
+      const usageRows = [...USAGE_ITEMS, ...HISTORICAL_USAGE_ITEMS]
+        .filter((i) => i.product === 'copilot' && i.sku === 'Copilot AI Credits')
+        .map((i) => ({
+          date: i.date,
+          costCenterId: i.cost_center_id,
+          quantity: i.quantity,
+        }));
       const series = assembleEnterpriseSeries(usageRows, asOfDate);
       const expected = computeScopeForecast({
         history: series,

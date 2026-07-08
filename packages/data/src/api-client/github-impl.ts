@@ -42,7 +42,7 @@ import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
 import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetScope } from './budget-scope.js';
 import { normalizeIncludedUsageCap } from './cost-center-cap.js';
-import { fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
+import { aiCreditItems, fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
@@ -288,7 +288,11 @@ interface ComputeSyncForecastsParams {
 // keeps for e.g. listHeavyUsers' ULB resolution.
 function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecastItem[] {
   const computedAt = params.computedAt;
-  const usageRows: AssembleUsageRow[] = params.historicalUsageItems.map((i) => ({
+  // AI-credit sku filter (usage-fetch.ts's live pin): forecast training
+  // series derive from "Copilot AI Credits" rows only -- a Copilot
+  // Business/Premium Request row in the history would inflate every
+  // enterprise/cost-center burn projection.
+  const usageRows: AssembleUsageRow[] = aiCreditItems(params.historicalUsageItems).map((i) => ({
     date: i.date,
     costCenterId: i.costCenterId,
     quantity: i.quantity,
@@ -537,7 +541,13 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function getUsageSummary(params: UsageSummaryParams = {}): Promise<UsageSummary> {
-    const [items, seats] = await Promise.all([fetchUsageItems(params), fetchSeats()]);
+    const [rawItems, seats] = await Promise.all([fetchUsageItems(params), fetchSeats()]);
+    // AI-credit sku filter (usage-fetch.ts's live pin): the Overview money
+    // tiles + burn-down derive from "Copilot AI Credits" rows ONLY -- Copilot
+    // Business/Premium Request (and every other enhanced-billing product a
+    // real tenant returns) must never pollute pool/metered sums. This was the
+    // maintainer's 0-pool / $64k-phantom-metered dashboard bug.
+    const items = aiCreditItems(rawItems);
 
     const asOfDate = items.reduce<string | null>(
       (latest, item) => (latest === null || item.date > latest ? item.date : latest),
@@ -768,6 +778,13 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
 
     const data: IngestData = {
       entity: enterprise,
+      // Persist-vs-drop ruling (2026-07-09 sku-filter round, FLAGGED for the
+      // validator): snapshots keep the RAW, unfiltered item set -- every
+      // product/sku, exactly as the wire returned it (the `sku` column makes
+      // each row's identity recoverable). The AI-credit filter is applied at
+      // the DERIVATION boundaries only (getUsageSummary, computeSyncForecasts,
+      // assembleUsageState), so pool/metered money math is clean while future
+      // chargeback/audit phases still have the full billing picture on disk.
       usageItems: usageItems.map((item) => ({
         date: item.date,
         costCenterId: item.costCenterId,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { COST_CENTER_IDS } from './constants.js';
-import { CREDITS_USED_ITEMS, USAGE_ITEMS } from './usage.js';
+import { AI_CREDITS_SKU, CREDITS_USED_ITEMS, USAGE_ITEMS } from './usage.js';
 import { HISTORICAL_CREDITS_USED_ITEMS, HISTORICAL_USAGE_ITEMS } from './usage-history.js';
 
 // Task 5.1: fixture-shape tests for the historical usage fixtures. These
@@ -70,12 +70,20 @@ describe('HISTORICAL_USAGE_ITEMS (billing view -- enterprise + per-CC daily burn
 
   it('does not touch usage.ts USAGE_ITEMS (additive only -- current-cycle array is untouched)', () => {
     // Regression guard for the current-cycle pins (github-impl.test.ts):
-    // totalQuantity 193,036, June pool burn 189,800. This file's existence
-    // must not change USAGE_ITEMS's own contents.
+    // AI-credit totalQuantity 193,036, June pool burn 189,800. This file's
+    // existence must not change USAGE_ITEMS's own contents. The pin is an
+    // AI-CREDIT-SKU-FILTERED sum (2026-07-09: USAGE_ITEMS deliberately also
+    // carries 4 non-AI-credit POLLUTION rows -- Copilot Business / Copilot
+    // Premium Request, fractional quantities summing to 514.5 -- that every
+    // money pin excludes).
     expect(USAGE_ITEMS.some((item) => item.date.startsWith('2026-03'))).toBe(false);
     expect(USAGE_ITEMS.some((item) => item.date.startsWith('2026-04'))).toBe(false);
     expect(USAGE_ITEMS.some((item) => item.date.startsWith('2026-05'))).toBe(false);
-    expect(USAGE_ITEMS.reduce((sum, item) => sum + item.quantity, 0)).toBe(193_036);
+    expect(USAGE_ITEMS.filter((item) => item.sku === AI_CREDITS_SKU).reduce((sum, item) => sum + item.quantity, 0)).toBe(193_036);
+    // The 4 pollution rows: 19.25 + 150.5 + 24.5 + 320.25 = 514.5.
+    const pollution = USAGE_ITEMS.filter((item) => item.sku !== AI_CREDITS_SKU);
+    expect(pollution).toHaveLength(4);
+    expect(pollution.reduce((sum, item) => sum + item.quantity, 0)).toBeCloseTo(514.5, 6);
   });
 });
 

@@ -243,6 +243,21 @@
   color: var(--blue);
 }
 
+.included-caps__seg-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Live-mode explanation under the (disabled) overflow segment control -- A2
+   resolved: block-vs-metered is an enterprise-policy behavior, not a per-CC
+   wire field; the toggle is a simulation-only what-if. Same 11px sub-label
+   idiom as .included-caps__staged. */
+.included-caps__policy-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
 .included-caps__staged {
   font-size: 11px;
   color: var(--amber);

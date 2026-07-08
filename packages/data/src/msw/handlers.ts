@@ -2,6 +2,9 @@ import { http, HttpResponse } from 'msw';
 import { buildLinkHeader, paginate } from './pagination.js';
 import { getActiveAsOfDate } from './scenario-state.js';
 import {
+  AI_CREDITS_SKU,
+  COPILOT_BUSINESS_SKU,
+  COPILOT_PREMIUM_REQUEST_SKU,
   DEFAULT_ENTERPRISE_TEAM_SEATS,
   DOWNLOAD_HOST,
   ENTERPRISE_TEAM_SEAT_COUNTS,
@@ -257,16 +260,25 @@ const COST_CENTER_CREATE_ALLOWED_FIELDS = new Set([
   'dewr_branch',
   'dewr_project',
   'excluded_from_enterprise_budget',
+  // CREATE still accepts the internal nested cap shape: the 2026-07-09 round
+  // pinned only the PATCH request body ({ai_credit_pool_enabled}); the create
+  // body's cap field was not in the maintainer's dump. FLAGGED dialect
+  // inconsistency (create=internal, patch=wire) -- next live smoke pins it.
   'included_usage_cap',
   'resources',
 ]);
+// PATCH allow-list speaks the WIRE dialect (live-pinned 2026-07-09): the cap
+// toggle is the flat `ai_credit_pool_enabled` -- the internal nested
+// `included_usage_cap` (and any `overflow` key) is NOT accepted here and
+// 400s as an unknown key. (CREATE below still accepts the internal shape --
+// unpinned this round; see the create allow-list note.)
 const COST_CENTER_EDIT_ALLOWED_FIELDS = new Set([
   'name',
   'dewr_division',
   'dewr_branch',
   'dewr_project',
   'excluded_from_enterprise_budget',
-  'included_usage_cap',
+  'ai_credit_pool_enabled',
 ]);
 
 // The included-usage cap is never amount-settable (CLAUDE.md §5 / spec §1.3):
@@ -461,18 +473,21 @@ interface EditCostCenterPayload {
   dewr_branch?: string;
   dewr_project?: string;
   excluded_from_enterprise_budget?: boolean;
-  included_usage_cap?: { enabled?: boolean; overflow?: 'block' | 'metered' };
+  ai_credit_pool_enabled?: boolean;
 }
 
-// §6.9-validated (Task 4.3 -- docs/api-surface-validation.md): PATCH
-// /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}
-// is a real, documented 2026-03-10 endpoint, so the earlier "own inference"
-// caveat is resolved. The wire *shape* still diverges from GitHub, though:
-// the real cap toggle is a flat `ai_credit_pool_enabled` (+ read-only
-// `ai_credit_pool_state`), not this nested `included_usage_cap.{enabled,
-// overflow}` internal model, and the block-vs-overflow wire field is
-// undocumented. That wire<->model mapping is reconciled in github-impl at
-// Task 9.2 (see the validation note); MSW keeps the plan-mandated model.
+// PATCH request body -- LIVE-PINNED (maintainer's 2026-07-09 R2 cap dump +
+// the machine-verified schema, wire-contract-writes.md §5): the real cap
+// toggle on the wire is the FLAT `ai_credit_pool_enabled: boolean`, full
+// stop. No overflow/block-vs-metered field exists ANYWHERE in the schema, so
+// an `overflow` key (or the old nested `included_usage_cap {enabled,
+// overflow}` internal shape) in a PATCH body is rejected loudly via the
+// unknown-key 400 -- any impl callsite still serializing the internal cap
+// model onto the wire must surface, never silently half-work. NOTE the
+// read/echo side stays dual-dialect this round: responses still emit the
+// internal `included_usage_cap` shape (the sim what-if overflow knob needs
+// it; impl's normalizeIncludedUsageCap maps it) -- only the PATCH REQUEST
+// body speaks the wire dialect.
 function validateEditCostCenterPayload(
   body: unknown,
 ): { ok: true; value: EditCostCenterPayload } | { ok: false; errors: FieldError[] } {
@@ -484,7 +499,9 @@ function validateEditCostCenterPayload(
   if ('name' in body && (typeof body.name !== 'string' || body.name.length === 0)) {
     errors.push({ resource: 'CostCenter', field: 'name', code: 'invalid' });
   }
-  const cap = validateIncludedUsageCapInput(body.included_usage_cap, errors);
+  if ('ai_credit_pool_enabled' in body && typeof body.ai_credit_pool_enabled !== 'boolean') {
+    errors.push({ resource: 'CostCenter', field: 'ai_credit_pool_enabled', code: 'invalid' });
+  }
 
   if (errors.length > 0) return { ok: false, errors };
   return {
@@ -496,7 +513,7 @@ function validateEditCostCenterPayload(
       dewr_project: typeof body.dewr_project === 'string' ? body.dewr_project : undefined,
       excluded_from_enterprise_budget:
         typeof body.excluded_from_enterprise_budget === 'boolean' ? body.excluded_from_enterprise_budget : undefined,
-      included_usage_cap: cap,
+      ai_credit_pool_enabled: typeof body.ai_credit_pool_enabled === 'boolean' ? body.ai_credit_pool_enabled : undefined,
     },
   };
 }
@@ -567,12 +584,19 @@ interface WireUsageItem {
 }
 
 // GitHub's enhanced-billing usage docs don't pin a `unitType` value for
-// Copilot ai_credits rows -- 'Unit' is a defensible placeholder (same
-// "pending the next live smoke" treatment as R6's report-file format below).
-// `pricePerUnit` is NOT a guess: 1 AI credit = $0.01 exactly (CLAUDE.md §5),
-// and every fixture row already satisfies gross_amount === quantity * 0.01.
+// Copilot usage rows -- 'Unit' is a defensible placeholder (same "pending
+// the next live smoke" treatment as R6's report-file format below).
+// `pricePerUnit` is per-sku (the endpoint mixes skus -- live-pinned
+// 2026-07-09): AI credits are $0.01 exactly (CLAUDE.md §5), Copilot Business
+// license spend $19/seat-month, Premium Requests $0.04/request. Every
+// fixture row satisfies gross_amount === quantity x its sku's rate, so this
+// map is a constant lookup, never a floating-point division.
 const USAGE_UNIT_TYPE = 'Unit';
-const USAGE_PRICE_PER_UNIT_USD = 0.01;
+const USAGE_PRICE_PER_UNIT_USD: Record<string, number> = {
+  [AI_CREDITS_SKU]: 0.01,
+  [COPILOT_BUSINESS_SKU]: 19,
+  [COPILOT_PREMIUM_REQUEST_SKU]: 0.04,
+};
 // DEWR's enterprise-owned GitHub organization -- reused from budgets.ts's
 // `organization`-scope spending-limit fixture (budget_entity_name:
 // 'dewr-digital') rather than inventing a second org name, since the fixture
@@ -586,7 +610,7 @@ function toWireUsageItem(item: UsageItem): WireUsageItem {
     sku: item.sku,
     quantity: item.quantity,
     unitType: USAGE_UNIT_TYPE,
-    pricePerUnit: USAGE_PRICE_PER_UNIT_USD,
+    pricePerUnit: USAGE_PRICE_PER_UNIT_USD[item.sku] ?? 0.01,
     grossAmount: item.gross_amount,
     discountAmount: item.discount_amount,
     netAmount: item.net_amount,
@@ -772,6 +796,11 @@ export const handlers = [
     // computed_limit_credits is always freshly derived from canonical
     // membership, never taken from the client or the old fixture value --
     // reinforces "the cap is never modeled as an amount" even on edit.
+    // Echo stays in the internal included_usage_cap dialect (the read side's
+    // dual-dialect arrangement -- see validateEditCostCenterPayload's note):
+    // `enabled` reflects the wire body's ai_credit_pool_enabled; `overflow`
+    // has no wire field (live-pinned: none exists) so it always retains the
+    // canonical fixture value.
     const seatCount = licensedSeatCount(fx.costCenterResources[canonical.id] ?? []);
     return HttpResponse.json({
       ...canonical,
@@ -781,8 +810,8 @@ export const handlers = [
       dewr_project: value.dewr_project ?? canonical.dewr_project,
       excluded_from_enterprise_budget: value.excluded_from_enterprise_budget ?? canonical.excluded_from_enterprise_budget,
       included_usage_cap: {
-        enabled: value.included_usage_cap?.enabled ?? canonical.included_usage_cap.enabled,
-        overflow: value.included_usage_cap?.overflow ?? canonical.included_usage_cap.overflow,
+        enabled: value.ai_credit_pool_enabled ?? canonical.included_usage_cap.enabled,
+        overflow: canonical.included_usage_cap.overflow,
         computed_limit_credits: includedUsageCapLimitForSeats(seatCount),
       },
       // R3: the PATCH echo embeds resources too (list/get-one/create/patch --

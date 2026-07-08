@@ -210,11 +210,13 @@ test('disable the Data & Evaluation Platform cap: stage -> "-" diff -> 0/0 dry-r
     await expect(applied).toContainText('included_cap.update');
     await expect(applied).toContainText('included_cap:Data & Evaluation Platform');
 
-    // Strict payload assertion: EXACTLY {included_usage_cap:{enabled:false}}
-    // -- no amount field, no extra keys (CLAUDE.md §5's never-dial-able cap).
+    // Strict payload assertion: EXACTLY the machine-verified flat wire body
+    // {ai_credit_pool_enabled:false} (W1 closed 2026-07-09; the nested
+    // included_usage_cap shape was our internal model, never the wire) -- no
+    // amount field, no extra keys (CLAUDE.md §5's never-dial-able cap).
     const mutationBodyText = await applied.locator('.plan-rail__mutation-body').innerText();
     const parsedBody: unknown = JSON.parse(mutationBodyText);
-    expect(parsedBody).toStrictEqual({ included_usage_cap: { enabled: false } });
+    expect(parsedBody).toStrictEqual({ ai_credit_pool_enabled: false });
 
     await expect(window.locator('.controls-toast')).toContainText(/Simulated apply/i);
   } finally {
@@ -223,7 +225,7 @@ test('disable the Data & Evaluation Platform cap: stage -> "-" diff -> 0/0 dry-r
   }
 });
 
-test('the money test: flip Payments Integrity Engineering from overflow-to-metered to Block -- all 8 members newly cap-block, PATCH carries EXACTLY {overflow:"block"}', async () => {
+test('the money test: flip Payments Integrity Engineering from overflow-to-metered to Block -- all 8 members newly cap-block; overflow is a sim-only what-if, so NO wire mutation is issued', async () => {
   const { app, dbDir } = await launchApp('caps-money');
   try {
     const window = await app.firstWindow();
@@ -273,14 +275,17 @@ test('the money test: flip Payments Integrity Engineering from overflow-to-meter
 
     const applied = rail.locator('.plan-rail__result--applied');
     await expect(applied).toBeVisible();
-    await expect(applied).toContainText('PATCH');
-    await expect(applied).toContainText('/settings/billing/cost-centers/cc-payments-integrity');
+    // A2 resolved (2026-07-09, OpenAPI + live R2 dump): NO per-CC overflow
+    // wire field exists -- block-vs-metered hangs off the enterprise "AI
+    // credit paid usage" policy. The overflow knob is a SIM-ONLY what-if
+    // (maintainer decision), so this apply issues ZERO HTTP mutations; the
+    // audit event is the record of the internal what-if. (The old assertion
+    // here pinned a PATCH body {included_usage_cap:{overflow:'block'}} -- a
+    // disproven wire shape our own invented handler used to accept.)
     await expect(applied).toContainText('included_cap.update');
     await expect(applied).toContainText('included_cap:Payments Integrity Engineering');
-
-    const mutationBodyText = await applied.locator('.plan-rail__mutation-body').innerText();
-    const parsedBody: unknown = JSON.parse(mutationBodyText);
-    expect(parsedBody).toStrictEqual({ included_usage_cap: { overflow: 'block' } });
+    await expect(applied.locator('.plan-rail__mutation-body')).toHaveCount(0);
+    await expect(applied).not.toContainText('PATCH');
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

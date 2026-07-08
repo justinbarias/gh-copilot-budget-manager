@@ -14,7 +14,7 @@ import {
 import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetIdentity } from '../api-client/budget-scope.js';
 import { normalizeIncludedUsageCap } from '../api-client/cost-center-cap.js';
 import { paginateAll } from '../api-client/paginate.js';
-import { fetchUsageFanout } from '../api-client/usage-fetch.js';
+import { fetchUsageFanout, isAiCreditUsageItem } from '../api-client/usage-fetch.js';
 import { fetchCycleUserCredits } from '../api-client/users-report.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -333,6 +333,11 @@ export async function assembleUsageState(
   let enterpriseMeteredCreditsUsed = 0;
 
   for (const item of usageItems) {
+    // AI-credit sku filter (usage-fetch.ts's live pin): pool/metered rollups
+    // derive from "Copilot AI Credits" rows only -- Copilot Business/Premium
+    // Request (and every other product a live tenant returns on this
+    // endpoint) must never pollute the preview's money math.
+    if (!isAiCreditUsageItem(item)) continue;
     if (!inCycle(item.date)) continue;
     const pool = toCredits(item.discountAmount);
     const metered = toCredits(item.netAmount);
