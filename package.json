@@ -9,13 +9,14 @@
   "scripts": {
     "postinstall": "pnpm --filter @copilot-budget/desktop run rebuild:electron",
     "dev": "pnpm --filter @copilot-budget/desktop run dev",
-    "dev:live": "COPILOT_BUDGET_FORCE_SIMULATION=0 pnpm --filter @copilot-budget/desktop run dev",
+    "dev:live": "cross-env COPILOT_BUDGET_FORCE_SIMULATION=0 pnpm --filter @copilot-budget/desktop run dev",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "e2e": "pnpm --filter @copilot-budget/desktop run e2e"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.1.0",
+    "cross-env": "^10.1.0",
     "typescript": "^6.0.3"
   },
   "pnpm": {
