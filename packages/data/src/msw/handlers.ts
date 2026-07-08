@@ -108,6 +108,13 @@ function slug(value: string): string {
 // Task 4.1: budget mutations (all budget_scope values this tool writes).
 // ---------------------------------------------------------------------------
 
+// Machine-verified pricing models (2026-07-09): BundlePricing pairs with
+// 'ai_credits', ProductPricing with PRODUCT strings (e.g. 'actions'),
+// SkuPricing with SKU strings (e.g. 'actions_linux'). budget_product_sku is
+// deliberately validation-light here (any non-empty string, any type<->sku
+// pairing): real GitHub accepts non-AI-credit budgets on this same endpoint
+// (the pollution fixtures model three), and the exact type<->sku pairing
+// rules are unpinned -- the mock must not reject what the real API accepts.
 const BUDGET_TYPES = new Set<BudgetType>(['ProductPricing', 'SkuPricing', 'BundlePricing']);
 // The REAL wire enum, machine-verified against GitHub's OpenAPI description
 // (wire-contract-writes.md §1). Our old internal spellings

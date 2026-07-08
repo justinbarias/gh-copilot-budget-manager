@@ -157,11 +157,22 @@ function rowTitle(control: BudgetControl): string {
   return `CC: ${control.entityName}`;
 }
 
+// Open item 20: budgets carry a PRODUCT dimension (budget_product_sku) and
+// real tenants hold one budget per product at the same scope -- without the
+// sku in the sub-line, two same-scope budgets render as identical rows (the
+// maintainer's "two Enterprise metered budget rows" screenshot). Appended
+// with the design's existing '·' separator idiom ("CCULB · <name>"); shown
+// only when the read boundary supplied it (display-only field, core's
+// BudgetControl.productSku).
+function withProductSku(copy: string, control: BudgetControl): string {
+  return control.productSku ? `${copy} · ${control.productSku}` : copy;
+}
+
 // "What it caps" copy verbatim from the design prototype's spending rows.
 function rowCapsCopy(control: BudgetControl): string {
-  if (control.scope === 'enterprise') return 'Total enterprise metered charges';
-  if (control.scope === 'organization') return "This org's metered charges";
-  return "A team's metered charges";
+  if (control.scope === 'enterprise') return withProductSku('Total enterprise metered charges', control);
+  if (control.scope === 'organization') return withProductSku("This org's metered charges", control);
+  return withProductSku("A team's metered charges", control);
 }
 
 // --- User-level budgets (Task 4.10) ---------------------------------------
@@ -186,9 +197,10 @@ function ulbRowTitle(control: BudgetControl): string {
 }
 
 function ulbRowCapsCopy(control: BudgetControl): string {
-  if (control.scope === 'universal') return "Every licensed user's total · both phases";
-  if (control.scope === 'multi_user_cost_center') return 'Per-user cap · every CC member';
-  return "One named user's total";
+  // Same product-sku disambiguation as rowCapsCopy above (open item 20).
+  if (control.scope === 'universal') return withProductSku("Every licensed user's total · both phases", control);
+  if (control.scope === 'multi_user_cost_center') return withProductSku('Per-user cap · every CC member', control);
+  return withProductSku("One named user's total", control);
 }
 
 export interface ControlsProps {

@@ -279,6 +279,39 @@ describe('Task 4.1 -- budget mutations: read/update/delete by id', () => {
     const res = await fetch(`${BUDGETS_URL}/does-not-exist`, { method: 'DELETE', headers });
     expect(res.status).toBe(404);
   });
+
+  // PRODUCT-dimension pollution budgets mutate like any other budget -- no
+  // special-casing anywhere in the handlers (real GitHub serves all products
+  // through the same CRUD surface; only the impl's control-family filter
+  // treats ai_credits specially, and that lives client-side).
+  it('PATCHes a non-AI-credit pollution budget (Actions product) like any other: 200 {message, budget}', async () => {
+    const res = await fetch(`${BUDGETS_URL}/${BUDGET_IDS.actionsProductBudget}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ budget_amount: 1750 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { message: string; budget: { id: string; budget_amount: number; budget_product_sku: string } };
+    expect(body.budget.id).toBe(BUDGET_IDS.actionsProductBudget);
+    expect(body.budget.budget_amount).toBe(1750);
+    expect(body.budget.budget_product_sku).toBe('actions');
+  });
+
+  it('creates a non-AI-credit budget (SkuPricing / actions_linux) -- the validator must not reject non-ai_credits skus', async () => {
+    const payload = validBudgetPayload({
+      budget_type: 'SkuPricing',
+      budget_product_sku: 'actions_linux',
+      budget_scope: 'enterprise',
+      budget_entity_name: ENTERPRISE_SLUG,
+      user: undefined,
+    });
+    delete (payload as Record<string, unknown>).user;
+    const res = await fetch(BUDGETS_URL, { method: 'POST', headers, body: JSON.stringify(payload) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { budget: { budget_product_sku: string; budget_type: string } };
+    expect(body.budget.budget_product_sku).toBe('actions_linux');
+    expect(body.budget.budget_type).toBe('SkuPricing');
+  });
 });
 
 describe('Task 4.1 -- budget mutations: statelessness', () => {

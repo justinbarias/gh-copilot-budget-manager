@@ -268,6 +268,52 @@ describe('createGitHubApiClient', () => {
     expect(faisal.effectiveUlb).toEqual({ amountCredits: 4_600, scope: 'universal' });
   });
 
+  // Open item 20: an actions/storage budget's dollar cap is NOT an AI-credit
+  // ceiling -- fetchBudgetsRaw excludes non-AI-credit budgets before ULB
+  // precedence resolution, so a user-scoped actions budget can never
+  // masquerade as (or outrank) someone's individual AI-credit ULB.
+  it('ULB resolution ignores non-AI-credit budgets: a user-scoped actions budget never becomes an effective ULB', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/budgets`, () =>
+        HttpResponse.json({
+          budgets: [
+            {
+              id: 'bud-universal-ai',
+              budget_type: 'BundlePricing',
+              budget_product_sku: 'ai_credits',
+              budget_scope: 'multi_user_customer',
+              budget_entity_name: ENTERPRISE_SLUG,
+              budget_amount: 46,
+              prevent_further_usage: true,
+              budget_alerting: { will_alert: false, alert_recipients: [] },
+            },
+            {
+              // A $2 user-scoped ACTIONS budget for emily-zhao. Unfiltered it
+              // would resolve as her individual ULB (individual > universal)
+              // and (200 credits < her 5,480 MTD) mislabel her as blocked.
+              id: 'bud-actions-user',
+              budget_type: 'ProductPricing',
+              budget_product_sku: 'actions',
+              budget_scope: 'user',
+              budget_entity_name: ENTERPRISE_SLUG,
+              user: 'emily-zhao',
+              budget_amount: 2,
+              prevent_further_usage: true,
+              budget_alerting: { will_alert: false, alert_recipients: [] },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const users = await client.listHeavyUsers();
+    const emily = users.find((u) => u.userLogin === 'emily-zhao')!;
+    // The actions budget is filtered out at the read boundary: emily falls
+    // back to the universal AI-credit ULB ($46 -> 4,600 credits), never the
+    // $2 actions cap.
+    expect(emily.effectiveUlb).toEqual({ amountCredits: 4_600, scope: 'universal' });
+  });
+
   it('surfaces the pre-baked fixture alerts', async () => {
     const alerts = await client.listAlerts();
     expect(alerts.length).toBeGreaterThan(0);

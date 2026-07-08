@@ -90,6 +90,41 @@ export function warnSkippedBudgetScopes(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Budget PRODUCT filter (open item 20, 2026-07-09 -- maintainer decision (a)).
+// Machine-verified (OpenAPI ghec.2026-03-10.json): budgets carry a pricing
+// model -- budget_type BundlePricing (covers ALL AI-credit SKUs under the one
+// `budget_product_sku: 'ai_credits'`), ProductPricing (a whole product, e.g.
+// 'actions'), SkuPricing (one SKU, e.g. 'actions_linux') -- and real tenants
+// hold one budget PER PRODUCT at the same scope. Unfiltered, a same-scope
+// actions budget renders as an identical "Enterprise metered budget" row and
+// collides with the AI-credit budget's control identity (the maintainer's
+// "1115% used" screenshot: the whole unfiltered bill paired against one
+// budget's cap). This tool's control families scope to AI-CREDIT budgets
+// only; others are excluded at the read boundary WITH a visible trace.
+// ---------------------------------------------------------------------------
+export const AI_CREDITS_BUDGET_SKU = 'ai_credits';
+
+export function isAiCreditBudget(raw: { budget_product_sku?: string | null }): boolean {
+  return raw.budget_product_sku === AI_CREDITS_BUDGET_SKU;
+}
+
+// Sibling of warnSkippedBudgetScopes (same honesty rule, same channel): a
+// budget excluded for covering a NON-AI-credit product is reported through a
+// main-process console.warn -- count + sku + scope + entity, never amounts.
+export function warnExcludedProductBudgets(
+  excluded: ReadonlyArray<{ budget_product_sku?: string | null; budget_scope: string; budget_entity_name?: string | null }>,
+  context: string,
+): void {
+  if (excluded.length === 0) return;
+  const summary = excluded
+    .map((b) => `${b.budget_product_sku ?? '<no-sku>'}:${b.budget_scope}(${b.budget_entity_name ?? '?'})`)
+    .join(', ');
+  console.warn(
+    `[budget-product] ${context}: excluded ${excluded.length} non-AI-credit budget(s) (outside this tool's control families): ${summary}`,
+  );
+}
+
 // Internal -> wire, for the write engine's CREATE payload (PATCH bodies carry
 // no scope, DELETE targets an id -- create is the only serialization site).
 // `individual` serializes as scope `user` + the `user` login field;

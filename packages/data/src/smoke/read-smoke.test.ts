@@ -66,6 +66,28 @@ describe('runReadSmoke', () => {
     expect(r2?.details).toMatch(/overflow-suggestive keys: /);
   });
 
+  // Open item 20's pin: R4 dumps a one-line-per-budget inventory
+  // (type/sku/scope/entity + amount + hard-stop) plus the included/excluded
+  // split the AI-credit product filter would produce -- the maintainer's next
+  // live run reads this against their 10 real budgets. Fixture world: 16
+  // budgets, all ai_credits today (the mock's non-AI fixtures extend this
+  // without changing the AI-credit count -- values are pinned).
+  it('R4 dumps the per-budget inventory and the product-filter split (the budget-product pin)', async () => {
+    const results = await runReadSmoke(client(), ENTERPRISE_SLUG, PROBE_DAY);
+    const r4 = results.find((r) => r.docRef === 'R4');
+    expect(r4?.status, r4?.details).toBe('ok');
+    // The AI-credit count is stable (16 committed AI-credit budgets); the
+    // excluded count is asserted structurally so the mock side's concurrent
+    // non-AI fixture additions extend rather than break this pin.
+    expect(r4?.details).toMatch(/filter: ai_credits included=16, excluded=\d+/);
+    // One known line, fully pinned: the universal ULB (BundlePricing /
+    // ai_credits / multi_user_customer / dewr, $46, hard-stop).
+    expect(r4?.details).toMatch(/inventory: .*BundlePricing\/ai_credits\/multi_user_customer\/dewr \$46 stop=true/);
+    // user-scoped budgets are listed under their `user` LOGIN, not
+    // budget_entity_name (liam-obrien's $58 display-bug fixture).
+    expect(r4?.details).toMatch(/BundlePricing\/ai_credits\/user\/liam-obrien \$58 stop=true/);
+  });
+
   // The R6 row's job is now twofold: PIN the (undocumented) downloaded report
   // file format AND decisively map which of the four candidate wire forms this
   // tenant serves (the second live smoke proved /latest can be absent).

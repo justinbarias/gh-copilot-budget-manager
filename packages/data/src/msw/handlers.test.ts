@@ -158,6 +158,56 @@ describe('budgets handler', () => {
     expect(body.budgets.filter((b) => b.budget_scope === 'user')).toHaveLength(9);
     expect(body.budgets.filter((b) => b.budget_scope === 'multi_user_customer')).toHaveLength(1);
   });
+
+  // PRODUCT-dimension pollution (live-pinned 2026-07-09): real tenants hold
+  // budgets for OTHER products on this same endpoint. The list serves them
+  // like any other budget (no special-casing); the impl side's
+  // budget_product_sku === 'ai_credits' family filter is what excludes them.
+  // Count pins: 19 total = 16 ai_credits + 3 non-AI pollution budgets.
+  it('serves the three non-AI-credit pollution budgets with exact fields, alongside the 16 ai_credits budgets', async () => {
+    const res = await fetch(`${GITHUB_API_BASE}/enterprises/${ENTERPRISE_SLUG}/settings/billing/budgets?per_page=100`, {
+      headers,
+    });
+    const body = (await res.json()) as {
+      budgets: Array<{
+        id: string;
+        budget_type: string;
+        budget_product_sku: string;
+        budget_scope: string;
+        budget_entity_name: string;
+        budget_amount: number;
+        prevent_further_usage: boolean;
+      }>;
+    };
+    expect(body.budgets).toHaveLength(19);
+    expect(body.budgets.filter((b) => b.budget_product_sku === 'ai_credits')).toHaveLength(16);
+
+    const pollution = body.budgets.filter((b) => b.budget_product_sku !== 'ai_credits');
+    expect(pollution).toHaveLength(3);
+    expect(body.budgets.find((b) => b.id === BUDGET_IDS.actionsProductBudget)).toMatchObject({
+      budget_type: 'ProductPricing',
+      budget_product_sku: 'actions',
+      budget_scope: 'enterprise',
+      budget_entity_name: ENTERPRISE_SLUG,
+      budget_amount: 1500,
+      prevent_further_usage: true,
+    });
+    expect(body.budgets.find((b) => b.id === BUDGET_IDS.actionsLinuxSkuBudget)).toMatchObject({
+      budget_type: 'SkuPricing',
+      budget_product_sku: 'actions_linux',
+      budget_scope: 'enterprise',
+      budget_amount: 400,
+      prevent_further_usage: false,
+    });
+    expect(body.budgets.find((b) => b.id === BUDGET_IDS.orgActionsProductBudget)).toMatchObject({
+      budget_type: 'ProductPricing',
+      budget_product_sku: 'actions',
+      budget_scope: 'organization',
+      budget_entity_name: 'dewr-digital',
+      budget_amount: 250,
+      prevent_further_usage: false,
+    });
+  });
 });
 
 // R5 wire item: what the mock now emits on `.../settings/billing/usage`

@@ -11,7 +11,13 @@ import {
   type UsageState,
   type UserUsage,
 } from '@copilot-budget/core';
-import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetIdentity } from '../api-client/budget-scope.js';
+import {
+  isAiCreditBudget,
+  warnExcludedProductBudgets,
+  warnSkippedBudgetScopes,
+  wireBudgetToInternal,
+  type InternalBudgetIdentity,
+} from '../api-client/budget-scope.js';
 import { normalizeIncludedUsageCap } from '../api-client/cost-center-cap.js';
 import { paginateAll } from '../api-client/paginate.js';
 import { fetchUsageFanout, isAiCreditUsageItem } from '../api-client/usage-fetch.js';
@@ -96,6 +102,11 @@ function toBudgetControl(wire: WireBudget, identity: InternalBudgetIdentity): Bu
     amountCredits: usdToCredits(wire.budget_amount),
     preventFurtherUsage: wire.prevent_further_usage,
     alerting: { willAlert: wire.budget_alerting.will_alert, alertRecipients: wire.budget_alerting.alert_recipients },
+    // Open item 20: the sanctioned display-only product dimension (see
+    // BudgetControl.productSku's doc in core) -- carried from the wire so the
+    // Controls screen can disambiguate same-scope rows; never diffed, never
+    // in a mutation payload. Omitted when the wire (defensively) lacks it.
+    ...(typeof wire.budget_product_sku === 'string' ? { productSku: wire.budget_product_sku } : {}),
     // Task 4.14: carry the display-bug enrichment through for the ULB-repair
     // detector (only present in simulation -- see WireBudget/BudgetControl).
     // Omit the key entirely when absent so a healthy control deepEquals one
@@ -197,13 +208,26 @@ export async function fetchLiveControls(octokit: Octokit, enterprise: string, _a
     rawCostCenters.map((cc) => [cc.id, cc.resources ?? []] as const),
   );
 
+  // Budget PRODUCT filter FIRST (open item 20 -- budget-scope.ts's
+  // isAiCreditBudget doc): only AI-credit budgets enter the control families.
+  // Order matters for correctness, not just display: a same-scope/same-entity
+  // actions budget would otherwise collide with the AI-credit budget's
+  // controlIdentity in budgetWireByIdentity below, letting a PATCH/DELETE
+  // silently target the WRONG wire budget. Excluded rows are traced, never
+  // silent.
+  const aiCreditBudgets = rawBudgetsAll.filter(isAiCreditBudget);
+  warnExcludedProductBudgets(
+    rawBudgetsAll.filter((b) => !isAiCreditBudget(b)),
+    'fetchLiveControls',
+  );
+
   // Scope translation at the boundary (wire-contract-writes.md §1): each wire
   // budget is mapped to its internal identity (multi_user_customer ->
   // universal; user + user field -> individual). A null mapping means "no
   // internal home" -- `repository` (deliberately un-administered, packages/
   // core's BudgetScope) plus any unknown future enum value -- and the row is
   // skipped, never guessed into an internal scope.
-  const allMapped = rawBudgetsAll.map((wire) => ({ wire, identity: wireBudgetToInternal(wire) }));
+  const allMapped = aiCreditBudgets.map((wire) => ({ wire, identity: wireBudgetToInternal(wire) }));
   const mappedBudgets = allMapped.filter(
     (m): m is { wire: WireBudget; identity: InternalBudgetIdentity } => m.identity !== null,
   );

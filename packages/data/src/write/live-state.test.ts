@@ -1,6 +1,6 @@
 import { Octokit } from 'octokit';
 import { http, HttpResponse } from 'msw';
-import { beforeAll, afterAll, afterEach, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { server } from '../msw/server.js';
 import { ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { assembleUsageState, fetchLiveControls } from './live-state.js';
@@ -106,7 +106,7 @@ describe('assembleUsageState', () => {
 // misfiled every ULB (a real, current live bug). This proves the boundary
 // translation through fetchLiveControls (the getControls read path).
 describe('fetchLiveControls budget-scope translation (live wire shapes)', () => {
-  it('classifies multi_user_customer as universal and user+user-field as individual, and skips scopes with no internal home', async () => {
+  it('classifies multi_user_customer as universal and user+user-field as individual; skips no-internal-home scopes and excludes non-AI-credit products with a trace', async () => {
     server.use(
       http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/budgets`, () =>
         HttpResponse.json({
@@ -143,32 +143,78 @@ describe('fetchLiveControls budget-scope translation (live wire shapes)', () => 
               prevent_further_usage: false,
               budget_alerting: { will_alert: false, alert_recipients: [] },
             },
+            {
+              // The AI-credit enterprise spending limit ...
+              id: 'bud-enterprise-ai-live',
+              budget_type: 'BundlePricing',
+              budget_product_sku: 'ai_credits',
+              budget_scope: 'enterprise',
+              budget_entity_name: 'dewr',
+              budget_amount: 1000,
+              prevent_further_usage: false,
+              budget_alerting: { will_alert: true, alert_recipients: [] },
+            },
+            {
+              // ... and the open-item-20 pollution case: an ACTIONS budget at
+              // the SAME scope + entity (real tenants hold one budget per
+              // product at the same scope). Excluded by the product filter --
+              // unfiltered, it would render as a second identical "Enterprise
+              // metered budget" row AND collide with the AI budget's control
+              // identity in the wire-id map (the "1115% used" screenshot bug).
+              id: 'bud-actions-live',
+              budget_type: 'ProductPricing',
+              budget_product_sku: 'actions',
+              budget_scope: 'enterprise',
+              budget_entity_name: 'dewr',
+              budget_amount: 5000,
+              prevent_further_usage: false,
+              budget_alerting: { will_alert: false, alert_recipients: [] },
+            },
           ],
         }),
       ),
     );
 
-    const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
-    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
-    const budgets = live.controls.filter((c) => c.kind === 'budget');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+      const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+      const budgets = live.controls.filter((c) => c.kind === 'budget');
 
-    // The universal ULB, correctly classified ($46 -> 4,600 credits).
-    expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'universal')).toMatchObject({
-      entityName: 'dewr',
-      amountCredits: 4_600,
-    });
-    // The individual ULB: entityName is the `user` LOGIN, not budget_entity_name.
-    expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'individual')).toMatchObject({
-      entityName: 'liam-obrien',
-      amountCredits: 5_800,
-    });
-    // The repository budget was skipped; nothing leaked through raw.
-    expect(budgets).toHaveLength(2);
+      // The universal ULB, correctly classified ($46 -> 4,600 credits), with
+      // the sanctioned display-only product dimension carried through.
+      expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'universal')).toMatchObject({
+        entityName: 'dewr',
+        amountCredits: 4_600,
+        productSku: 'ai_credits',
+      });
+      // The individual ULB: entityName is the `user` LOGIN, not budget_entity_name.
+      expect(budgets.find((b) => b.kind === 'budget' && b.scope === 'individual')).toMatchObject({
+        entityName: 'liam-obrien',
+        amountCredits: 5_800,
+      });
+      // The repository budget was scope-skipped AND the actions budget was
+      // product-excluded; only the 3 AI-credit, internally-homed budgets remain.
+      expect(budgets).toHaveLength(3);
+      expect(budgets.some((b) => b.kind === 'budget' && b.productSku === 'actions')).toBe(false);
 
-    // The wire-id map keys off the TRANSLATED identity, so a PATCH/DELETE on
-    // these budgets targets the right wire ids.
-    expect(live.budgetWireByIdentity.get('budget:individual:liam-obrien')?.id).toBe('bud-individual-live');
-    expect(live.budgetWireByIdentity.get('budget:universal:dewr')?.id).toBe('bud-universal-live');
+      // Write-path targeting proof: the wire-id map keys off the TRANSLATED
+      // identity of AI-CREDIT budgets only. The excluded actions budget shares
+      // controlIdentity 'budget:enterprise:dewr' with the AI budget -- the map
+      // MUST resolve to the AI budget's wire id (a PATCH/DELETE can never
+      // silently target the excluded actions budget).
+      expect(live.budgetWireByIdentity.get('budget:enterprise:dewr')?.id).toBe('bud-enterprise-ai-live');
+      expect([...live.budgetWireByIdentity.values()].some((ref) => ref.id === 'bud-actions-live')).toBe(false);
+      expect(live.budgetWireByIdentity.get('budget:individual:liam-obrien')?.id).toBe('bud-individual-live');
+      expect(live.budgetWireByIdentity.get('budget:universal:dewr')?.id).toBe('bud-universal-live');
+
+      // The exclusion is traced, never silent: count + sku + scope + entity.
+      const productWarning = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('[budget-product]'));
+      expect(productWarning).toContain('excluded 1 non-AI-credit budget(s)');
+      expect(productWarning).toContain('actions:enterprise(dewr)');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

@@ -40,7 +40,13 @@ import { runReadSmoke } from '../smoke/read-smoke.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
-import { warnSkippedBudgetScopes, wireBudgetToInternal, type InternalBudgetScope } from './budget-scope.js';
+import {
+  isAiCreditBudget,
+  warnExcludedProductBudgets,
+  warnSkippedBudgetScopes,
+  wireBudgetToInternal,
+  type InternalBudgetScope,
+} from './budget-scope.js';
 import { normalizeIncludedUsageCap } from './cost-center-cap.js';
 import { aiCreditItems, fetchUsageFanout, type AttributedUsageItem } from './usage-fetch.js';
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
@@ -507,6 +513,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       budget_scope: string;
       budget_entity_name?: string | null;
       user?: string | null;
+      budget_product_sku?: string | null;
       budget_amount: number;
     }
     const raw = await paginateAll<WireBudgetRow>(
@@ -515,9 +522,18 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       { enterprise },
       (data) => (data as { budgets: WireBudgetRow[] }).budgets,
     );
+    // Budget PRODUCT filter (open item 20, budget-scope.ts's isAiCreditBudget
+    // doc): only AI-credit budgets feed ULB-precedence resolution + the
+    // per-user forecast allowances -- an actions/storage budget's dollar cap
+    // is not an AI-credit ceiling. Excluded rows are traced, never silent.
+    const aiCreditRows = raw.filter(isAiCreditBudget);
+    warnExcludedProductBudgets(
+      raw.filter((row) => !isAiCreditBudget(row)),
+      'fetchBudgetsRaw',
+    );
     const items: BudgetItem[] = [];
     const skipped: WireBudgetRow[] = [];
-    for (const row of raw) {
+    for (const row of aiCreditRows) {
       const identity = wireBudgetToInternal(row);
       if (!identity) {
         skipped.push(row);

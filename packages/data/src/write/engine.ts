@@ -21,7 +21,7 @@ import {
   type ValidationResult,
 } from '@copilot-budget/core';
 import { appendAuditEvent, type AppendAuditEventInput, type AuditEventRow } from '../audit/writer.js';
-import { internalBudgetIdentityToWire, type InternalBudgetScope } from '../api-client/budget-scope.js';
+import { AI_CREDITS_BUDGET_SKU, internalBudgetIdentityToWire, type InternalBudgetScope } from '../api-client/budget-scope.js';
 import * as schema from '../db/schema.js';
 import type { Db } from '../db/client.js';
 import { assembleUsageState, fetchLiveControls, type LiveControlsResult } from './live-state.js';
@@ -287,7 +287,9 @@ async function executeBudgetMutation(
     const wireIdentity = internalBudgetIdentityToWire(entry.scope as InternalBudgetScope, entry.entityName);
     const requestBody = {
       budget_type: budgetType,
-      budget_product_sku: 'ai_credits',
+      // Single-sourced with the read boundary's product filter (open item 20):
+      // every budget this tool creates covers the AI-credit product.
+      budget_product_sku: AI_CREDITS_BUDGET_SKU,
       ...wireIdentity,
       budget_amount: creditsToUsd(entry.desired.amountCredits),
       prevent_further_usage: entry.desired.preventFurtherUsage,

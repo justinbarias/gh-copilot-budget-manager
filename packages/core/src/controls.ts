@@ -68,6 +68,21 @@ export interface BudgetControl {
    * for the honest account of why display-bug detection is simulation-only.
    */
   simulatedUiHidden?: boolean;
+  /**
+   * DISPLAY-ONLY (maintainer-sanctioned optional extension, 2026-07-09 --
+   * open item 20): the wire `budget_product_sku` this budget covers (e.g.
+   * 'ai_credits'; BundlePricing covers all AI-credit SKUs under that one sku
+   * string, machine-verified against the OpenAPI description). Budgets for
+   * OTHER products (actions, storage, ...) never reach this model at all --
+   * the read boundary excludes them (budget-scope.ts's product filter) so a
+   * same-scope/same-entity actions budget can never collide with an
+   * AI-credit budget's control identity or pair against AI-credit spend.
+   * Same non-diffable contract as simulatedUiHidden above: absent from
+   * BudgetDiffField/BudgetFieldChange (diffBudget never compares it), never
+   * part of a Plan or mutation payload, stripped from persisted control
+   * snapshots by sync-now's stripDisplayOnlyFields.
+   */
+  productSku?: string;
 }
 
 // The included-usage cap (Lever C, CLAUDE.md §5): `enabled` + `overflow` are

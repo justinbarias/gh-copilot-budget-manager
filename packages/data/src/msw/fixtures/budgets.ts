@@ -279,4 +279,53 @@ export const BUDGETS: Budget[] = [
     prevent_further_usage: true,
     budget_alerting: { will_alert: true, alert_recipients: ['data-eval-leads@dewr.gov.au'] },
   },
+  // ---- PRODUCT-dimension POLLUTION budgets (live-pinned 2026-07-09) ----
+  // Real tenants hold budgets for OTHER products on this same endpoint
+  // (machine-verified pricing model: BundlePricing/'ai_credits' vs
+  // ProductPricing/product strings e.g. 'actions' vs SkuPricing/sku strings
+  // e.g. 'actions_linux'). These three are the regression guard for the impl
+  // side's budget_product_sku === 'ai_credits' control-family filter (with
+  // excluded-with-trace) -- they must NEVER enter any Copilot control family,
+  // count pin, or money rollup. Full field sets documented for hand-
+  // verification (the impl's filter tests assert included/excluded counts
+  // against these):
+  //   19 budgets total = 16 ai_credits (12 Family-A ULBs + 4 Family-B
+  //   spending limits) + these 3 excluded non-AI rows.
+  //
+  // (a) Enterprise-wide GitHub Actions product budget -- ProductPricing,
+  //     sku 'actions', $1,500, HARD-STOP ON.
+  {
+    id: BUDGET_IDS.actionsProductBudget,
+    budget_type: 'ProductPricing',
+    budget_product_sku: 'actions',
+    budget_scope: 'enterprise',
+    budget_entity_name: ENTERPRISE_SLUG,
+    budget_amount: 1500,
+    prevent_further_usage: true,
+    budget_alerting: { will_alert: true, alert_recipients: ['platform-ops@dewr.gov.au'] },
+  },
+  // (b) Enterprise SKU-level budget on Linux Actions runners -- SkuPricing,
+  //     sku 'actions_linux', $400, alert-only (GitHub default).
+  {
+    id: BUDGET_IDS.actionsLinuxSkuBudget,
+    budget_type: 'SkuPricing',
+    budget_product_sku: 'actions_linux',
+    budget_scope: 'enterprise',
+    budget_entity_name: ENTERPRISE_SLUG,
+    budget_amount: 400,
+    prevent_further_usage: false,
+    budget_alerting: { will_alert: true, alert_recipients: ['platform-ops@dewr.gov.au'] },
+  },
+  // (c) Org-scoped Actions product budget on the dewr-digital org --
+  //     ProductPricing, sku 'actions', $250, alert-only.
+  {
+    id: BUDGET_IDS.orgActionsProductBudget,
+    budget_type: 'ProductPricing',
+    budget_product_sku: 'actions',
+    budget_scope: 'organization',
+    budget_entity_name: 'dewr-digital',
+    budget_amount: 250,
+    prevent_further_usage: false,
+    budget_alerting: { will_alert: false, alert_recipients: [] },
+  },
 ];

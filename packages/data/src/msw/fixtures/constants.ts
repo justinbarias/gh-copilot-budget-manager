@@ -81,4 +81,12 @@ export const BUDGET_IDS = {
   // the enterprise-cap-below-sum baseline stays comfortably unblocked
   // (60,000 + 25,000 credits << 800,000).
   costCenterDataAnalyticsMetered: 'budget-cost-center-data-evaluation-metered',
+  // ---- PRODUCT-dimension POLLUTION budgets (live-pinned 2026-07-09) ----
+  // Real tenants hold one budget per PRODUCT on this same endpoint (Actions
+  // etc.), not just Copilot AI credits -- these three exist so the impl
+  // side's budget_product_sku === 'ai_credits' control-family filter has
+  // something real to exclude (mirror of the usage-sku pollution rows).
+  actionsProductBudget: 'budget-enterprise-actions-product',
+  actionsLinuxSkuBudget: 'budget-enterprise-actions-linux-sku',
+  orgActionsProductBudget: 'budget-organization-actions-product',
 } as const;

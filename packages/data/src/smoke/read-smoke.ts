@@ -1,4 +1,5 @@
 import type { Octokit } from 'octokit';
+import { AI_CREDITS_BUDGET_SKU, isAiCreditBudget } from '../api-client/budget-scope.js';
 import { fetchUsageFanout } from '../api-client/usage-fetch.js';
 import { downloadReportRecords, type UsersReportEnvelope } from '../api-client/users-report.js';
 
@@ -87,8 +88,9 @@ interface SmokeEndpoint {
   fields: Record<string, FieldType>;
 }
 
-// R1/R4 are independent, single-call, enveloped list reads. R2/R3/R5/R6 are
-// custom (pin-dumping, dependent, or multi-call) and run explicitly below.
+// R1 is the one remaining independent, single-call, enveloped list read.
+// R2/R3/R4/R5/R6 are custom (pin-dumping, dependent, or multi-call) and run
+// explicitly below.
 const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
   {
     key: 'seats',
@@ -97,14 +99,6 @@ const INDEPENDENT_ENDPOINTS: SmokeEndpoint[] = [
     path: 'GET /enterprises/{enterprise}/copilot/billing/seats',
     extract: (d) => (d as { seats?: unknown[] }).seats ?? [],
     fields: { created_at: 'string' },
-  },
-  {
-    key: 'budgets',
-    docRef: 'R4',
-    endpoint: '/enterprises/{enterprise}/settings/billing/budgets',
-    path: 'GET /enterprises/{enterprise}/settings/billing/budgets',
-    extract: (d) => (d as { budgets?: unknown[] }).budgets ?? [],
-    fields: { budget_scope: 'string', budget_entity_name: 'string', budget_amount: 'number' },
   },
 ];
 
@@ -199,6 +193,52 @@ async function runR3(octokit: Octokit, enterprise: string): Promise<ReadSmokeEnd
     return { endpoint: path, docRef: 'R3', status, details: `cost_center ${firstId} embedded resources[]: ${details}` };
   } catch (err) {
     return { endpoint: path, docRef: 'R3', status: 'http_error', details: httpErrorDetails(err) };
+  }
+}
+
+// R4: budgets list -- field check PLUS the per-budget inventory (open item
+// 20's pin for the maintainer's real budget set). One compact line per
+// budget: budget_type/budget_product_sku/budget_scope/entity (the `user`
+// login for user-scoped budgets) with amount + hard-stop flag, and the
+// included/excluded split the AI-credit product filter
+// (budget-scope.ts's isAiCreditBudget) would produce over this exact set.
+async function runR4(octokit: Octokit, enterprise: string): Promise<ReadSmokeEndpointResult> {
+  const path = 'GET /enterprises/{enterprise}/settings/billing/budgets';
+  interface SampledBudget {
+    budget_type?: string;
+    budget_product_sku?: string | null;
+    budget_scope: string;
+    budget_entity_name?: string | null;
+    user?: string | null;
+    budget_amount?: number;
+    prevent_further_usage?: boolean;
+  }
+  try {
+    const response = await octokit.request('GET /enterprises/{enterprise}/settings/billing/budgets', { enterprise });
+    const budgets = ((response.data as { budgets?: SampledBudget[] }).budgets ?? []);
+    const { status, details } = summarizeItems(budgets, {
+      budget_scope: 'string',
+      budget_entity_name: 'string',
+      budget_amount: 'number',
+    });
+    if (budgets.length === 0) return { endpoint: path, docRef: 'R4', status, details };
+
+    const inventory = budgets
+      .map((b) => {
+        const entity = b.budget_scope === 'user' && typeof b.user === 'string' && b.user.length > 0 ? b.user : (b.budget_entity_name ?? '?');
+        return `${b.budget_type ?? '?'}/${b.budget_product_sku ?? '<no-sku>'}/${b.budget_scope}/${entity} $${b.budget_amount ?? '?'} stop=${b.prevent_further_usage ?? '?'}`;
+      })
+      .join('; ');
+
+    const included = budgets.filter(isAiCreditBudget).length;
+    const excludedSkus = [...new Set(budgets.filter((b) => !isAiCreditBudget(b)).map((b) => b.budget_product_sku ?? '<no-sku>'))];
+    const split = `filter: ${AI_CREDITS_BUDGET_SKU} included=${included}, excluded=${budgets.length - included}${
+      excludedSkus.length > 0 ? ` (${excludedSkus.join(', ')})` : ''
+    }`;
+
+    return { endpoint: path, docRef: 'R4', status, details: `${details}; ${split}; inventory: ${inventory}` };
+  } catch (err) {
+    return { endpoint: path, docRef: 'R4', status: 'http_error', details: httpErrorDetails(err) };
   }
 }
 
@@ -403,12 +443,13 @@ export async function runReadSmoke(
   enterprise: string,
   probeDay: string = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
 ): Promise<ReadSmokeEndpointResult[]> {
-  const [r1, r4] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
+  const [r1] = await Promise.all(INDEPENDENT_ENDPOINTS.map((ep) => runOne(octokit, enterprise, ep)));
   const r2 = await runR2(octokit, enterprise);
   const r3 = await runR3(octokit, enterprise);
+  const r4 = await runR4(octokit, enterprise);
   const r5 = await runR5(octokit, enterprise);
   const r6 = await runR6(octokit, enterprise, probeDay);
 
   // Inventory order: R1, R2, R3, R4, R5, R6.
-  return [r1!, r2, r3, r4!, r5, r6];
+  return [r1!, r2, r3, r4, r5, r6];
 }

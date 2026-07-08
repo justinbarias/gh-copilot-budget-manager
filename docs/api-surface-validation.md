@@ -572,24 +572,62 @@ Remaining items, when the live tenant + classic PAT
     `budget-scope.ts` still accepts `universal`/`individual` as read
     passthrough (mock-cutover safety; real GitHub never sends them). Remove
     after one full-green live cycle so drift-guarding is total on reads too.
-20. **Budgets have a PRODUCT dimension (NEW OPEN ITEM — from the maintainer's
-    live Controls screenshot).** A tenant can hold multiple same-scope
-    budgets, one per product (`budget_type` pricing-model enum +
-    `budget_product_sku` — see the pricing-model note above). Today those
-    render as **identical rows** in Controls (the internal identity is
-    scope+entity only), and budget **utilization is paired with UNFILTERED
-    spend** — the maintainer's tenant shows "1,115,229 of 100,000" = the
-    whole $11,152.29 bill × 100 against a single budget's amount. Next
-    round: (a) an R4 smoke sampler dumping `(budget_type,
-    budget_product_sku, budget_scope, budget_amount)` per budget; (b) label
-    disambiguation in Controls; (c) pair each budget's utilization with
-    ITS product's spend; (d) scope the control families to AI-credit
-    budgets. The maintainer has sanctioned **ONE optional product-sku
-    display field** on the returned control shape for this.
+20. ~~**Budgets have a PRODUCT dimension**~~ **CLOSED 2026-07-09.** Control
+    families now scope to **`budget_product_sku === 'ai_credits'`**
+    (`isAiCreditBudget`, budget-scope.ts), applied at BOTH read boundaries —
+    critically **BEFORE scope mapping in `fetchLiveControls`**, because the
+    filter kills a real WRITE hazard, not just a display bug: a same-scope/
+    same-entity actions budget would otherwise collide with the AI-credit
+    budget's `controlIdentity` in `budgetWireByIdentity` and let a
+    PATCH/DELETE silently land on the WRONG wire budget (test-pinned: the
+    actions fixture's id appears nowhere in the identity map; validator
+    re-read the code path — excluded budgets are unreachable via create
+    targeting, delete-by-id, and drift compare alike). `fetchBudgetsRaw`
+    filters likewise (test-pinned: a $2 user-scoped actions budget no longer
+    outranks emily-zhao's $46 AI ULB in ULB precedence). Exclusions are
+    **traced, never silent** (`warnExcludedProductBudgets` — count + sku +
+    scope + entity, **never amounts**; same channel as the scope-skip
+    trace). The engine's CREATE single-sources `budget_product_sku` from
+    `AI_CREDITS_BUDGET_SKU`. The **maintainer-sanctioned display-only
+    `productSku?: string`** landed on core's `BudgetControl`
+    (validator-RATIFIED against the `simulatedUiHidden` precedent: absent
+    from `BudgetDiffField`/`BudgetFieldChange`, in no mutation payload, and
+    `stripDisplayOnlyFields` is an allow-list reconstruction so it
+    structurally cannot reach persisted snapshots — **chargeback note:**
+    persisted control snapshots therefore do NOT carry the product sku; a
+    future chargeback view re-derives it from raw wire data, not snapshots).
+    Controls sub-lines append "· <sku>" (`withProductSku`) to disambiguate
+    same-scope rows. Mock: 3 non-AI pollution budgets — enterprise
+    ProductPricing/'actions' $1,500 stop=ON (deliberately the SAME
+    scope+entity as the AI enterprise budget: the collision fixture),
+    enterprise SkuPricing/'actions_linux' $400, org ProductPricing/'actions'
+    'dewr-digital' $250 — count model **19 = 16 ai_credits (12 Family-A + 4
+    Family-B) + 3 excluded** (validator-recomputed from the fixture file).
+    **Decision recorded: NO UI carrier for the excluded count** (no honest
+    existing structure — it would need a second sanctioned field); the count
+    lives in the operator trace + the smoke's filter split. **R4 smoke
+    sampler landed:** the R4 row now prints the included=N/excluded=M split
+    (+ distinct excluded skus) and one inventory line per budget —
+    `budget_type/budget_product_sku/budget_scope/<entity or user login>
+    $<amount> stop=<bool>`. Amounts appear in the maintainer-facing smoke
+    report only, never in console traces.
 21. **cc CREATE cap dialect (NEW, flagged by the mock side):** MSW's
     cost-center CREATE body still accepts the internal nested
     `included_usage_cap` shape (only the PATCH body was pinned this round);
     pin the create body's cap field on a future smoke/write and align.
+22. **`budget_type` PAIRING TENSION (NEW OPEN ITEM — money-affecting write
+    risk).** The machine-verified pricing model says AI-credit SKUs belong
+    to **`BundlePricing`** (`budget_product_sku: 'ai_credits'`), but our
+    Family-B fixtures AND the write engine serialize **spending limits** as
+    **`ProductPricing` + `'ai_credits'`** (ULB creates already use
+    BundlePricing — `engine.ts`: `isUlbScope ? 'BundlePricing' :
+    'ProductPricing'`; validator-confirmed in both the fixture file and the
+    engine). If real GitHub *enforces* the type↔sku pairing, a live
+    spending-limit CREATE from this app may be **rejected or mis-typed**.
+    **The pin is the maintainer's next R4 sampler output** — specifically
+    the `budget_type` of their real $1,000 AI-credit budget: if it reads
+    `BundlePricing`, both the Family-B fixtures and the engine's non-ULB
+    branch flip to BundlePricing in their own round.
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 
