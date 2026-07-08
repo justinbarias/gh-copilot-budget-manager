@@ -26,8 +26,10 @@ import { test, expect, _electron as electron, type Page } from '@playwright/test
 //     bound at current usage) and a +5,000-credit / $50.00 metered-capacity
 //     delta.
 //   - PATCH body for that change: {"budget_amount":650} (65,000 credits = $650).
-//   - Workforce's metered spend meter: 234 credits (noah-tanaka's
-//     2026-09-01 cliff row, net $2.34) against 60,000.
+//   - Workforce's metered spend meter: 0 credits against 60,000 (2026-07-09
+//     maintainer decision: getUsageSummary money totals are CYCLE-scoped, so
+//     noah-tanaka's out-of-cycle 2026-09-01 cliff row ($2.34, formerly the
+//     span-total's 234 credits) no longer counts).
 //
 // Task 4.11b (CLAUDE.md §6.1 preview-fidelity fix): write/live-state.ts's
 // assembleUsageState now folds the per-user metrics report into
@@ -82,11 +84,12 @@ test('stage -> dry-run -> apply: exact diff, fixture-derived simulation, correct
     const workforceRow = table.locator('[data-control-id="budget:cost_center:Workforce Australia Platform"]');
     await expect(workforceRow.getByText('CC: Workforce Australia Platform')).toBeVisible();
 
-    // Utilization meters are fixture-derived, never faked: Workforce's metered
-    // spend is 234 credits (noah-tanaka's 2026-09-01 cliff-row net $2.34)
-    // against 60,000. The org row has no per-org usage attribution -> honest
-    // empty meter.
-    await expect(workforceRow.getByText('0% used · 234 of 60,000')).toBeVisible();
+    // Utilization meters are fixture-derived, never faked. CYCLE-scoped money
+    // totals (2026-07-09 maintainer decision): Workforce's June metered spend
+    // is 0 -- noah-tanaka's 2026-09-01 cliff row ($2.34 -> the old span
+    // total's 234 credits) is out-of-cycle and no longer counts. The org row
+    // has no per-org usage attribution -> honest empty meter.
+    await expect(workforceRow.getByText('0% used · 0 of 60,000')).toBeVisible();
     const orgRow = table.locator('[data-control-id="budget:organization:dewr-digital"]');
     await expect(orgRow.getByText('no per-org usage data')).toBeVisible();
 

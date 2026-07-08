@@ -99,7 +99,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 ### Deferred / maintainer decisions
 - No purge UI for MVP (ruled 2026-07-06): audit chain immutable; DB-file delete = factory reset (export audit first); retention policy deferred to §9 org-shape answer.
 - **Audit provenance mode-scoping (RESOLVED 2026-07-06):** `latestSnapshotId(db, source)` now filters the snapshot table to the apply's own source; `ApplyPlanOptions.source` is required and `github-impl` threads `config.source`. A live apply with only MSW snapshot history records `dataSnapshotId: null` (an honest "no live snapshot yet"), never a wrong-source id in the immutable §6.5 chain. Landed as its own write-engine slice with independent validation per §11.
-- **`getSyncStatus` mode-blindness (open, lower priority):** `getSyncStatus` is still mode-blind — a sim "last synced" time can surface in live mode. Same source-scoping fix as above; bundle when next in this area.
+- **`getSyncStatus` mode-blindness (RESOLVED 2026-07-09, item-24 round):** `getSyncStatus(db, source)` now filters snapshots to the session's own source (the `ApiClient` surface is unchanged — `github-impl` threads `config.source`); a mode whose own source has never synced honestly reports `lastSyncedAt: null`, never the other mode's timestamp. Landed with the full mode-scoped-persistence sweep (see `docs/api-surface-validation.md` item 24: forecasts/controls/snapshot-id reads all source-scoped; the §6.5 audit chain deliberately stays one unscoped whole, with a mode-filtered display view flagged as follow-up).
 
 ### Checkpoint 9 — done
 - [ ] Live mode operational under separation of duties; sim mode still first-class; all §6 invariants re-verified live; final sign-off

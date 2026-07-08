@@ -38,13 +38,15 @@ describe('createGitHubApiClient', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('aggregates usage across the whole fixture set', async () => {
+  it('aggregates usage: quantity spans the report, money totals are cycle-scoped', async () => {
     const summary = await client.getUsageSummary();
     expect(summary.asOfDate).toBe('2026-09-01');
     expect(summary.totalQuantity).toBe(193_036);
-    // Metered spend: the cap-bound CC's 2,300-credit overflow ($23.00) + the
-    // Sep-1 cliff row's metered half ($2.34).
-    expect(summary.totalNetAmountUsd).toBeCloseTo(23.0 + 2.34, 5);
+    // CYCLE-SCOPED money total (maintainer decision, 2026-07-09 addendum):
+    // only the June cycle's metered spend -- the cap-bound CC's 2,300-credit
+    // overflow ($23.00). The Sep-1 cliff row's $2.34 is out-of-cycle and no
+    // longer in the headline (old report-span total: $25.34).
+    expect(summary.totalNetAmountUsd).toBeCloseTo(23.0, 5);
   });
 
   it('computes Overview burn-down inputs anchored to the fixture "current" date', async () => {
@@ -70,7 +72,10 @@ describe('createGitHubApiClient', () => {
     // Request qty 320.25, net $468.31 combined) are sku-filtered out -- an
     // unfiltered sum would read 31,480.75 / $470.65 instead.
     expect(summary.totalQuantity).toBe(30_200 + 468 + 468);
-    expect(summary.totalNetAmountUsd).toBeCloseTo(2.34, 5);
+    // Cycle-scoped money total (2026-07-09 addendum): Workforce's June rows
+    // are fully pool-covered (net $0); the Sep-1 cliff row's $2.34 metered
+    // half is out-of-cycle (old span total: 2.34).
+    expect(summary.totalNetAmountUsd).toBeCloseTo(0, 5);
   });
 
   // The dashboard fix (live-pinned 2026-07-09): pool/metered money math
@@ -83,11 +88,13 @@ describe('createGitHubApiClient', () => {
     expect(USAGE_ITEMS.some((i) => i.sku !== 'Copilot AI Credits')).toBe(true);
 
     const summary = await client.getUsageSummary();
-    // AI-credit rows only: 193,036 credits, $1,930.36 gross, $25.34 net.
-    // Unfiltered, pollution would add qty 514.5, gross $850.08, net $836.08.
+    // AI-credit rows only; money totals cycle-scoped (2026-07-09 addendum):
+    // June gross = span 1,930.36 minus the cliff rows' 4.68 + 4.68 = 1,921.00;
+    // June net = 23.00 (the Sep-1 2.34 is out-of-cycle). Unfiltered, pollution
+    // would add qty 514.5 and (in-cycle) gross $850.08.
     expect(summary.totalQuantity).toBe(193_036);
-    expect(summary.totalGrossAmountUsd).toBeCloseTo(1_930.36, 5);
-    expect(summary.totalNetAmountUsd).toBeCloseTo(25.34, 5);
+    expect(summary.totalGrossAmountUsd).toBeCloseTo(1_921.0, 5);
+    expect(summary.totalNetAmountUsd).toBeCloseTo(23.0, 5);
     // The burn-down is filtered too: still exactly 189,800 pool credits by
     // day 13 (the Business/Premium rows carry discount $4 + $10 that would
     // otherwise add 1,400 phantom pool credits).
@@ -128,11 +135,12 @@ describe('createGitHubApiClient', () => {
     const liveShapedClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw', nowDate: '2026-07-09' });
     const summary = await liveShapedClient.getUsageSummary();
 
-    // Totals span whatever the report returned (YTD -- unchanged semantics):
-    // qty 486,084.5584155 + 486,860 (fractional survives), net $1,360.84 +
-    // $1,042.72 = $2,403.56.
+    // Quantity spans the report (YTD): 486,084.5584155 + 486,860 (fractional
+    // survives). Money totals are CYCLE-SCOPED (2026-07-09 addendum) -- the
+    // exact fix for "a YTD sum against a monthly cap": July's MTD net
+    // $1,042.72 only; June's closed $1,360.84 stays out.
     expect(summary.totalQuantity).toBeCloseTo(972_944.5584155, 6);
-    expect(summary.totalNetAmountUsd).toBeCloseTo(2_403.56, 5);
+    expect(summary.totalNetAmountUsd).toBeCloseTo(1_042.72, 5);
     expect(summary.asOfDate).toBe('2026-07-01'); // normalized to day precision
 
     // The burn-down: July cycle, day 9 -> 9 points (Jul 1..Jul 9). Level =

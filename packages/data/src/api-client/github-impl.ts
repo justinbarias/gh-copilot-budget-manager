@@ -663,9 +663,18 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return {
       asOfDate,
       totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
-      totalGrossAmountUsd: items.reduce((sum, item) => sum + item.grossAmount, 0),
-      totalDiscountAmountUsd: items.reduce((sum, item) => sum + item.discountAmount, 0),
-      totalNetAmountUsd: items.reduce((sum, item) => sum + item.netAmount, 0),
+      // CYCLE-SCOPED money totals (maintainer decision, 2026-07-09 addendum to
+      // item 24): the three USD headline totals sum the CYCLE-MONTH rows only
+      // (the same month-bucket + AI-credit filter the burn-down uses) --
+      // live's unparameterized read returns YEAR-TO-DATE months, and a "spend"
+      // tile/meter fed a YTD sum against a monthly budget cap is exactly the
+      // maintainer's 1115%-used pathology. Fixture consequence: the
+      // out-of-cycle Aug-31/Sep-1 cliff rows no longer count (net 25.34 ->
+      // 23.00 etc.). totalQuantity deliberately stays report-span (not named
+      // by the decision) -- FLAGGED as an asymmetry for the validator.
+      totalGrossAmountUsd: monthItems.reduce((sum, item) => sum + item.grossAmount, 0),
+      totalDiscountAmountUsd: monthItems.reduce((sum, item) => sum + item.discountAmount, 0),
+      totalNetAmountUsd: monthItems.reduce((sum, item) => sum + item.netAmount, 0),
       licenseCount: seats.length,
       cycleAsOfDate,
       dailyBurn,
@@ -808,8 +817,12 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return ALERTS;
   }
 
+  // Mode-isolation (item 24 / CLAUDE.md §6.8): scoped to THIS client's source
+  // -- a sim session never reports a live sync's timestamp as its own "Last
+  // synced" (and vice versa), the same scoping getLastSyncedControls/
+  // getForecast already apply.
   async function getSyncStatus(): Promise<SyncStatus> {
-    return withPerUserCoverage(readSyncStatus(config.db));
+    return withPerUserCoverage(readSyncStatus(config.db, config.source));
   }
 
   async function syncNow(): Promise<SyncStatus> {
@@ -927,7 +940,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     if (cycleCredits.coveredThroughDay !== null) {
       lastPerUserDataThroughDay = cycleCredits.coveredThroughDay;
     }
-    return withPerUserCoverage(readSyncStatus(config.db));
+    return withPerUserCoverage(readSyncStatus(config.db, config.source));
   }
 
   // Task 4.15: the Controls screen's "last synced" baseline for browse-time

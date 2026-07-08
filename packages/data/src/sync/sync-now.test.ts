@@ -139,13 +139,53 @@ describe('syncNow', () => {
   });
 
   it('reports sync status derived from the latest snapshot, not a separate copy', () => {
-    expect(getSyncStatus(db).lastSyncedAt).toBeNull();
+    expect(getSyncStatus(db, 'msw').lastSyncedAt).toBeNull();
 
     const result = syncNow(db, 'msw', baseData);
-    const status = getSyncStatus(db);
+    const status = getSyncStatus(db, 'msw');
 
     expect(status.inProgress).toBe(false);
     expect(status.lastSyncedAt).toBe(result.capturedAt.toISOString());
+  });
+
+  // Item 24 / CLAUDE.md §6.8 (the maintainer's mode-bleed session: live-synced
+  // artifacts rendered under the sim banner): every persisted read is scoped
+  // to the session's source. Both directions pinned -- a sim session never
+  // reports a live sync as its own, and vice versa; the honest empty is the
+  // pre-first-sync state (null), never the other mode's rows.
+  it('getSyncStatus is source-scoped in BOTH directions: each mode sees only its own syncs', () => {
+    // A LIVE sync lands first -- the sim view must stay pre-first-sync.
+    const liveResult = syncNow(db, 'github', baseData);
+    expect(getSyncStatus(db, 'msw').lastSyncedAt).toBeNull();
+    expect(getSyncStatus(db, 'github').lastSyncedAt).toBe(liveResult.capturedAt.toISOString());
+
+    // A SIM sync follows (newer snapshot id) -- the live view must keep ITS
+    // OWN timestamp, not adopt the newer sim one.
+    const simResult = syncNow(db, 'msw', baseData);
+    expect(getSyncStatus(db, 'msw').lastSyncedAt).toBe(simResult.capturedAt.toISOString());
+    expect(getSyncStatus(db, 'github').lastSyncedAt).toBe(liveResult.capturedAt.toISOString());
+  });
+
+  // The same both-direction pin for the OTHER persisted reads the UI reaches
+  // (they were source-scoped in an earlier round via the snapshot join --
+  // forecast rows carry no source column themselves, they inherit it from the
+  // snapshot they reference): live-written rows are invisible to sim reads
+  // and vice versa.
+  it('getLastSyncedControls and getLatestForecast are source-scoped in BOTH directions', () => {
+    syncNow(db, 'github', {
+      ...baseData,
+      controls: [
+        { kind: 'budget', scope: 'enterprise', entityName: 'live-ent', amountCredits: 672_000, preventFurtherUsage: false, alerting: { willAlert: false, alertRecipients: [] } },
+      ],
+      forecasts: [enterpriseForecastItem(360_000, '2026-07-09')],
+    });
+
+    // Sim session: honest empties -- the live rows never bleed through.
+    expect(getLastSyncedControls(db, 'msw')).toBeNull();
+    expect(getLatestForecast(db, 'msw', 'enterprise')).toBeNull();
+    // Live session sees its own rows.
+    expect(getLastSyncedControls(db, 'github')?.controls[0]).toMatchObject({ entityName: 'live-ent' });
+    expect(getLatestForecast(db, 'github', 'enterprise')).not.toBeNull();
   });
 });
 

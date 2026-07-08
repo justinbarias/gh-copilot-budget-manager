@@ -719,19 +719,49 @@ Remaining items, when the live tenant + classic PAT
     cycle-scoped is a **product call for the maintainer**; (b) fixture
     ALERTS render even in live mode — pre-baked by design until Task 7.6
     (PLAN.md Architecture Decision), recorded so it stops surprising.
-24. **MODE-BLIND PERSISTENCE (OPEN — §6.8-adjacent display-integrity bug,
-    elevated from the deferred list; explicitly NEXT ROUND, not touched by
-    the item-23 fix).** The same screenshots show live-synced PERSISTED rows
-    rendering inside a SIMULATION session: sim banner + the 672,000 live
-    allowance + the $360,624 live forecast tile + June-14 fixture alerts on
-    one screen. Persisted forecasts/snapshots are read back without scoping
-    to the session's mode, so a sim session serves whatever the last live
-    Sync wrote (and vice versa) — never a wire-safety issue (no requests
-    cross modes) but a §6.8-adjacent integrity problem: simulated and live
-    numbers must never be co-mingled on screen. Snapshots already carry
-    `source` ('msw' | 'github' — the audit-provenance precedent), so the
-    fix is scoping forecast/persisted reads (including `getSyncStatus`,
-    the todo list's existing deferred item) to the session's source.
+24. ~~**MODE-BLIND PERSISTENCE**~~ **CLOSED 2026-07-09.** (The bug: live-synced
+    PERSISTED rows rendering inside a SIMULATION session — sim banner + the
+    672,000 live allowance + the $360,624 live forecast tile + June-14
+    fixture alerts on one screen; never a wire-safety issue, but simulated
+    and live numbers must never co-mingle, §6.8-adjacent.) **The full
+    persisted-read sweep (validator-verified independently — every
+    `select`-from-schema site in non-test code):**
+    | Read site | Status |
+    |---|---|
+    | `getSyncStatus` (sync-now.ts) | **NOW scoped** — internal signature `getSyncStatus(db, source)`; both github-impl call sites pass `config.source`; `ApiClient` surface unchanged (diff on types.ts empty). A mode whose source never synced reports `lastSyncedAt: null` — the honest pre-first-sync empty, never the other mode's timestamp. |
+    | `getLastSyncedControls` (sync-now.ts) | Already scoped (`where source`, prior round). |
+    | `getLatestForecast` (sync-now.ts) | Already scoped — forecast rows carry **no source column of their own**; they inherit it via `innerJoin(snapshot)` on `snapshotId` + `where snapshot.source` — **no migration needed**. |
+    | `latestSnapshotId` (write/engine.ts) | Already scoped (audit-provenance round; honest-null when the mode has no snapshot). |
+    | `appendAuditEvent` tip read + `readAuditChain`/`verifyStoredChain` (audit/writer.ts) | **DELIBERATELY unscoped — validator-RATIFIED against §6.5:** the audit log is ONE append-only hash chain per database; each event's hash is computed over the previous event's hash regardless of mode (writer.ts), so mode-filtering rows would present events whose `prevHash` points at filtered-out rows and **break chain verification** for any interleaved history. Per-event mode provenance already rides the mode-scoped `dataSnapshotId`. A mode-filtered audit **display VIEW** (filter after verifying the whole chain) is the flagged display-layer follow-up. |
+    Both-direction tests pin the isolation (live rows invisible to sim reads
+    and vice versa — including a 672,000-credit live control/forecast row,
+    the maintainer's exact bleed artifact). `perUserDataThroughDay` confirmed
+    leak-free (per-client-instance state, source fixed at construction,
+    rebuild = fresh instance).
+    **Boot mode diagnostics (same round — the maintainer's banner-mystery
+    instrument):** the main process logs
+    `[mode] resolved=<mode> force_simulation_env="<raw verbatim>"
+    pat_present=<bool>` at every mode resolution (content-deduplicated so
+    renderer polling stays quiet; an unset env prints the literal
+    `"undefined"`, distinguishing "env never reached the Electron process"
+    from "env set to a wrong value"; **never the token**). `rebuildClient`
+    logs both branches and states the known papercut explicitly: **mode does
+    NOT re-resolve until relaunch** — saving a PAT mid-session rebuilds
+    credentials, never the mode (Task 9.3's charter). No mode-resolution
+    behavior change.
+    **Cycle-scoped headline totals (maintainer decision, same round):**
+    `getUsageSummary`'s three USD totals (gross/discount/net) now sum
+    cycle-month + AI-credit rows only — live, a YTD sum against a monthly
+    cap was the 1115%-pathology's last surviving artifact (Controls'
+    enterprise spending-limit meter; sim pin 2,534 → 2,300 credits, live
+    YTD → MTD). **`totalQuantity` deliberately remains report-span** — the
+    decision named only the USD fields; **flagged asymmetry, pending a
+    maintainer word** (validator surfaced). Changed pins all
+    validator-recomputed: span-net 25.34 → 23.00 (Sep-1's 2.34 out);
+    pollution-world gross 1,930.36 → 1,921.00 (cliff 4.68+4.68 out);
+    workforce meter 234 → 0 (the one justified e2e edit, decision cited
+    in-spec); live-shaped monthly net 2,403.56 → 1,042.72 (July MTD; June's
+    1,360.84 bucketed out).
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 

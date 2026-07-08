@@ -94,8 +94,21 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   let client: ApiClient = await buildClient(source, tenantStore, patStore);
 
   async function rebuildClient(): Promise<void> {
-    if (source === 'msw') return; // sim mode: no auth/tenant to re-derive.
+    // Item B (boot mode diagnostic): both branches log what the rebuild did
+    // AND state the known papercut explicitly -- MODE DOES NOT RE-RESOLVE
+    // mid-session. `source` was fixed when this process resolved its mode at
+    // boot; saving/clearing a PAT rebuilds the client's credentials, never
+    // the mode. Task 9.3's charter, not this log's.
+    if (source === 'msw') {
+      console.log(
+        '[mode] credentials/tenant changed: ApiClient rebuild SKIPPED (simulation source) — mode does NOT re-resolve until relaunch, so a newly saved PAT only takes effect as live after restarting the app.',
+      );
+      return; // sim mode: no auth/tenant to re-derive.
+    }
     client = await buildClient(source, tenantStore, patStore);
+    console.log(
+      '[mode] credentials/tenant changed: live ApiClient REBUILT with the currently persisted PAT + tenant config — mode itself does NOT re-resolve until relaunch.',
+    );
   }
 
   ipcMain.handle('apiClient:getUsageSummary', (_event, params?: UsageSummaryParams) =>

@@ -223,8 +223,22 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
   });
 }
 
-export function getSyncStatus(db: Db): SyncStatus {
-  const latest = db.select().from(schema.snapshot).orderBy(desc(schema.snapshot.id)).limit(1).all()[0];
+// Mode-scoped (item 24 / CLAUDE.md §6.8, folding docs/pending/todo.md's
+// deferred "getSyncStatus mode-blindness" item -- the same source-scoping
+// discipline getLastSyncedControls/getLatestForecast/latestSnapshotId already
+// apply): a simulation session's "Last synced" must describe the last SIM
+// sync, never a live one performed earlier into the same (mixed-mode, by
+// design unpurged) database -- and vice versa. A session whose own source has
+// never synced honestly reports the pre-first-sync state (lastSyncedAt null),
+// never the other mode's timestamp.
+export function getSyncStatus(db: Db, source: 'msw' | 'github'): SyncStatus {
+  const latest = db
+    .select()
+    .from(schema.snapshot)
+    .where(eq(schema.snapshot.source, source))
+    .orderBy(desc(schema.snapshot.id))
+    .limit(1)
+    .all()[0];
   return {
     lastSyncedAt: latest ? latest.capturedAt.toISOString() : null,
     inProgress: false,
