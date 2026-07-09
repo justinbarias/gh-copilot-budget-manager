@@ -871,6 +871,70 @@ Remaining items, when the live tenant + classic PAT
       suggestion:** a live-shaped scenario world so e2e can drive the live
       gate states.
 
+## Interactive verification record — 2026-07-09 (§6.7 second-half debt cleared)
+
+Dedicated CDP pass per CLAUDE.md §7 (real Electron process via
+`tools/cdp/harness.mjs`, throwaway scratchpad probes, both isolation dirs,
+screenshots literally inspected + `getComputedStyle` calipers). Simulation
+mode (no PAT on the verification machine). **Scope: the accumulated
+headless-only UI debt** — the Cost Centers live-correctness round (edit-mapping
+modal, derived MTD burn, no-cap/not-mapped states) and the Auto-balance
+live-context round's sim side. **Outcome: verified clean, zero code changes;
+one sim-only design collision documented below.**
+
+- **Edit-mapping flow, end to end (looked at, not just asserted):** drill
+  header renders the mapping + a subdued "✎ edit mapping" pill (11px,
+  muted `rgb(145,152,161)`, pointer cursor — matches the design idiom);
+  the editor modal (dark `rgb(21,26,34)`, 16px radius, the modal-family
+  layout) opens with the verbatim statement "App-local metadata only —
+  saving never contacts GitHub." and three pre-filled labeled inputs;
+  nested Escape closes the editor while the drill survives; Save closes
+  the editor, fires the toast "DEWR mapping saved (app-local — no GitHub
+  change)." (fixed-position, z-index 40), and both the drill header and —
+  after closing the drill — the table cell re-render the new mapping.
+  Zero console errors.
+- **Cost Centers table:** all six sim CCs render the hand-known derived
+  MTD burns (30,200 / 18,900 / 58,300 / 57,400 / 15,000 / 12,300 —
+  screenshot-verified digits), full DEWR mappings with no "undefined", no
+  NaN anywhere; headroom/status pairing intact (Payments Integrity
+  −2,300 overrun red ⚠ + "over cap" chip; Data & Evaluation 5,600 low
+  amber ⚠ + "within").
+- **Auto-balance sim side:** pool mode renders the healthy world (trigger
+  MONITORING — NOT FIRED, day 13/30, pool 33.5%); metered mode in the
+  healthy scenario shows the honest unavailable card WITH the sim-only
+  scenario-switch advice (correct — sim session); switching the scenario
+  selector (segmented control: Healthy / At risk / Surplus / Metered) to
+  Metered renders the full fired proposal — three trigger conditions met,
+  $3,200 allocatable envelope, **+$60 bill delta**, $4,860 projected
+  total, $3,140 remaining headroom (the committed Phase-6 world,
+  pixel-confirmed); the apply lever reads "Dry-run only — auto-apply
+  arrives with guardrails" and is disabled in every state checked.
+- **Regression sweep:** all 10 screens walked; the sim banner is present,
+  unmistakable, and **stays visible after scrolling each screen to the
+  bottom** (the Task-2.5 lesson re-checked); `window.api` exposes 26
+  bridge methods incl. `updateCostCenterMapping`; `process`/`require`
+  undefined in the renderer; **zero console errors or exceptions across
+  the entire walk**.
+- **Settings/Sync:** pre-sync "Never synced"; after a UI-driven Sync Now
+  the line reads "Last synced: <timestamp> — per-user data through
+  2026-06-14" (the coverage suffix, sim as-of date, exactly as specified).
+- **FINDING (documented, not fixed — ask-first territory): clearing a
+  mapping in SIMULATION reverts to the fixture enrichment.** The editor
+  deliberately persists cleared fields as `null` ("no value stays
+  honest"), and item 25's field-level precedence (`local ?? enrichment ??
+  null`) then falls through to the sim enrichment — so a cleared mapping
+  re-renders (and re-opens) with the fixture values. **Live is unaffected**
+  (no enrichment exists; cleared stays "— not mapped"). Representing
+  "explicitly cleared" distinctly would need either a schema marker or
+  empty-string sentinel semantics on the sanctioned interface — both
+  ask-first; recorded for the maintainer to rule on if sim-side clearing
+  ever matters (it is a demo-world-only quirk).
+- **NOT verifiable here (remains on the maintainer's live checklist):**
+  the live-only states — "— no cap" / "— not mapped" against real cost
+  centers, the live Auto-balance gates ("run Sync now first" / stale
+  forecast) and the zero-ULB card against live data, and the live
+  boot-mode log line.
+
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 
 - **`github/rest-api-description`, `descriptions/ghec/ghec.2026-03-10.json`**
