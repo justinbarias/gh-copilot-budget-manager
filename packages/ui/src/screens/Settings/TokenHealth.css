@@ -120,23 +120,76 @@
   overflow: hidden;
 }
 
-.token-health__segment {
+/* All segment rules are scoped under .token-health__segmented: the generic
+   `.token-health button` rule above is (0,1,1), so any single-class (0,1,0)
+   segment rule silently loses to it -- repainting the segments as plain
+   buttons and erasing the violet/red selection highlight. (Caught by the
+   CDP getComputedStyle pass; Playwright's attribute/text assertions can't
+   see paint.) */
+.token-health__segmented .token-health__segment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   background: var(--canvas);
   border: none;
+  border-bottom: 3px solid transparent;
   border-radius: 0;
   color: var(--text-muted);
-  padding: 6px 14px;
+  padding: 7px 16px 6px;
   font-size: 13px;
   cursor: pointer;
 }
 
-.token-health__segment + .token-health__segment {
+/* Enabled, non-highlighted segments are actionable (the "switch to X" or the
+   pending-state "click to cancel" segment) -- read at full text strength
+   rather than the muted default so they look like the thing to click. */
+.token-health__segmented .token-health__segment:not(:disabled) {
+  color: var(--text-default);
+}
+
+.token-health__segmented .token-health__segment + .token-health__segment {
   border-left: 1px solid var(--border);
 }
 
-.token-health__segment--active {
-  background: var(--surface-3);
-  color: var(--text-default);
+.token-health__segment-label {
+  line-height: 1.2;
+}
+
+.token-health__segment-sublabel {
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  opacity: 0.9;
+}
+
+/* Strong highlight: always the segment matching the persisted selection --
+   "active now" when resolved and selection agree, "on next start" when a
+   change is pending. Visible accent border-bottom + background shift + the
+   sub-label text, never color alone (maintainer complaint (a): the old
+   --surface-3-only highlight was nearly invisible). */
+.token-health__segmented .token-health__segment--selected {
+  font-weight: 600;
+}
+
+.token-health__segmented .token-health__segment--selected-simulation {
+  background: rgba(147, 80, 255, 0.18);
+  border-bottom-color: var(--violet);
+  color: var(--violet-light);
+}
+
+.token-health__segmented .token-health__segment--selected-live {
+  background: rgba(255, 123, 114, 0.2);
+  border-bottom-color: var(--red);
+  color: var(--red);
+}
+
+/* The highlighted segment is also always the disabled one (either "can't
+   select the currently active mode", or "already selected, re-clicking is a
+   no-op") -- keep it at full opacity so "strongly highlighted AND disabled"
+   doesn't wash out under the generic button:disabled dimming below. */
+.token-health__segmented .token-health__segment--selected:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 .token-health__hint {
@@ -148,6 +201,33 @@
 
 .token-health__hint--warn {
   color: var(--amber, #b7791f);
+}
+
+/* "Active now" mode badge -- reuses SimBanner/LiveBanner's exact accent
+   colors (violet for simulation, red for live) so the same mode reads
+   identically wherever it appears in the app. */
+.token-health__mode-pill {
+  display: inline-flex;
+  align-items: center;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.token-health__mode-pill--simulation {
+  background: rgba(147, 80, 255, 0.14);
+  border-color: var(--violet);
+  color: var(--violet-light);
+}
+
+.token-health__mode-pill--live {
+  background: rgba(255, 123, 114, 0.16);
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .token-health__validation {

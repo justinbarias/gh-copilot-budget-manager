@@ -25,6 +25,61 @@ function formatSyncStatus(status: SyncStatus | null): string {
 
 type HostKind = TenantConfig['hostKind'];
 
+// Task 9.3-lite rework: Mode card segment logic, pulled out to a pure helper
+// so the "which segment is highlighted/disabled/labelled how" decision is
+// computed once and is trivially eyeballed against the behavior matrix in the
+// task brief, rather than re-derived inline in JSX conditionals.
+type Mode = 'simulation' | 'live';
+
+function modeLabel(m: Mode): string {
+  return m === 'simulation' ? 'Simulation' : 'Live';
+}
+
+interface SegmentInfo {
+  /** Real `disabled` attribute -- never CSS-only. */
+  disabled: boolean;
+  /** Strong accent highlight -- always the segment matching `modeSelection`. */
+  highlight: boolean;
+  label: string;
+  /** Rendered as DOM text (screen-reader readable), never CSS `content`. */
+  subLabel: string | null;
+}
+
+function segmentInfo(target: Mode, active: Mode | null, selected: Mode | null): SegmentInfo {
+  // Loading: neither segment commits to a highlight/label yet -- avoids a
+  // flash of the wrong state before both `getMode()` and
+  // `getAppModeSetting()` resolve.
+  if (active === null || selected === null) {
+    return { disabled: true, highlight: false, label: modeLabel(target), subLabel: null };
+  }
+  const isSelected = target === selected;
+  const isActive = target === active;
+  const pending = selected !== active;
+  if (isSelected) {
+    // The segment reflecting the persisted selection is always the highlight
+    // -- "active now" when there's no pending change, "on next start" when
+    // there is. Disabled either way: re-selecting the same value is a no-op,
+    // and this is also the "can't select the currently active mode" case
+    // when there's no pending change.
+    return {
+      disabled: true,
+      highlight: true,
+      label: modeLabel(target),
+      subLabel: pending ? '⧗ on next start' : '✓ active now',
+    };
+  }
+  if (isActive) {
+    // Pending change: this segment is the mode the running process is
+    // actually in, but it's no longer the persisted selection. Clicking it
+    // is the cancel path -- it MUST stay enabled, or a pending change could
+    // never be reverted.
+    return { disabled: false, highlight: false, label: modeLabel(target), subLabel: 'active now — click to cancel' };
+  }
+  // No pending change, and this segment is neither active nor selected: it
+  // IS the available action.
+  return { disabled: false, highlight: false, label: `Switch to ${modeLabel(target)}`, subLabel: null };
+}
+
 function readSmokeToText(result: ReadSmokeResult): string {
   if (result.refused) {
     return `Live read smoke refused: ${result.reason}`;
@@ -37,7 +92,7 @@ function readSmokeToText(result: ReadSmokeResult): string {
 export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) {
   const api = useApiClient();
 
-  const [mode, setMode] = useState<'simulation' | 'live' | null>(null);
+  const [mode, setMode] = useState<Mode | null>(null);
   const [hasPat, setHasPat] = useState<boolean | null>(null);
   const [patInput, setPatInput] = useState('');
   const [patBusy, setPatBusy] = useState(false);
@@ -47,7 +102,7 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
   // Task 9.3-lite: the PERSISTED mode selection (app_settings 'app_mode') --
   // distinct from `mode`, which is the RESOLVED mode of the running process.
   // Changing the selection does not re-resolve the process (restart required).
-  const [modeSelection, setModeSelection] = useState<'simulation' | 'live' | null>(null);
+  const [modeSelection, setModeSelection] = useState<Mode | null>(null);
   const [modeSaving, setModeSaving] = useState(false);
 
   // Task 9.3-lite: live-write arming card local state.
@@ -115,7 +170,7 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
     }
   }
 
-  async function handleSelectMode(next: 'simulation' | 'live') {
+  async function handleSelectMode(next: Mode) {
     if (next === modeSelection || modeSaving) return;
     setModeSaving(true);
     try {
@@ -207,6 +262,9 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
   }
 
   const isSimulation = mode === 'simulation';
+  // Task 9.3-lite rework: the selection differs from the resolved mode --
+  // i.e. a restart is required to apply it.
+  const modePending = mode !== null && modeSelection !== null && mode !== modeSelection;
 
   return (
     <section className="token-health">
@@ -218,41 +276,55 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
         </p>
 
         <div className="token-health__row">
-          <span className="token-health__label">Resolved mode (now)</span>
-          <span className="mono" data-testid="mode-resolved">
+          <span className="token-health__label">Active now</span>
+          <span
+            className={`mono token-health__mode-pill token-health__mode-pill--${mode ?? 'loading'}`}
+            data-testid="mode-resolved"
+          >
             {mode ?? 'Loading…'}
           </span>
         </div>
 
-        <div className="token-health__row">
-          <span className="token-health__label">Selection (on next start)</span>
+        <div className="token-health__row token-health__row--mode-select">
+          <span className="token-health__label">Change mode</span>
           <div className="token-health__segmented" role="group" aria-label="Mode selection">
-            <button
-              type="button"
-              className={`token-health__segment${modeSelection === 'simulation' ? ' token-health__segment--active' : ''}`}
-              aria-pressed={modeSelection === 'simulation'}
-              onClick={() => handleSelectMode('simulation')}
-              disabled={modeSaving || modeSelection === null}
-              data-testid="mode-select-simulation"
-            >
-              Simulation
-            </button>
-            <button
-              type="button"
-              className={`token-health__segment${modeSelection === 'live' ? ' token-health__segment--active' : ''}`}
-              aria-pressed={modeSelection === 'live'}
-              onClick={() => handleSelectMode('live')}
-              disabled={modeSaving || modeSelection === null}
-              data-testid="mode-select-live"
-            >
-              Live
-            </button>
+            {(['simulation', 'live'] as const).map((target) => {
+              const info = segmentInfo(target, mode, modeSelection);
+              return (
+                <button
+                  key={target}
+                  type="button"
+                  className={`token-health__segment${info.highlight ? ` token-health__segment--selected token-health__segment--selected-${target}` : ''}`}
+                  aria-pressed={modeSelection === target}
+                  onClick={() => handleSelectMode(target)}
+                  disabled={modeSaving || info.disabled}
+                  data-testid={`mode-select-${target}`}
+                >
+                  <span className="token-health__segment-label">{info.label}</span>
+                  {info.subLabel && <span className="token-health__segment-sublabel">{info.subLabel}</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <p className="token-health__hint token-health__hint--warn" data-testid="mode-restart-note">
-          Restart the app to apply a mode change.
-        </p>
+        {modePending ? (
+          // Loud, amber pending notice -- only rendered while a change is
+          // actually pending (root cause (c) from the maintainer's report:
+          // this used to show unconditionally).
+          <p className="token-health__hint token-health__hint--warn" data-testid="mode-restart-note">
+            ⧗ Pending restart — this app is still running in {(mode as Mode).toUpperCase()}; it will start in{' '}
+            {(modeSelection as Mode).toUpperCase()} on next launch. Restart to apply, or click{' '}
+            {modeLabel(mode as Mode)} to cancel.
+          </p>
+        ) : (
+          mode !== null &&
+          modeSelection !== null && (
+            <p className="token-health__hint" data-testid="mode-quiet-hint">
+              Changing the mode takes effect on next launch.
+            </p>
+          )
+        )}
 
         {modeSelection === 'live' && hasPat === false && (
           <p className="token-health__hint" data-testid="mode-live-no-pat-note">

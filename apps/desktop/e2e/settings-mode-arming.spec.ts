@@ -64,15 +64,42 @@ test('Settings Mode card persists a selection; arming is inert in simulation; Si
     await window.locator('.nav').getByRole('button', { name: 'Settings' }).click();
 
     // --- Mode card ---------------------------------------------------------
-    // Fresh DB: resolved mode + persisted selection both simulation.
+    // Fresh DB: resolved mode + persisted selection both simulation, no
+    // pending change yet.
+    // Task 9.3-lite rework (maintainer feedback): the currently-active
+    // segment is disabled + reads "active now"; the other segment is
+    // enabled and reads as the action ("Switch to Live"); no pending
+    // notice; a quiet next-launch hint instead.
     await expect(window.getByTestId('mode-resolved')).toHaveText('simulation');
     expect(await appModeSetting(window)).toBe('simulation');
-    await expect(window.getByTestId('mode-restart-note')).toHaveText(/restart the app to apply a mode change/i);
+    await expect(window.getByTestId('mode-select-simulation')).toBeDisabled();
+    await expect(window.getByTestId('mode-select-simulation')).toContainText(/active now/i);
+    await expect(window.getByTestId('mode-select-live')).toBeEnabled();
+    await expect(window.getByTestId('mode-select-live')).toContainText(/switch to live/i);
+    await expect(window.getByTestId('mode-restart-note')).toHaveCount(0);
+    await expect(window.getByTestId('mode-quiet-hint')).toHaveText(/next launch/i);
 
-    // Switch the selection to Live -> persisted (getAppModeSetting reflects it).
+    // Switch the selection to Live -> persisted (getAppModeSetting reflects it),
+    // and the card flips into the "pending restart" state.
     await window.getByTestId('mode-select-live').click();
     await expect.poll(() => appModeSetting(window)).toBe('live');
     await expect(window.getByTestId('mode-select-live')).toHaveAttribute('aria-pressed', 'true');
+    await expect(window.getByTestId('mode-select-live')).toContainText(/on next start/i);
+    await expect(window.getByTestId('mode-select-live')).toBeDisabled();
+
+    // The active-mode segment (Simulation) must stay ENABLED in the pending
+    // state -- this is the cancel path, and disabling it would trap the user
+    // in a pending change they can't revert.
+    await expect(window.getByTestId('mode-select-simulation')).toBeEnabled();
+    await expect(window.getByTestId('mode-select-simulation')).toContainText(/active now.*cancel/i);
+
+    // Loud pending notice, naming both modes and "next launch".
+    const pendingNote = window.getByTestId('mode-restart-note');
+    await expect(pendingNote).toBeVisible();
+    await expect(pendingNote).toContainText(/SIMULATION/);
+    await expect(pendingNote).toContainText(/LIVE/);
+    await expect(pendingNote).toContainText(/next launch/i);
+    await expect(window.getByTestId('mode-quiet-hint')).toHaveCount(0);
 
     // The RUNNING process does NOT re-resolve: still simulation, banner unchanged.
     await expect(window.getByTestId('mode-resolved')).toHaveText('simulation');
@@ -81,9 +108,13 @@ test('Settings Mode card persists a selection; arming is inert in simulation; Si
     // A live selection with no PAT gets the explanatory note.
     await expect(window.getByTestId('mode-live-no-pat-note')).toBeVisible();
 
-    // Switch back to Simulation -> persisted.
+    // Switch back to Simulation (the cancel path) -> persisted, pending notice
+    // clears, Simulation is disabled again.
     await window.getByTestId('mode-select-simulation').click();
     await expect.poll(() => appModeSetting(window)).toBe('simulation');
+    await expect(window.getByTestId('mode-restart-note')).toHaveCount(0);
+    await expect(window.getByTestId('mode-select-simulation')).toBeDisabled();
+    await expect(window.getByTestId('mode-select-simulation')).toContainText(/active now/i);
 
     // --- Write-arming card (inert in simulation) ---------------------------
     await expect(window.getByTestId('arming-sim-note')).toBeVisible();
