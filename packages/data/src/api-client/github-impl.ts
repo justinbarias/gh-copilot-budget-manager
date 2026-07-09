@@ -36,6 +36,8 @@ import {
   type IngestResourceType,
 } from '../sync/sync-now.js';
 import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
+import { getAppModeSetting as readAppModeSetting, setAppModeSetting as writeAppModeSetting } from '../settings/app-settings.js';
+import { isWriteArmed, setWriteArmed } from '../write/arming.js';
 import { assembleUsageState, fetchLiveControls } from '../write/live-state.js';
 import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS } from '../msw/fixtures/scenarios.js';
 import { runReadSmoke } from '../smoke/read-smoke.js';
@@ -87,6 +89,8 @@ import type {
   SyncStatus,
   UsageSummary,
   UsageSummaryParams,
+  WriteArmingRequest,
+  WriteArmingState,
 } from './types.js';
 import {
   getActiveScenarioSummary,
@@ -782,6 +786,51 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       .run();
   }
 
+  // Task 9.3-lite: the PERSISTED mode selection (app_settings 'app_mode') --
+  // the in-app toggle that retired the COPILOT_BUDGET_FORCE_SIMULATION env
+  // seam. These are app-local DB reads/writes, safe in BOTH modes (it's the
+  // stored SELECTION, not a live mutation). Setting it does NOT re-resolve the
+  // running process's mode -- resolveMode reads it at boot; the Settings card
+  // says "restart to apply".
+  async function getAppModeSetting(): Promise<'simulation' | 'live'> {
+    return readAppModeSetting(config.db);
+  }
+  async function setAppModeSetting(mode: 'simulation' | 'live'): Promise<void> {
+    writeAppModeSetting(config.db, mode);
+  }
+
+  // Task 9.3-lite: live-write arming (write/arming.ts's process-memory
+  // singleton). In simulation (source 'msw') arming is INERT -- always
+  // { armed: false, enterpriseSlug: null } -- because sim never issues real
+  // writes (§6.8), so there is nothing to arm. In live mode the confirmation
+  // must equal the enterprise slug EXACTLY; a mismatch throws and does not arm
+  // (the slug is not a secret, so it is fine in the error message). Disarming
+  // never needs confirmation.
+  async function getWriteArmingState(): Promise<WriteArmingState> {
+    if (config.source === 'msw') {
+      return { armed: false, enterpriseSlug: null, mode: 'simulation' };
+    }
+    return { armed: isWriteArmed(), enterpriseSlug: enterprise, mode: 'live' };
+  }
+  async function setWriteArming(request: WriteArmingRequest): Promise<WriteArmingState> {
+    if (config.source === 'msw') {
+      // Inert in simulation: ignore the request (arming a no-op) and report
+      // the disarmed sim state -- §6.8, nothing to arm.
+      return { armed: false, enterpriseSlug: null, mode: 'simulation' };
+    }
+    if (request.action === 'disarm') {
+      setWriteArmed(false);
+      return { armed: false, enterpriseSlug: enterprise, mode: 'live' };
+    }
+    // action === 'arm': require the typed confirmation to equal the enterprise
+    // slug EXACTLY. On a mismatch, throw and leave the flag untouched.
+    if (request.confirmation !== enterprise) {
+      throw new Error('Confirmation does not match the enterprise slug.');
+    }
+    setWriteArmed(true);
+    return { armed: true, enterpriseSlug: enterprise, mode: 'live' };
+  }
+
   async function listHeavyUsers(): Promise<HeavyUser[]> {
     const [{ records: creditsUsedItems }, seats, costCentersRaw, budgetsRaw] = await Promise.all([
       fetchCycleCredits(),
@@ -1408,6 +1457,10 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     getUsageSummary,
     listCostCenters,
     updateCostCenterMapping,
+    getAppModeSetting,
+    setAppModeSetting,
+    getWriteArmingState,
+    setWriteArming,
     listHeavyUsers,
     listAlerts,
     getSyncStatus,

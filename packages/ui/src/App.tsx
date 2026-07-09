@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { cycleBounds } from '@copilot-budget/core';
-import type { ScenarioId, ScenarioSummary } from '@copilot-budget/data';
+import type { ScenarioId, ScenarioSummary, WriteArmingState } from '@copilot-budget/data';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
 import { SimBanner } from './components/SimBanner';
+import { LiveBanner } from './components/LiveBanner';
 import { ScenarioSelector } from './components/ScenarioSelector';
 import { Nav, type ScreenId } from './components/Nav';
 import { Audit } from './screens/Audit/Audit';
@@ -48,10 +49,19 @@ interface NavigateOptions {
   controlsFamily?: FamilyId;
 }
 
+// Task 9.3-lite: the Settings screen owns the Mode + Write-arming cards, and an
+// arm/disarm there must update the app-level banner PROMPTLY -- so App lifts the
+// arming state and hands Settings a refresh callback (see AppShell).
+interface SettingsProps {
+  armingState: WriteArmingState | null;
+  onArmingRefresh: () => void;
+}
+
 function renderScreen(
   screen: ScreenId,
   navigate: (screen: ScreenId, options?: NavigateOptions) => void,
   controlsInitialFamily: FamilyId | undefined,
+  settingsProps: SettingsProps,
 ) {
   switch (screen) {
     case 'overview':
@@ -91,7 +101,7 @@ function renderScreen(
     case 'audit':
       return <Audit />;
     case 'settings':
-      return <TokenHealth />;
+      return <TokenHealth armingState={settingsProps.armingState} onArmingRefresh={settingsProps.onArmingRefresh} />;
     default:
       return <ComingSoon screenName={SCREEN_TITLES[screen]} />;
   }
@@ -123,12 +133,32 @@ function AppShell() {
   const [activeScenarioId, setActiveScenarioId] = useState<ScenarioId | null>(null);
   const [scenarioVersion, setScenarioVersion] = useState(0);
   const [switching, setSwitching] = useState(false);
+  // Task 9.3-lite §6.8: the live-write arming state, lifted here so the banner
+  // and the Settings arming card share ONE source of truth. Fetched in both
+  // modes (getWriteArmingState reports the inert sim state in simulation).
+  const [armingState, setArmingState] = useState<WriteArmingState | null>(null);
+
+  // Re-read the arming state (and the resolved mode) on demand -- the Settings
+  // arming card calls this after every arm/disarm so the banner updates
+  // promptly (event-driven, not polled).
+  const refreshArmingState = useCallback(() => {
+    let cancelled = false;
+    Promise.all([api.getMode(), api.getWriteArmingState()]).then(([m, arming]) => {
+      if (cancelled) return;
+      setMode(m);
+      setArmingState(arming);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.getMode(), api.listScenarios()]).then(([m, list]) => {
+    Promise.all([api.getMode(), api.listScenarios(), api.getWriteArmingState()]).then(([m, list, arming]) => {
       if (cancelled) return;
       setMode(m);
+      setArmingState(arming);
       if (!list.refused) {
         setScenarios(list.scenarios);
         setActiveScenarioId(list.activeId);
@@ -191,8 +221,14 @@ function AppShell() {
     <div className="app-shell">
       {/* Global and unmistakable on every screen (CLAUDE.md §6.8): rendered
           above the two-column body, full-bleed across sidebar + main, so no
-          screen can ever mount without it in view. */}
-      <SimBanner />
+          screen can ever mount without it in view. Task 9.3-lite: EXACTLY ONE
+          banner shows -- SimBanner in simulation; the LiveBanner (armed danger
+          / read-only neutral) in live. It is impossible to be in live mode and
+          see "SIMULATION", or in simulation and see a live/armed banner. While
+          the mode is still resolving (null), render nothing rather than flash
+          the wrong banner. */}
+      {mode === 'simulation' && <SimBanner />}
+      {mode === 'live' && <LiveBanner armed={armingState?.armed === true} />}
       <div className="app-shell__body">
         <Nav
           screen={screen}
@@ -215,7 +251,7 @@ function AppShell() {
           {/* scenarioVersion remounts every screen on a scenario switch, so
               each screen's data effects re-run against the new fixture world. */}
           <div className="app-shell__content" key={scenarioVersion}>
-            {renderScreen(screen, navigate, controlsInitialFamily)}
+            {renderScreen(screen, navigate, controlsInitialFamily, { armingState, onArmingRefresh: refreshArmingState })}
           </div>
         </main>
       </div>

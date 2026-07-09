@@ -204,8 +204,7 @@ Default operating model for all work in this repo, not just one task:
 
 ```
 pnpm install        # also rebuilds better-sqlite3 for Electron's ABI (postinstall, see note below)
-pnpm dev            # electron + vite dev (simulation mode by default when no PAT)
-pnpm dev:live       # same, with the simulation force-lock disarmed (live only if a PAT is also stored) — read-only until Task 9.3's live-write arming lands
+pnpm dev            # electron + vite dev; mode is the in-app Settings → Mode toggle (persisted, default simulation). Live only when the selection is 'live' AND a PAT is stored; live writes stay disarmed until armed in Settings.
 pnpm test           # pnpm -r run test — vitest (unit/component, MSW)
 pnpm e2e            # playwright e2e against MSW (the automated gate)
 pnpm build          # build all packages

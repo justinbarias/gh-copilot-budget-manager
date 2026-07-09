@@ -19,22 +19,16 @@ CLAUDE.md §9 lists five open questions that gate real functionality. Answers ar
 
 ## Launching live mode
 
-`pnpm dev` always boots simulation mode — CLAUDE.md §9's open questions mean there's no PAT yet, and `apps/desktop/src/main/mode.ts` force-locks the app to simulation by default via `COPILOT_BUDGET_FORCE_SIMULATION`. To disarm that lock during local development:
-
-```
-pnpm dev:live
-```
-
-This sets `COPILOT_BUDGET_FORCE_SIMULATION=0` and runs the same dev chain as `pnpm dev`. The env-prefix syntax is macOS/Linux shell syntax; on Windows, set the variable separately first (e.g. `set COPILOT_BUDGET_FORCE_SIMULATION=0 && pnpm --filter @copilot-budget/desktop run dev` in `cmd`, or `$env:COPILOT_BUDGET_FORCE_SIMULATION=0; pnpm --filter @copilot-budget/desktop run dev` in PowerShell) — this repo is developed on macOS, so that path is untested.
-
-Disarming the lock does not, by itself, put the app in live mode: per CLAUDE.md §7, **mode = live only when the lock is disarmed AND a PAT is stored** (`resolveMode` in `packages/data/src/pat/mode.ts`). With no PAT saved, `dev:live` still boots simulation — that's expected, not a bug.
+`pnpm dev` boots the app; mode is chosen by an **in-app toggle** (Task 9.3-lite), not an env var. The selection is persisted (`app_settings` `app_mode`, default **simulation**) and resolved at startup: per CLAUDE.md §7, **mode = live only when the selection is `live` AND a PAT is stored** (`resolveMode` in `packages/data/src/pat/mode.ts`). A `live` selection with no PAT still resolves to simulation — that's expected, not a bug.
 
 In-app flow to reach live mode:
-1. **Settings → Token & permission health**: paste a classic PAT and **Save token**.
-2. **Validate token**: confirms token kind and the `manage_billing:enterprise` scope.
-3. **Tenant configuration**: set the host (`github.com` or `GHE.com` + subdomain) and enterprise slug, then **Save tenant**.
-4. **Live read smoke** (**Run live read smoke**): reads every enterprise billing/budget endpoint once and reconciles the response shape against what the app parses. Unavailable while simulating.
+1. **Settings → Mode**: switch the selection to **Live**. The card notes you must **restart the app to apply a mode change** (the selection does not re-resolve the running process).
+2. **Settings → Token & permission health**: paste a classic PAT and **Save token**.
+3. **Validate token**: confirms token kind and the `manage_billing:enterprise` scope.
+4. **Tenant configuration**: set the host (`github.com` or `GHE.com` + subdomain) and enterprise slug, then **Save tenant**.
+5. **Restart** `pnpm dev`. With the selection `live` and a PAT stored, the app now resolves to live.
+6. **Live read smoke** (**Run live read smoke**): reads every enterprise billing/budget endpoint once and reconciles the response shape against what the app parses. Unavailable while simulating.
 
-> **Caution — live mode is read-only until Task 9.3 lands.** Live-write arming (`docs/pending/plan.md` Task 9.3: read/write token separation + an explicit arming flow) is not yet built. Today, the single PAT saved above is used for both reads and writes, and the Controls apply path issues **real GitHub mutations** the moment mode is live — there is no arming gate stopping it. Until 9.3 ships, treat live mode strictly as read-only: validate → tenant config → live read smoke → browse dashboards. Do not exercise Controls' apply/grant actions against a live tenant.
-
-**Stale seam:** the in-app persisted simulation toggle originally slated for Task 1.7 was never built — `COPILOT_BUDGET_FORCE_SIMULATION` is currently the *only* switch between simulation and live, and it's an env var, not a Settings-screen control. Replacing it with a real in-app toggle (with the write-token separation and arming flow above) is tracked under the Task 9.x work in `docs/pending/plan.md`.
+> **Live writes are gated behind explicit arming (Task 9.3-lite).** In live mode the app boots **read-only**: the Controls apply path returns `not_armed` and issues **no** GitHub mutation until you arm live writes. **Settings → Live-write arming**: type the enterprise slug verbatim to confirm, then **Arm live writes**. Arming lives in main-process memory only — it is **disarmed on relaunch**, and a PAT/tenant change force-disarms it. Only while armed does an apply issue real budget/cap mutations; the app-level banner turns to a prominent **LIVE — writes ARMED** warning whenever it is.
+>
+> **Scope note — this is 9.3-*lite*.** Read/write token *separation* and RBAC-lite roles from the full Task 9.3 charter are still deferred: one PAT does both reads and writes. What 9.3-lite adds is the in-app mode toggle and the explicit live-write arming gate above.

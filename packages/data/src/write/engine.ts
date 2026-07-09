@@ -24,6 +24,7 @@ import { AI_CREDITS_BUDGET_SKU, internalBudgetIdentityToWire, type InternalBudge
 import * as schema from '../db/schema.js';
 import type { Db } from '../db/client.js';
 import { assembleUsageState, fetchLiveControls, type LiveControlsResult } from './live-state.js';
+import { isWriteArmed } from './arming.js';
 
 // CLAUDE.md §6.1/§6.2/§6.5 -- the "one write-path engine, two callers"
 // pipeline (PLAN.md Architecture Decisions): manual writes (Phase 4, this
@@ -199,7 +200,11 @@ export type ApplyPlanResult =
       auditEvents: readonly AppliedAuditEvent[];
       failedPlanEntryId: string;
       errorMessage: string;
-    };
+    }
+  // Live writes are DISARMED (Task 9.3-lite §6.8 safety gate): nothing was
+  // read, mutated, or audited. The caller must arm live writes (Settings)
+  // before applying. NEVER returned in simulation (source 'msw' is never gated).
+  | { status: 'not_armed'; enterpriseSlug: string };
 
 // Mode-scoped (CLAUDE.md §6.5 / §6.8, following the same fix
 // getLastSyncedControls/getLatestForecast already applied to the read side,
@@ -628,6 +633,17 @@ function toAppliedAuditEvent(row: AuditEventRow): AppliedAuditEvent {
 // 'partial_failure' with exactly that progress, rather than attempting to
 // undo already-accepted upstream mutations.
 export async function applyPlan(stagedPlan: Plan, options: ApplyPlanOptions): Promise<ApplyPlanResult> {
+  // Task 9.3-lite §6.8 defense-in-depth: gate EVERY live apply caller (manual
+  // Phase-4 applies + future auto-apply) behind explicit arming, as the very
+  // first statement -- before the live re-read or any octokit call. When live
+  // writes are disarmed, nothing is read, mutated, or audited. Simulation
+  // (source 'msw') is never gated: sim applies stay fully functional and
+  // visibly simulated. dryRunPlan is deliberately NOT gated -- a dry run never
+  // mutates, and simulate-before-apply must always work unarmed.
+  if (options.source === 'github' && !isWriteArmed()) {
+    return { status: 'not_armed', enterpriseSlug: options.enterprise };
+  }
+
   const live = await fetchLiveControls(options.octokit, options.enterprise, options.asOfDate);
   const currentPlan = diffControls(live.controls, options.desiredControls);
 

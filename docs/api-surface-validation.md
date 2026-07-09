@@ -935,6 +935,35 @@ one sim-only design collision documented below.**
   forecast) and the zero-ULB card against live data, and the live
   boot-mode log line.
 
+## Task 9.3-lite — §6.9 EXEMPT (app-local; no GitHub wire surface added)
+
+The in-app mode toggle + live-write arming change (2026-07-09) adds four
+`ApiClient` methods — `getAppModeSetting` / `setAppModeSetting`,
+`getWriteArmingState` / `setWriteArming` — and **none of them issue a GitHub
+request**. They are entirely app-local: the mode setting is a SQLite
+`app_settings` KV read/write (migration 0004), and arming is a main-process
+memory singleton (`write/arming.ts`, deliberately never persisted). No
+`octokit.request` / raw `fetch` / hand-wrapped path was introduced or changed,
+so there is no wire shape to validate against the OpenAPI description — §6.9 does
+not apply (confirmed by grepping the diff for new GitHub calls: none). The
+write-engine's live mutation paths (M1/M3/M4/M7, above) are unchanged; 9.3-lite
+only prepends the `not_armed` arming gate in front of them (`source==='github'
+&& !isWriteArmed()` returns before any live re-read or mutation; `source==='msw'`
+and `dryRunPlan` are never gated).
+
+Also in this change: the `COPILOT_BUDGET_FORCE_SIMULATION` env seam is **retired**
+(the Task 1.7 stale-seam note is resolved) — mode now resolves from the persisted
+`app_mode` selection AND PAT presence (`resolveMode`); the root `dev:live` script
+and the unused `cross-env` devDependency are removed. Both §6.7 gate halves green:
+Playwright headless (74 e2e incl. the new `settings-mode-arming.spec.ts`, 1
+pre-existing skip) + interactive CDP against the real Electron process
+(simulation, no PAT) — SimBanner in-viewport and unmistakable, the Settings Mode
+card + inert Write-arming card render to the design idiom, the mode selection
+persists without re-resolving the running process (restart-note + no-PAT-note
+shown), and no reproducible console error (a one-off Electron-internal
+`sandbox_bundle` prewarm artifact did not recur across four clean runs of the
+same flow).
+
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 
 - **`github/rest-api-description`, `descriptions/ghec/ghec.2026-03-10.json`**

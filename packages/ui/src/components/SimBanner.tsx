@@ -1,10 +1,11 @@
 import './SimBanner.css';
 
-// Persistent and unmistakable, by design: CLAUDE.md §6.8 requires simulation
-// to never look live, and PLAN.md Task 1.7 specifies this stays visible
-// "whenever not in a verified live+PAT state -- i.e., always, for MVP" (no
-// build in this repo has reached a verified live state yet). Once a real
-// verified-live concept exists (later phase), this can become conditional.
+// Unmistakable, by design: CLAUDE.md §6.8 requires simulation to never look
+// live. Task 9.3-lite made this CONDITIONAL (App.tsx): it renders ONLY when the
+// resolved mode is 'simulation'. In live mode App.tsx renders <LiveBanner />
+// instead, so this simulation banner (and the word "SIMULATION") can never
+// appear in live mode -- and the live/armed banner can never appear in
+// simulation. Exactly one banner is on screen at all times.
 export function SimBanner() {
   return (
     <div className="sim-banner" role="status">

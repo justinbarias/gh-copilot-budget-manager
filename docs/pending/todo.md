@@ -93,6 +93,7 @@ Checklist mirror of `docs/pending/plan.md`. One line per task; sizes in brackets
 - [x] 9.1 Tenant config, GHE host swap, API-version header everywhere, real PAT scope validation [M] (brought forward 2026-07-05; validated vs MSW, live confirmation lands with 9.2)
 - [ ] 9.2 Live read smoke — shape reconciliation, §6.9 rows upgraded to "confirmed against live", MSW corrected [M]
 - [ ] 9.3 Read/write token separation, live-write arming flow, RBAC-lite roles [M]
+  - [x] 9.3-lite (in-app mode toggle + live-write arming) — VALIDATED 2026-07-09 (both §6.7 halves green: Playwright + interactive CDP; §6.9 exempt — 4 methods app-local): persisted `app_settings` `app_mode` selection retires the `COPILOT_BUDGET_FORCE_SIMULATION` env seam; live-write arming gate (main-process-memory flag, typed enterprise-slug confirmation, disarm-on-relaunch, force-disarm on credential/tenant change); mode-aware banner (SimBanner in sim, prominent ARMED / neutral read-only LiveBanner in live). Still DEFERRED from full 9.3 (parent line stays open): read/write token SEPARATION (one PAT does both) and RBAC-lite roles.
 - [ ] 9.4 First guarded live write + drift reconcile + revert; runbook (`docs/live-write-runbook.md`) [S/M]
 - [ ] 9.5 Tenant-shape feature gating (Business vs Enterprise, paid-usage off, pool posture defaults) [M]
 

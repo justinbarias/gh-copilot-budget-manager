@@ -112,6 +112,33 @@
   font-size: 13px;
 }
 
+/* Task 9.3-lite: Mode card's segmented selection control. */
+.token-health__segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  overflow: hidden;
+}
+
+.token-health__segment {
+  background: var(--canvas);
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.token-health__segment + .token-health__segment {
+  border-left: 1px solid var(--border);
+}
+
+.token-health__segment--active {
+  background: var(--surface-3);
+  color: var(--text-default);
+}
+
 .token-health__hint {
   font-size: 12px;
   color: var(--text-subtle);

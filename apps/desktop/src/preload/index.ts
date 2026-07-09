@@ -10,6 +10,10 @@ const apiClientBridge: ApiClient = {
   listCostCenters: () => ipcRenderer.invoke('apiClient:listCostCenters'),
   updateCostCenterMapping: (costCenterId, mapping) =>
     ipcRenderer.invoke('apiClient:updateCostCenterMapping', costCenterId, mapping),
+  getAppModeSetting: () => ipcRenderer.invoke('apiClient:getAppModeSetting'),
+  setAppModeSetting: (mode) => ipcRenderer.invoke('apiClient:setAppModeSetting', mode),
+  getWriteArmingState: () => ipcRenderer.invoke('apiClient:getWriteArmingState'),
+  setWriteArming: (request) => ipcRenderer.invoke('apiClient:setWriteArming', request),
   listHeavyUsers: () => ipcRenderer.invoke('apiClient:listHeavyUsers'),
   listAlerts: () => ipcRenderer.invoke('apiClient:listAlerts'),
   getSyncStatus: () => ipcRenderer.invoke('apiClient:getSyncStatus'),

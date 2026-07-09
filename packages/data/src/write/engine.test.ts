@@ -12,6 +12,7 @@ import { server } from '../msw/server.js';
 import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE } from '../msw/fixtures/index.js';
 import { applyPlan, dryRunPlan, type ApplyPlanOptions } from './engine.js';
 import { fetchLiveControls } from './live-state.js';
+import { setWriteArmed } from './arming.js';
 
 // One mock, three consumers (CLAUDE.md §7): this test drives the same MSW
 // server that simulation mode and Playwright e2e attach.
@@ -28,9 +29,16 @@ beforeEach(() => {
   db = createDb(path.join(tmpDir, 'test.sqlite'));
   runMigrations(db);
   octokit = new Octokit({ baseUrl: GITHUB_API_BASE });
+  // Task 9.3-lite: these write-path tests exercise the apply pipeline itself,
+  // which for a source:'github' apply now requires live writes to be ARMED
+  // (the §6.8 gate). Arm by default here; the dedicated gate describe below
+  // disarms explicitly to prove the gate. source:'msw' applies are never
+  // gated regardless.
+  setWriteArmed(true);
 });
 
 afterEach(() => {
+  setWriteArmed(false);
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -837,5 +845,69 @@ describe('applyPlan -- audit dataSnapshotId is scoped to the apply\'s own source
     if (result.status !== 'applied') throw new Error('unreachable');
     expect(result.auditEvents).toHaveLength(1);
     expect(result.auditEvents[0]!.dataSnapshotId).toBeNull();
+  });
+});
+
+// Task 9.3-lite §6.8: the live-write arming gate is the VERY FIRST thing
+// applyPlan does -- disarmed + source:'github' returns not_armed with no live
+// re-read, no mutation, no audit. source:'msw' is never gated; dryRunPlan is
+// never gated.
+describe('applyPlan live-write arming gate', () => {
+  it('source:github + disarmed -> not_armed, and NO octokit request is issued by applyPlan', async () => {
+    setWriteArmed(false); // override the suite default arm
+
+    // Stage the plan FIRST (that read legitimately hits MSW), then start
+    // capturing -- so we observe ONLY the requests applyPlan itself makes.
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
+
+    const requests: string[] = [];
+    const onStart = ({ request }: { request: Request }) => {
+      requests.push(`${request.method} ${request.url}`);
+    };
+    server.events.on('request:start', onStart);
+    try {
+      const result = await applyPlan(stagedPlan, { ...baseOptions(desiredControls), source: 'github' });
+
+      expect(result.status).toBe('not_armed');
+      if (result.status !== 'not_armed') throw new Error('unreachable');
+      expect(result.enterpriseSlug).toBe(ENTERPRISE_SLUG);
+
+      // The gate returns before the live re-read or any mutation: applyPlan
+      // issued zero requests of any kind.
+      expect(requests).toHaveLength(0);
+
+      // Nothing was audited.
+      expect(readAuditChain(db)).toHaveLength(0);
+    } finally {
+      server.events.removeListener('request:start', onStart);
+    }
+  });
+
+  it('source:github + armed -> proceeds normally (applied)', async () => {
+    setWriteArmed(true);
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
+    const result = await applyPlan(stagedPlan, { ...baseOptions(desiredControls), source: 'github' });
+    expect(result.status).toBe('applied');
+  });
+
+  it('source:msw is never gated even when disarmed', async () => {
+    setWriteArmed(false);
+    const { stagedPlan, desiredControls } = await stageWorkforceAmountChangePlan();
+    const result = await applyPlan(stagedPlan, baseOptions(desiredControls));
+    expect(result.status).toBe('applied');
+  });
+
+  it('dryRunPlan is never gated (disarmed source:github still previews)', async () => {
+    setWriteArmed(false);
+    const live = await fetchLiveControls(octokit, ENTERPRISE_SLUG, new Date('2026-06-14T00:00:00.000Z'));
+    const desiredControls: ControlState[] = live.controls.map((c) =>
+      c.kind === 'budget' && c.scope === 'cost_center' && c.entityName === WORKFORCE_CC ? { ...c, amountCredits: 65_000 } : c,
+    );
+    const dryRun = await dryRunPlan(desiredControls, {
+      enterprise: ENTERPRISE_SLUG,
+      octokit,
+      asOfDate: new Date('2026-06-14T00:00:00.000Z'),
+    });
+    expect(dryRun.plan.entries).toHaveLength(1);
   });
 });

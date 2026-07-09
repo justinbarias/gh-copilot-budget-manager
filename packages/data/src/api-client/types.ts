@@ -127,6 +127,32 @@ export type ReadSmokeResult =
   | { refused: true; reason: string }
   | { refused: false; ranAt: string; results: ReadSmokeEndpointResult[] };
 
+/**
+ * Task 9.3-lite: the live-write arming state the Settings arming card + the
+ * app-level banner read. `armed` is process-memory-only (write/arming.ts) and
+ * is ALWAYS false in simulation mode -- arming is inert there (§6.8: sim never
+ * issues real writes, so there is nothing to arm). `mode` tells the UI whether
+ * the gate applies at all; `enterpriseSlug` is the confirmation phrase the
+ * admin must type verbatim to arm (a slug is not a secret, so it can be shown
+ * as a hint) -- null in simulation mode.
+ */
+export interface WriteArmingState {
+  /** True only when live writes are currently permitted this process-session.
+   *  ALWAYS false in simulation mode (arming is inert there). */
+  armed: boolean;
+  /** The enterprise slug the admin must type verbatim to arm (the confirmation
+   *  phrase) -- so the UI can show the hint. null in simulation mode. */
+  enterpriseSlug: string | null;
+  /** Resolved mode context, so the UI knows the gate/arming applies only live. */
+  mode: 'simulation' | 'live';
+}
+
+export interface WriteArmingRequest {
+  action: 'arm' | 'disarm';
+  /** Required for 'arm': must equal the enterprise slug EXACTLY. Ignored for 'disarm'. */
+  confirmation?: string;
+}
+
 export interface UsageSummaryParams {
   costCenterId?: string;
 }
@@ -344,6 +370,33 @@ export interface ApiClient {
    * survives it (syncNow's cost-center upsert only touches name/state).
    */
   updateCostCenterMapping(costCenterId: string, mapping: CostCenterMappingInput): Promise<void>;
+  /**
+   * Task 9.3-lite SANCTIONED ADDITIONS (2026-07-09, maintainer-locked
+   * decisions: in-app mode toggle + live-write arming; RBAC-lite deferred
+   * indefinitely; one PAT, no read/write token separation).
+   *
+   * getAppModeSetting/setAppModeSetting: the PERSISTED mode selection
+   * (app_settings 'app_mode') -- the in-app toggle that retired the
+   * COPILOT_BUDGET_FORCE_SIMULATION env seam. Setting it does NOT re-resolve
+   * the running process's mode (relaunch-required mechanic; the Settings card
+   * says "restart to apply"); resolution itself stays resolveMode's job
+   * (selection === 'live' AND a stored PAT -> live).
+   */
+  getAppModeSetting(): Promise<'simulation' | 'live'>;
+  setAppModeSetting(mode: 'simulation' | 'live'): Promise<void>;
+  /**
+   * Live-write arming (Task 9.3-lite). The armed flag lives in MAIN-PROCESS
+   * MEMORY ONLY -- deliberately never persisted, so a relaunch disarms by
+   * construction. Arming requires the typed confirmation to equal the
+   * ENTERPRISE SLUG exactly (validated main-side against the client's own
+   * enterprise -- the renderer only ever supplies what the admin typed);
+   * a mismatch rejects and does not arm. In simulation mode arming is inert
+   * (always resolves { armed: false }): the gate exists for real GitHub
+   * writes, and sim applies stay fully functional + visibly simulated
+   * (§6.8). Disarming never needs confirmation.
+   */
+  getWriteArmingState(): Promise<WriteArmingState>;
+  setWriteArming(request: WriteArmingRequest): Promise<WriteArmingState>;
   listHeavyUsers(): Promise<HeavyUser[]>;
   listAlerts(): Promise<Alert[]>;
   getSyncStatus(): Promise<SyncStatus>;

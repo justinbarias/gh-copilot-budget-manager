@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { app, ipcMain } from 'electron';
-import { createGitHubApiClient } from '@copilot-budget/data/api-client';
+import { createGitHubApiClient, setWriteArmed } from '@copilot-budget/data/api-client';
 import { createTenantConfigStore, resolveBaseUrl } from '@copilot-budget/data/tenant';
-import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams, WriteArmingRequest } from '@copilot-budget/data';
 import type { TenantConfigStore } from '@copilot-budget/data/tenant';
 import type { PatStore } from '@copilot-budget/data/pat';
 import { getDb } from './db';
@@ -106,8 +106,13 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
       return; // sim mode: no auth/tenant to re-derive.
     }
     client = await buildClient(source, tenantStore, patStore);
+    // Task 9.3-lite §6.8 (defense in depth): a PAT or tenant change must force
+    // re-arming -- the newly credentialed client points at potentially
+    // different real budgets/caps, so any prior arming is void. Live writes
+    // stay disarmed until the admin explicitly re-arms in Settings.
+    setWriteArmed(false);
     console.log(
-      '[mode] credentials/tenant changed: live ApiClient REBUILT with the currently persisted PAT + tenant config — mode itself does NOT re-resolve until relaunch.',
+      '[mode] credentials/tenant changed: live ApiClient REBUILT with the currently persisted PAT + tenant config — live writes disarmed — re-arm required — mode itself does NOT re-resolve until relaunch.',
     );
   }
 
@@ -119,6 +124,16 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   // DB metadata write -- never a GitHub request (safe pre-9.3, both modes).
   ipcMain.handle('apiClient:updateCostCenterMapping', (_event, costCenterId: string, mapping: CostCenterMappingInput) =>
     client.updateCostCenterMapping(costCenterId, mapping),
+  );
+  // Task 9.3-lite: the persisted mode selection + live-write arming. Same
+  // per-method channel pattern as every other bridged method.
+  ipcMain.handle('apiClient:getAppModeSetting', () => client.getAppModeSetting());
+  ipcMain.handle('apiClient:setAppModeSetting', (_event, mode: 'simulation' | 'live') =>
+    client.setAppModeSetting(mode),
+  );
+  ipcMain.handle('apiClient:getWriteArmingState', () => client.getWriteArmingState());
+  ipcMain.handle('apiClient:setWriteArming', (_event, request: WriteArmingRequest) =>
+    client.setWriteArming(request),
   );
   ipcMain.handle('apiClient:listHeavyUsers', () => client.listHeavyUsers());
   ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());

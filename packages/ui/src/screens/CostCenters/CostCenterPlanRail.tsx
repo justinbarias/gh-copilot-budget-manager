@@ -206,6 +206,19 @@ function ApplyResultPanel({
     );
   }
 
+  if (result.status === 'not_armed') {
+    // Task 9.3-lite §6.8: live writes are disarmed -- nothing was read,
+    // mutated, or audited. Non-destructive rail message, same slot as
+    // drift/blocked.
+    return (
+      <div className="plan-rail__result plan-rail__result--blocked" role="status">
+        <div className="plan-rail__result-title">
+          <span aria-hidden="true">🔒 </span>Live writes are disarmed — arm live writes in Settings before applying.
+        </div>
+      </div>
+    );
+  }
+
   const partial: PartialFailureArm = result;
   return (
     <div className="plan-rail__result plan-rail__result--partial" role="status">

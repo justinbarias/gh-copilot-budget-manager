@@ -11,6 +11,7 @@ import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE, HISTORIC
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { costCenter, costCenterMember, forecast as forecastTable, license, snapshot } from '../db/schema.js';
 import { createGitHubApiClient, type GitHubApiClientConfig } from './github-impl.js';
+import { setWriteArmed } from '../write/arming.js';
 
 // One mock, three consumers (CLAUDE.md §7): this test drives the same MSW
 // server that simulation mode and Playwright e2e attach — never a fixture
@@ -762,5 +763,64 @@ describe('createGitHubApiClient', () => {
     const mutations = seen.filter((r) => r.method !== 'GET');
     expect(mutations.length).toBeGreaterThan(0);
     for (const r of seen) expect(r.header).toBe('2026-03-10');
+  });
+});
+
+// Task 9.3-lite: the persisted mode selection + live-write arming, driven
+// through the ApiClient surface (the exact methods the preload bridge exposes).
+describe('Task 9.3-lite: mode selection + live-write arming', () => {
+  let tmpDir: string;
+  let db: Db;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-arming-test-'));
+    db = createDb(path.join(tmpDir, 'test.sqlite'));
+    runMigrations(db);
+    setWriteArmed(false); // reset the process-memory singleton per test
+  });
+
+  afterEach(() => {
+    setWriteArmed(false);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('getAppModeSetting defaults to simulation and setAppModeSetting roundtrips', async () => {
+    const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw' });
+    expect(await client.getAppModeSetting()).toBe('simulation');
+    await client.setAppModeSetting('live');
+    expect(await client.getAppModeSetting()).toBe('live');
+    await client.setAppModeSetting('simulation');
+    expect(await client.getAppModeSetting()).toBe('simulation');
+  });
+
+  it('simulation source: arming is INERT (state disarmed, arm is a no-op)', async () => {
+    const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw' });
+    expect(await client.getWriteArmingState()).toEqual({ armed: false, enterpriseSlug: null, mode: 'simulation' });
+    // Even a "correct" confirmation is inert in sim.
+    const after = await client.setWriteArming({ action: 'arm', confirmation: ENTERPRISE_SLUG });
+    expect(after).toEqual({ armed: false, enterpriseSlug: null, mode: 'simulation' });
+    expect(await client.getWriteArmingState()).toEqual({ armed: false, enterpriseSlug: null, mode: 'simulation' });
+  });
+
+  it('github source: arm with the correct slug arms; wrong slug throws and stays disarmed; disarm disarms', async () => {
+    const client = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'github' });
+
+    expect(await client.getWriteArmingState()).toEqual({ armed: false, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
+
+    // Wrong confirmation: throws, and the flag stays disarmed.
+    await expect(client.setWriteArming({ action: 'arm', confirmation: 'not-the-slug' })).rejects.toThrow(
+      'Confirmation does not match the enterprise slug.',
+    );
+    expect(await client.getWriteArmingState()).toEqual({ armed: false, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
+
+    // Correct confirmation: arms.
+    const armed = await client.setWriteArming({ action: 'arm', confirmation: ENTERPRISE_SLUG });
+    expect(armed).toEqual({ armed: true, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
+    expect(await client.getWriteArmingState()).toEqual({ armed: true, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
+
+    // Disarm needs no confirmation.
+    const disarmed = await client.setWriteArming({ action: 'disarm' });
+    expect(disarmed).toEqual({ armed: false, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
+    expect(await client.getWriteArmingState()).toEqual({ armed: false, enterpriseSlug: ENTERPRISE_SLUG, mode: 'live' });
   });
 });

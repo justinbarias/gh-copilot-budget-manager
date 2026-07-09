@@ -169,3 +169,16 @@ export const auditEvent = sqliteTable('audit_event', {
   prevHash: text('prev_hash').notNull(),
   hash: text('hash').notNull(),
 });
+
+// Task 9.3-lite (2026-07-09, maintainer-approved additive migration 0004):
+// app-local key-value settings. First key: 'app_mode' ('simulation' | 'live')
+// -- the persisted in-app mode toggle that RETIRES the
+// COPILOT_BUDGET_FORCE_SIMULATION env-var seam. Deliberately generic (a KV
+// table, not a mode column) so future app-local settings need no further
+// migrations. NOTE: the live-write ARMED state is NOT stored here -- it is
+// main-process memory only, by design (relaunch disarms).
+export const appSettings = sqliteTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
