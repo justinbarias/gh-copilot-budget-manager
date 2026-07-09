@@ -15,6 +15,7 @@ import { CostCenterPlanRail } from './CostCenterPlanRail';
 import { removeUserFromOtherCostCenters } from './costCenterMembership';
 import { useCostCenterPlanRail } from './useCostCenterPlanRail';
 import { formatCredits, formatDewrMapping, formatSignedCredits } from './CostCentersTable';
+import { EditMappingModal } from './EditMappingModal';
 import './DrillModal.css';
 import './CostCenterLifecycleModal.css';
 
@@ -57,6 +58,8 @@ export function DrillModal({ costCenter, onClose, onApplied }: DrillModalProps) 
   // loading. After a successful apply it's reset to null and re-seeds from the
   // freshly reloaded live members (which then already include the change).
   const [stagedMembers, setStagedMembers] = useState<readonly CostCenterResourceRef[] | null>(null);
+  // 2026-07-09 live-correctness round: the app-local DEWR mapping editor.
+  const [editingMapping, setEditingMapping] = useState(false);
   // Maintainer UX addition (Task 4.13): the add-member picker is a searchable
   // combobox, not a plain <select> -- 81 seats makes an unfiltered dropdown
   // unusable. `addFilter` is the type-to-filter query; `addOpen` toggles the
@@ -130,11 +133,13 @@ export function DrillModal({ costCenter, onClose, onApplied }: DrillModalProps) 
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      // While the nested mapping editor is open, Escape closes IT (its own
+      // handler), not the whole drill.
+      if (event.key === 'Escape' && !editingMapping) onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [onClose, editingMapping]);
 
   const headroom = includedCapHeadroom(costCenter.includedUsageCap.computedLimitCredits, costCenter.mtdBurnCredits);
   const tone = classifyHeadroom(headroom, LOW_HEADROOM_THRESHOLD_CREDITS);
@@ -244,24 +249,56 @@ export function DrillModal({ costCenter, onClose, onApplied }: DrillModalProps) 
         <header className="drill-modal__header">
           <div>
             <div className="drill-modal__name">{costCenter.name}</div>
-            <div className="drill-modal__mapping">{formatDewrMapping(costCenter)}</div>
+            <div className="drill-modal__mapping">
+              {formatDewrMapping(costCenter)}{' '}
+              {/* App-local DEWR mapping edit (maintainer decision, 2026-07-09):
+                  local DB metadata only -- never a GitHub request, so it does
+                  NOT ride the dry-run/apply pipeline this modal uses for its
+                  real (membership) mutations. */}
+              <button
+                type="button"
+                className="drill-modal__edit-mapping"
+                aria-label={`Edit DEWR mapping — ${costCenter.name}`}
+                title="Edit this cost center's app-local DEWR mapping (never contacts GitHub)"
+                onClick={() => setEditingMapping(true)}
+              >
+                ✎ edit mapping
+              </button>
+            </div>
           </div>
           <button type="button" className="drill-modal__close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </header>
 
+        {editingMapping && (
+          <EditMappingModal
+            costCenter={costCenter}
+            onClose={() => setEditingMapping(false)}
+            onSaved={() => {
+              setEditingMapping(false);
+              onApplied('DEWR mapping saved (app-local — no GitHub change).');
+            }}
+          />
+        )}
+
         <div className="drill-modal__body">
           <div className="drill-modal__tiles">
             <RunwayTile label="MTD burn" value={formatCredits(costCenter.mtdBurnCredits)} sub="credits this cycle" />
             {/* The cap amount is GitHub-computed from attributed licenses --
-                surfaced read-only here, never as an editable field (CLAUDE.md §5). */}
-            <RunwayTile
-              label="Headroom"
-              value={headroomTileValue(headroom, tone)}
-              sub={`vs cap ${formatCredits(costCenter.includedUsageCap.computedLimitCredits)} · license-derived`}
-              tone={TILE_TONE[tone]}
-            />
+                surfaced read-only here, never as an editable field (CLAUDE.md §5).
+                Cap disabled (the live default) -> honest "— no cap" tile, same
+                semantics as the table (2026-07-09 live-correctness round). */}
+            {costCenter.includedUsageCap.enabled ? (
+              <RunwayTile
+                label="Headroom"
+                value={headroomTileValue(headroom, tone)}
+                sub={`vs cap ${formatCredits(costCenter.includedUsageCap.computedLimitCredits)} · license-derived`}
+                tone={TILE_TONE[tone]}
+              />
+            ) : (
+              <RunwayTile label="Headroom" value="— no cap" sub="included-usage cap disabled" />
+            )}
             <RunwayTile
               label="Excluded from ent. budget"
               value={costCenter.excludedFromEnterpriseBudget ? 'Yes' : 'No'}

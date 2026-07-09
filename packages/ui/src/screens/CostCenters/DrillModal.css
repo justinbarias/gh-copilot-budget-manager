@@ -135,3 +135,20 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* 2026-07-09: app-local DEWR mapping edit affordance in the drill header. */
+.drill-modal__edit-mapping {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  margin-left: 6px;
+}
+
+.drill-modal__edit-mapping:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+}

@@ -182,3 +182,15 @@
   color: var(--text-neutral);
   margin-top: 14px;
 }
+
+/* 2026-07-09 Cost Centers live-correctness round. */
+
+/* Cap-disabled: no limit exists, so no headroom number and a neutral chip. */
+.cc-table__no-cap {
+  color: var(--text-muted);
+}
+
+.cc-table__status--no-cap {
+  color: var(--text-muted);
+  border-color: var(--border);
+}

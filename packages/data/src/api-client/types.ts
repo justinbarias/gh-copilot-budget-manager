@@ -167,13 +167,30 @@ export interface CostCenterSummary {
   name: string;
   state: 'active' | 'archived';
   memberCount: number;
-  dewrDivision: string; // DEWR mapping is columns on the cost-center row (PLAN.md Architecture Decisions)
-  dewrBranch: string;
-  dewrProject: string;
-  mtdBurnCredits: number; // per-CC cycle-to-date credit total (pool + metered)
+  /**
+   * DEWR mapping -- an APP-LOCAL construct (maintainer decision, 2026-07-09
+   * Cost Centers live-correctness round): live cost centers created outside
+   * this app carry no mapping, so these are honestly nullable (the old
+   * `string` annotation lied -- live rows rendered "undefined → undefined →
+   * undefined"). Source precedence: the local DB columns (editable via
+   * updateCostCenterMapping) win over the simulation fixtures' wire
+   * enrichment; absent everywhere -> null -> the UI renders "— not mapped".
+   */
+  dewrDivision: string | null;
+  dewrBranch: string | null;
+  dewrProject: string | null;
+  /** Per-CC cycle-to-date credit total (pool + metered) -- DERIVED from the R5 per-CC usage fan-out (cycle-month, AI-credit rows), never a wire enrichment; 0 when the CC has no usage rows (never NaN). */
+  mtdBurnCredits: number;
   includedUsageCap: IncludedUsageCap;
   excludedFromEnterpriseBudget: boolean;
   members: CostCenterMemberSummary[];
+}
+
+/** updateCostCenterMapping's payload -- the three app-local DEWR columns; null clears a field. */
+export interface CostCenterMappingInput {
+  dewrDivision: string | null;
+  dewrBranch: string | null;
+  dewrProject: string | null;
 }
 
 export interface HeavyUserDailyPoint {
@@ -318,6 +335,15 @@ export interface ApplyPlanInput {
 export interface ApiClient {
   getUsageSummary(params?: UsageSummaryParams): Promise<UsageSummary>;
   listCostCenters(): Promise<CostCenterSummary[]>;
+  /**
+   * Maintainer-sanctioned addition (2026-07-09 Cost Centers live-correctness
+   * round -- the ONE new method): edits a cost center's app-local DEWR
+   * mapping. This is LOCAL DB METADATA ONLY -- it never issues a GitHub
+   * request (safe pre-9.3, works identically in both modes), which a test
+   * asserts. The row is upserted, so a mapping saved before the first Sync
+   * survives it (syncNow's cost-center upsert only touches name/state).
+   */
+  updateCostCenterMapping(costCenterId: string, mapping: CostCenterMappingInput): Promise<void>;
   listHeavyUsers(): Promise<HeavyUser[]>;
   listAlerts(): Promise<Alert[]>;
   getSyncStatus(): Promise<SyncStatus>;

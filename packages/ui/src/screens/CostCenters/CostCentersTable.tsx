@@ -25,8 +25,13 @@ export function formatSignedCredits(value: number): string {
   return value < 0 ? `−${formatCredits(Math.abs(value))}` : formatCredits(value);
 }
 
+// Honest empty state (2026-07-09 Cost Centers live-correctness round): live
+// cost centers created outside the app carry NO mapping -- render "— not
+// mapped", never the old "undefined → undefined → undefined". A partially
+// mapped CC renders an em-dash for each missing segment.
 export function formatDewrMapping(cc: CostCenterSummary): string {
-  return `${cc.dewrDivision} → ${cc.dewrBranch} → ${cc.dewrProject}`;
+  if (!cc.dewrDivision && !cc.dewrBranch && !cc.dewrProject) return '— not mapped';
+  return `${cc.dewrDivision ?? '—'} → ${cc.dewrBranch ?? '—'} → ${cc.dewrProject ?? '—'}`;
 }
 
 // Never color-only (design/README.md): amber/red headroom pairs the ⚠ glyph
@@ -53,6 +58,10 @@ const STATUS_META: Record<CostCenterStatus, { icon: string; label: string; modif
   'over-cap': { icon: '✕', label: 'over cap', modifier: 'over-cap' },
   excluded: { icon: '○', label: 'excluded', modifier: 'excluded' },
 };
+
+// Honest cap-disabled status (2026-07-09): a CC with no included-usage cap is
+// neither within nor over -- there is nothing to be within.
+const NO_CAP_STATUS_META = { icon: '—', label: 'no cap', modifier: 'no-cap' } as const;
 
 export function CostCentersTable() {
   const api = useApiClient();
@@ -144,10 +153,19 @@ export function CostCentersTable() {
           </thead>
           <tbody>
             {costCenters.map((cc) => {
+              // Honest no-cap semantics (2026-07-09 live-correctness round):
+              // a cap-disabled CC (ai_credit_pool_enabled=false -- the
+              // maintainer's live world) has NO limit to have headroom
+              // against; it is neither "within" nor "over cap". Headroom
+              // renders "— no cap" and status a neutral "no cap" chip.
+              // Exclusion still wins (it's an independent budget fact).
+              const capOff = !cc.includedUsageCap.enabled;
               const headroom = includedCapHeadroom(cc.includedUsageCap.computedLimitCredits, cc.mtdBurnCredits);
               const tone = classifyHeadroom(headroom, LOW_HEADROOM_THRESHOLD_CREDITS);
-              const status = costCenterStatus(cc.excludedFromEnterpriseBudget, headroom);
-              const statusMeta = STATUS_META[status];
+              const statusMeta =
+                capOff && !cc.excludedFromEnterpriseBudget
+                  ? NO_CAP_STATUS_META
+                  : STATUS_META[costCenterStatus(cc.excludedFromEnterpriseBudget, headroom)];
 
               return (
                 <tr
@@ -163,11 +181,14 @@ export function CostCentersTable() {
                   }}
                 >
                   <td className="cc-table__name">{cc.name}</td>
+                  {/* The edit-mapping affordance lives in the drill modal (the
+                      row's click target), keeping this cell's text exactly the
+                      mapping -- committed pins assert it verbatim. */}
                   <td className="cc-table__mapping">{formatDewrMapping(cc)}</td>
                   <td className="cc-table__members">{formatCredits(cc.memberCount)}</td>
                   <td className="cc-table__mtd">{formatCredits(cc.mtdBurnCredits)}</td>
-                  <td className={`cc-table__headroom cc-table__headroom--${tone}`}>
-                    <HeadroomValue headroom={headroom} tone={tone} />
+                  <td className={`cc-table__headroom${capOff ? '' : ` cc-table__headroom--${tone}`}`}>
+                    {capOff ? <span className="cc-table__no-cap">— no cap</span> : <HeadroomValue headroom={headroom} tone={tone} />}
                   </td>
                   <td>
                     <span className={`cc-table__status cc-table__status--${statusMeta.modifier}`}>

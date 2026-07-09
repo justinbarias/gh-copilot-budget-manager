@@ -2,7 +2,7 @@ import path from 'node:path';
 import { app, ipcMain } from 'electron';
 import { createGitHubApiClient } from '@copilot-budget/data/api-client';
 import { createTenantConfigStore, resolveBaseUrl } from '@copilot-budget/data/tenant';
-import type { ApiClient, ApplyPlanInput, ControlState, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams } from '@copilot-budget/data';
 import type { TenantConfigStore } from '@copilot-budget/data/tenant';
 import type { PatStore } from '@copilot-budget/data/pat';
 import { getDb } from './db';
@@ -115,6 +115,11 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
     client.getUsageSummary(params),
   );
   ipcMain.handle('apiClient:listCostCenters', () => client.listCostCenters());
+  // App-local DEWR mapping edit (maintainer-sanctioned, 2026-07-09): a local
+  // DB metadata write -- never a GitHub request (safe pre-9.3, both modes).
+  ipcMain.handle('apiClient:updateCostCenterMapping', (_event, costCenterId: string, mapping: CostCenterMappingInput) =>
+    client.updateCostCenterMapping(costCenterId, mapping),
+  );
   ipcMain.handle('apiClient:listHeavyUsers', () => client.listHeavyUsers());
   ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());
   ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());

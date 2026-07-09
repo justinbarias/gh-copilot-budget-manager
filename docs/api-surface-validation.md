@@ -756,12 +756,61 @@ Remaining items, when the live tenant + classic PAT
     enterprise spending-limit meter; sim pin 2,534 → 2,300 credits, live
     YTD → MTD). **`totalQuantity` deliberately remains report-span** — the
     decision named only the USD fields; **flagged asymmetry, pending a
-    maintainer word** (validator surfaced). Changed pins all
+    maintainer word** (validator surfaced — **resolved by item 25's
+    follow-up decision: aligned**). Changed pins all
     validator-recomputed: span-net 25.34 → 23.00 (Sep-1's 2.34 out);
     pollution-world gross 1,930.36 → 1,921.00 (cliff 4.68+4.68 out);
     workforce meter 234 → 0 (the one justified e2e edit, decision cited
     in-spec); live-shaped monthly net 2,403.56 → 1,042.72 (July MTD; June's
     1,360.84 bucketed out).
+25. **COST CENTERS LIVE-CORRECTNESS + totalQuantity alignment (CLOSED
+    2026-07-09).** The maintainer's live Cost Centers screen showed
+    "undefined → undefined → undefined" mappings and NaN burn/headroom —
+    the sim-only enrichments (`dewr_*`, `mtd_burn_credits`) are absent on
+    real cost centers. Fixes, all maintainer-decided:
+    - **MTD burn is now DERIVED** in `listCostCenters` from the R5 per-CC
+      fan-out (cycle-month + AI-credit rows, Σ quantity, rounded once) —
+      grain-agnostic (a live monthly-aggregate row's quantity IS the MTD
+      cumulative; per-day fixture rows sum to the identical totals the old
+      enrichment carried — validator recomputed workforce 30,200 and
+      capBound 58,300 from raw fixture rows; every pre-existing pin passes
+      unmodified, and the committed cost-centers/Controls meters now PROVE
+      the derivation). The `mtd_burn_credits` enrichment is no longer read
+      — **mock-side cleanup flag:** the fixture field can be retired in a
+      mock round. NaN structurally impossible (`Math.round(map.get ?? 0)`;
+      wire quantities are JSON numbers). **Cost note:** `listCostCenters`
+      now performs the R5 fan-out (+1 default + 1 per CC ≈ +7 requests per
+      call on the six-CC world) — acceptable, same pattern as
+      `getUsageSummary`.
+    - **Honest no-cap semantics:** a cap-disabled CC renders Headroom
+      "— no cap" + a neutral "no cap" status chip (`NO_CAP_STATUS_META`);
+      exclusion still wins; drill modal mirrors; the cap-enabled path is
+      untouched (all sim fixtures are cap-enabled → sim byte-identical).
+    - **DEWR mapping is APP-LOCAL metadata** (maintainer ruling): source
+      precedence local DB columns → sim wire enrichment → null;
+      `formatDewrMapping` renders "— not mapped" / per-segment em-dashes,
+      never "undefined". **Sanctioned interface additions
+      (validator-RATIFIED):** `ApiClient.updateCostCenterMapping(
+      costCenterId, {dewrDivision|dewrBranch|dewrProject: string|null})`
+      — the ONE new method, implemented as a local Drizzle upsert (zero
+      octokit references; a test brackets the call with an
+      api.github.com listener and asserts zero requests; in-modal + toast
+      copy state "app-local, never contacts GitHub"); and
+      `CostCenterSummary.dewr*` re-typed `string` → `string | null` (a
+      truthfulness fix — the old annotation was already violated by live
+      rows). No migration: the `cost_center` columns were already
+      nullable. Edits survive syncs — `syncNow`'s upsert sets only
+      `name`/`state` (test-pinned). Edit affordance lives in the DRILL
+      MODAL header (deliberately not the table cell, protecting six
+      committed `toHaveText` pins); nested-Escape handled; zero Electron
+      imports in the UI (portability rule verified).
+    - **`totalQuantity` cycle-scoped** — the maintainer's follow-up
+      decision resolving item 24's flagged asymmetry: all FOUR headline
+      totals now sum cycle-month AI-credit rows. Re-pins
+      validator-recomputed: 193,036 → **192,100** (= 189,800 pool + 2,300
+      metered; cliff 468+468 out) ×2 tests; workforce 31,136 → **30,200**;
+      live-shaped 972,944.5584155 → **486,860** (July MTD; each pin cites
+      the decision in-test).
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 

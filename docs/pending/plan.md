@@ -497,9 +497,9 @@ The centerpiece, simulate-only. All engine math is pure `core`; the screen rende
 **Size:** M
 
 ### Checkpoint 6 — dry-run centerpiece complete
-- [ ] Both rebalancers produce explainable recommendations on scenario fixtures; every number on screen traces to a unit-tested `core` function.
-- [ ] No apply path exists yet (verified: no mutation request is issuable from this screen).
-- [ ] Gate green; human review — **explicitly confirm auto-apply appetite + reserve % + rollover policy defaults (CLAUDE.md §9 Q5) before starting Phase 7.**
+- [x] Both rebalancers produce explainable recommendations on scenario fixtures; every number on screen traces to a unit-tested `core` function. (maintainer sign-off 2026-07-09)
+- [x] No apply path exists yet (verified: no mutation request is issuable from this screen). (maintainer sign-off 2026-07-09)
+- [x] Gate green; human review — **auto-apply appetite + reserve % + rollover policy defaults (CLAUDE.md §9 Q5) confirmed** (recorded 2026-07-07: approval-gated per run / 5% reserve / revert-at-reset). (maintainer sign-off 2026-07-09)
 
 ---
 

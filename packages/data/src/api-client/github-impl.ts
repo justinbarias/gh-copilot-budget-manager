@@ -59,6 +59,7 @@ import {
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
+import * as schema from '../db/schema.js';
 import type {
   Alert,
   ApiClient,
@@ -67,6 +68,7 @@ import type {
   AuditChainEvent,
   AuditChainVerification,
   CostCenterMemberSummary,
+  CostCenterMappingInput,
   CostCenterSummary,
   DailyBurnPoint,
   DryRunResult,
@@ -662,16 +664,16 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
 
     return {
       asOfDate,
-      totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
-      // CYCLE-SCOPED money totals (maintainer decision, 2026-07-09 addendum to
-      // item 24): the three USD headline totals sum the CYCLE-MONTH rows only
-      // (the same month-bucket + AI-credit filter the burn-down uses) --
-      // live's unparameterized read returns YEAR-TO-DATE months, and a "spend"
-      // tile/meter fed a YTD sum against a monthly budget cap is exactly the
-      // maintainer's 1115%-used pathology. Fixture consequence: the
-      // out-of-cycle Aug-31/Sep-1 cliff rows no longer count (net 25.34 ->
-      // 23.00 etc.). totalQuantity deliberately stays report-span (not named
-      // by the decision) -- FLAGGED as an asymmetry for the validator.
+      // ALL FOUR headline totals are CYCLE-SCOPED (maintainer decisions,
+      // 2026-07-09: the three USD fields in the item-24 addendum; quantity
+      // aligned by the follow-up decision resolving the flagged asymmetry):
+      // they sum the CYCLE-MONTH, AI-credit rows only -- the same
+      // month-bucket the burn-down uses. Live's unparameterized read returns
+      // YEAR-TO-DATE months, and a "spend"/"usage" tile fed a YTD sum against
+      // a monthly cap is exactly the maintainer's 1115%-used pathology.
+      // Fixture consequence: the out-of-cycle Aug-31/Sep-1 cliff rows no
+      // longer count anywhere (qty 193,036 -> 192,100; net 25.34 -> 23.00).
+      totalQuantity: monthItems.reduce((sum, item) => sum + item.quantity, 0),
       totalGrossAmountUsd: monthItems.reduce((sum, item) => sum + item.grossAmount, 0),
       totalDiscountAmountUsd: monthItems.reduce((sum, item) => sum + item.discountAmount, 0),
       totalNetAmountUsd: monthItems.reduce((sum, item) => sum + item.netAmount, 0),
@@ -682,7 +684,24 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listCostCenters(): Promise<CostCenterSummary[]> {
-    const [costCenters, { records: creditsUsedItems }] = await Promise.all([fetchCostCentersRaw(), fetchCycleCredits()]);
+    const costCenters = await fetchCostCentersRaw();
+    const [{ records: creditsUsedItems }, usageItems] = await Promise.all([
+      fetchCycleCredits(),
+      // Per-CC MTD burn source (2026-07-09 Cost Centers live-correctness
+      // round): the R5 per-CC fan-out -- attribution by query, AI-credit
+      // filtered, month-bucketed, grain-agnostic (a live monthly-aggregate
+      // row's quantity IS the MTD cumulative; per-day fixture rows sum to the
+      // IDENTICAL totals the old fixture-only mtd_burn_credits enrichment
+      // carried, e.g. Workforce 30,200 / cap-bound 58,300). Live CCs have no
+      // enrichment at all -- deriving is the only honest source, and a CC
+      // with no usage rows derives 0, never NaN.
+      fetchUsageFanout(octokit, enterprise, costCenters.map((cc) => cc.id)),
+    ]);
+    // App-local DEWR mapping (maintainer decision: an app-local construct,
+    // editable via updateCostCenterMapping): local DB columns win over the
+    // simulation fixtures' wire enrichment; absent everywhere -> null.
+    const mappingRows = config.db.select().from(schema.costCenter).all();
+    const mappingById = new Map(mappingRows.map((row) => [row.id, row] as const));
 
     // Per-member cycle-to-date burn: same cycle window as getUsageSummary
     // (anchored to the deterministic fixture date, never wall-clock), so a
@@ -693,6 +712,17 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       const dayIndex = Math.floor((Date.parse(`${item.date}T00:00:00.000Z`) - bounds.cycleStart.getTime()) / DAY_MS);
       if (dayIndex < 0 || dayIndex > bounds.daysElapsed) continue;
       burnByLogin.set(item.user_login, (burnByLogin.get(item.user_login) ?? 0) + item.ai_credits_used);
+    }
+
+    // Cycle-month, AI-credit-filtered per-CC quantity totals (pool + metered
+    // -- `quantity` is the credit count either way). Rounded once at the end:
+    // live quantities are fractional (486,084.5584155...).
+    const cycleMonth = currentDate().slice(0, 7);
+    const mtdByCostCenterId = new Map<string, number>();
+    for (const item of aiCreditItems(usageItems)) {
+      if (item.costCenterId === null) continue;
+      if (item.date.slice(0, 7) !== cycleMonth) continue;
+      mtdByCostCenterId.set(item.costCenterId, (mtdByCostCenterId.get(item.costCenterId) ?? 0) + item.quantity);
     }
 
     return costCenters.map((cc) => {
@@ -706,15 +736,16 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
             entTeam: r.via_ent_team ?? null,
           }));
 
+        const localMapping = mappingById.get(cc.id);
         return {
           id: cc.id,
           name: cc.name,
           state: cc.state,
           memberCount: resources.length,
-          dewrDivision: cc.dewr_division,
-          dewrBranch: cc.dewr_branch,
-          dewrProject: cc.dewr_project,
-          mtdBurnCredits: cc.mtd_burn_credits,
+          dewrDivision: localMapping?.dewrDivision ?? cc.dewr_division ?? null,
+          dewrBranch: localMapping?.dewrBranch ?? cc.dewr_branch ?? null,
+          dewrProject: localMapping?.dewrProject ?? cc.dewr_project ?? null,
+          mtdBurnCredits: Math.round(mtdByCostCenterId.get(cc.id) ?? 0),
           includedUsageCap: {
             enabled: cc.included_usage_cap.enabled,
             computedLimitCredits: cc.included_usage_cap.computed_limit_credits,
@@ -724,6 +755,30 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
           members,
         };
       });
+  }
+
+  // Maintainer-sanctioned method (2026-07-09): app-local DEWR mapping edit.
+  // LOCAL DB ONLY -- no GitHub request is ever issued (asserted by test);
+  // works identically in both modes. Upsert so a mapping saved before the
+  // first Sync survives: the insert's name placeholder (the id) is corrected
+  // by the next sync's upsert, which only sets name/state and therefore never
+  // clobbers these columns.
+  async function updateCostCenterMapping(costCenterId: string, mapping: CostCenterMappingInput): Promise<void> {
+    config.db
+      .insert(schema.costCenter)
+      .values({
+        id: costCenterId,
+        name: costCenterId,
+        state: 'active',
+        dewrDivision: mapping.dewrDivision,
+        dewrBranch: mapping.dewrBranch,
+        dewrProject: mapping.dewrProject,
+      })
+      .onConflictDoUpdate({
+        target: schema.costCenter.id,
+        set: { dewrDivision: mapping.dewrDivision, dewrBranch: mapping.dewrBranch, dewrProject: mapping.dewrProject },
+      })
+      .run();
   }
 
   async function listHeavyUsers(): Promise<HeavyUser[]> {
@@ -1227,6 +1282,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   return {
     getUsageSummary,
     listCostCenters,
+    updateCostCenterMapping,
     listHeavyUsers,
     listAlerts,
     getSyncStatus,

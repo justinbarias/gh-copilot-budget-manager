@@ -38,14 +38,17 @@ describe('createGitHubApiClient', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('aggregates usage: quantity spans the report, money totals are cycle-scoped', async () => {
+  it('aggregates usage: ALL FOUR headline totals are cycle-scoped', async () => {
     const summary = await client.getUsageSummary();
     expect(summary.asOfDate).toBe('2026-09-01');
-    expect(summary.totalQuantity).toBe(193_036);
-    // CYCLE-SCOPED money total (maintainer decision, 2026-07-09 addendum):
-    // only the June cycle's metered spend -- the cap-bound CC's 2,300-credit
-    // overflow ($23.00). The Sep-1 cliff row's $2.34 is out-of-cycle and no
-    // longer in the headline (old report-span total: $25.34).
+    // Cycle-scoped quantity (maintainer follow-up decision, 2026-07-09,
+    // aligning quantity with the USD fields): June AI-credit rows only --
+    // 189,800 pool credits + faisal-noor's 2,300 metered overflow = 192,100.
+    // The two cliff rows (468 + 468) drop out (old report-span pin: 193,036).
+    expect(summary.totalQuantity).toBe(192_100);
+    // CYCLE-SCOPED money total (2026-07-09 addendum): only the June cycle's
+    // metered spend -- the cap-bound CC's 2,300-credit overflow ($23.00). The
+    // Sep-1 cliff row's $2.34 is out-of-cycle (old span total: $25.34).
     expect(summary.totalNetAmountUsd).toBeCloseTo(23.0, 5);
   });
 
@@ -67,11 +70,12 @@ describe('createGitHubApiClient', () => {
 
   it('filters usage by cost center', async () => {
     const summary = await client.getUsageSummary({ costCenterId: COST_CENTER_IDS.workforce });
-    // Workforce's June pool rows (30,200) + noah-tanaka's Aug31/Sep1 cliff rows (468 + 468).
-    // The Workforce POLLUTION rows (Copilot Business qty 24.5 + Premium
-    // Request qty 320.25, net $468.31 combined) are sku-filtered out -- an
-    // unfiltered sum would read 31,480.75 / $470.65 instead.
-    expect(summary.totalQuantity).toBe(30_200 + 468 + 468);
+    // Cycle-scoped quantity (2026-07-09 follow-up decision): Workforce's June
+    // pool rows only (30,200) -- noah-tanaka's Aug31/Sep1 cliff rows (468 +
+    // 468, the old span pin's extra 936) are out-of-cycle. The Workforce
+    // POLLUTION rows (Business qty 24.5 + Premium 320.25, net $468.31) are
+    // sku-filtered out either way.
+    expect(summary.totalQuantity).toBe(30_200);
     // Cycle-scoped money total (2026-07-09 addendum): Workforce's June rows
     // are fully pool-covered (net $0); the Sep-1 cliff row's $2.34 metered
     // half is out-of-cycle (old span total: 2.34).
@@ -88,11 +92,12 @@ describe('createGitHubApiClient', () => {
     expect(USAGE_ITEMS.some((i) => i.sku !== 'Copilot AI Credits')).toBe(true);
 
     const summary = await client.getUsageSummary();
-    // AI-credit rows only; money totals cycle-scoped (2026-07-09 addendum):
-    // June gross = span 1,930.36 minus the cliff rows' 4.68 + 4.68 = 1,921.00;
-    // June net = 23.00 (the Sep-1 2.34 is out-of-cycle). Unfiltered, pollution
-    // would add qty 514.5 and (in-cycle) gross $850.08.
-    expect(summary.totalQuantity).toBe(193_036);
+    // AI-credit rows only; ALL headline totals cycle-scoped (2026-07-09
+    // decisions): June qty = 192,100 (189,800 pool + 2,300 overflow; cliff
+    // rows out); June gross = span 1,930.36 minus the cliff rows' 4.68 + 4.68
+    // = 1,921.00; June net = 23.00. Unfiltered, in-cycle pollution would add
+    // qty 514.5 and gross $850.08.
+    expect(summary.totalQuantity).toBe(192_100);
     expect(summary.totalGrossAmountUsd).toBeCloseTo(1_921.0, 5);
     expect(summary.totalNetAmountUsd).toBeCloseTo(23.0, 5);
     // The burn-down is filtered too: still exactly 189,800 pool credits by
@@ -135,11 +140,11 @@ describe('createGitHubApiClient', () => {
     const liveShapedClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw', nowDate: '2026-07-09' });
     const summary = await liveShapedClient.getUsageSummary();
 
-    // Quantity spans the report (YTD): 486,084.5584155 + 486,860 (fractional
-    // survives). Money totals are CYCLE-SCOPED (2026-07-09 addendum) -- the
-    // exact fix for "a YTD sum against a monthly cap": July's MTD net
-    // $1,042.72 only; June's closed $1,360.84 stays out.
-    expect(summary.totalQuantity).toBeCloseTo(972_944.5584155, 6);
+    // ALL headline totals are CYCLE-SCOPED (2026-07-09 decisions) -- the
+    // exact fix for "a YTD sum against a monthly cap": July's MTD only, with
+    // fractional quantities surviving (486,860, not the YTD 972,944.5584155);
+    // net $1,042.72; June's closed month stays out entirely.
+    expect(summary.totalQuantity).toBeCloseTo(486_860, 6);
     expect(summary.totalNetAmountUsd).toBeCloseTo(1_042.72, 5);
     expect(summary.asOfDate).toBe('2026-07-01'); // normalized to day precision
 
@@ -158,6 +163,97 @@ describe('createGitHubApiClient', () => {
     const workforce = centers.find((c) => c.id === COST_CENTER_IDS.workforce);
     expect(workforce?.memberCount).toBe(24);
     expect(centers).toHaveLength(6);
+  });
+
+  // 2026-07-09 Cost Centers live-correctness round: MTD burn is DERIVED from
+  // the R5 per-CC fan-out (cycle-month, AI-credit rows), never the sim-only
+  // mtd_burn_credits enrichment; DEWR mapping is app-local (null when nothing
+  // supplies it); a cap-disabled CC and a no-usage CC render defined values,
+  // never NaN. This is the live world that showed "undefined → undefined →
+  // undefined" and NaN on all six real CCs.
+  it('listCostCenters against real-wire CCs: derived MTD burn, null mapping, 0 (never NaN) for a no-usage CC', async () => {
+    server.use(
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/cost-centers`, () =>
+        HttpResponse.json({
+          costCenters: [
+            // The live shape: NO dewr_*, NO mtd_burn_credits, cap disabled.
+            { id: 'cc-live-1', name: 'TSD-Premium', state: 'active', ai_credit_pool_enabled: false, resources: [{ type: 'User', name: 'monalisa' }] },
+            { id: 'cc-live-2', name: 'DES-NoFunds', state: 'active', resources: [] },
+          ],
+        }),
+      ),
+      http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/usage`, ({ request }) => {
+        const ccId = new URL(request.url).searchParams.get('cost_center_id');
+        if (ccId === 'cc-live-1') {
+          // July monthly aggregate, ISO-dated, FRACTIONAL quantity -- plus a
+          // pollution row and a June row, both of which must not count.
+          return HttpResponse.json({
+            usageItems: [
+              { date: '2026-07-01T00:00:00Z', product: 'copilot', sku: 'Copilot AI Credits', quantity: 486_084.5584155, unitType: 'credits', pricePerUnit: 0.01, grossAmount: 4860.84, discountAmount: 3825.88, netAmount: 1034.96, organizationName: 'dewr' },
+              { date: '2026-07-01T00:00:00Z', product: 'copilot', sku: 'Copilot Business', quantity: 24.5, unitType: 'seats', pricePerUnit: 19, grossAmount: 465.5, discountAmount: 0, netAmount: 465.5, organizationName: 'dewr' },
+              { date: '2026-06-01T00:00:00Z', product: 'copilot', sku: 'Copilot AI Credits', quantity: 300_000, unitType: 'credits', pricePerUnit: 0.01, grossAmount: 3000, discountAmount: 3000, netAmount: 0, organizationName: 'dewr' },
+            ],
+          });
+        }
+        return HttpResponse.json({ usageItems: [] });
+      }),
+    );
+
+    const liveShapedClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'msw', nowDate: '2026-07-09' });
+    const centers = await liveShapedClient.listCostCenters();
+    expect(centers).toHaveLength(2);
+
+    const withUsage = centers.find((c) => c.id === 'cc-live-1')!;
+    // Derived: round(486,084.5584155) from the July MTD aggregate only --
+    // the June aggregate (300,000) and the Business pollution row (24.5) are
+    // bucketed/filtered out. Fractional survives to the rounding boundary.
+    expect(withUsage.mtdBurnCredits).toBe(486_085);
+    expect(Number.isNaN(withUsage.mtdBurnCredits)).toBe(false);
+    // App-local mapping absent everywhere -> honest nulls (never "undefined").
+    expect(withUsage.dewrDivision).toBeNull();
+    expect(withUsage.dewrBranch).toBeNull();
+    expect(withUsage.dewrProject).toBeNull();
+    expect(withUsage.includedUsageCap.enabled).toBe(false);
+
+    // A CC with NO usage rows at all: 0, never NaN.
+    const noUsage = centers.find((c) => c.id === 'cc-live-2')!;
+    expect(noUsage.mtdBurnCredits).toBe(0);
+    expect(noUsage.includedUsageCap).toEqual({ enabled: false, computedLimitCredits: 0, overflow: 'block' });
+  });
+
+  // The sanctioned updateCostCenterMapping method: app-local DB metadata only.
+  it('updateCostCenterMapping round-trips through listCostCenters and NEVER issues a GitHub request', async () => {
+    const githubRequests: string[] = [];
+    const listener = ({ request }: { request: Request }): void => {
+      if (new URL(request.url).hostname === 'api.github.com') githubRequests.push(request.url);
+    };
+
+    server.events.on('request:start', listener);
+    try {
+      await client.updateCostCenterMapping(COST_CENTER_IDS.cyber, {
+        dewrDivision: 'Corporate & Enabling Group',
+        dewrBranch: 'Cyber Security Branch',
+        dewrProject: 'CYB-EDIT',
+      });
+    } finally {
+      server.events.removeListener('request:start', listener);
+    }
+    // The write is local DB metadata -- zero GitHub traffic (§6.8-adjacent:
+    // works identically in both modes, safe pre-9.3).
+    expect(githubRequests).toEqual([]);
+
+    // The edited mapping WINS over the sim fixtures' wire enrichment.
+    const centers = await client.listCostCenters();
+    const cyber = centers.find((c) => c.id === COST_CENTER_IDS.cyber)!;
+    expect(cyber.dewrDivision).toBe('Corporate & Enabling Group');
+    expect(cyber.dewrBranch).toBe('Cyber Security Branch');
+    expect(cyber.dewrProject).toBe('CYB-EDIT');
+
+    // ...and SURVIVES a sync: syncNow's cost-center upsert only sets
+    // name/state, never these columns.
+    await client.syncNow();
+    const afterSync = (await client.listCostCenters()).find((c) => c.id === COST_CENTER_IDS.cyber)!;
+    expect(afterSync.dewrProject).toBe('CYB-EDIT');
   });
 
   it('carries the DEWR mapping, MTD burn, and read-only included-usage cap per cost center', async () => {

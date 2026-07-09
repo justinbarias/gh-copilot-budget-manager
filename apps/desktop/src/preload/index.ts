@@ -8,6 +8,8 @@ import type { ApiClient } from '@copilot-budget/data';
 const apiClientBridge: ApiClient = {
   getUsageSummary: (params) => ipcRenderer.invoke('apiClient:getUsageSummary', params),
   listCostCenters: () => ipcRenderer.invoke('apiClient:listCostCenters'),
+  updateCostCenterMapping: (costCenterId, mapping) =>
+    ipcRenderer.invoke('apiClient:updateCostCenterMapping', costCenterId, mapping),
   listHeavyUsers: () => ipcRenderer.invoke('apiClient:listHeavyUsers'),
   listAlerts: () => ipcRenderer.invoke('apiClient:listAlerts'),
   getSyncStatus: () => ipcRenderer.invoke('apiClient:getSyncStatus'),
