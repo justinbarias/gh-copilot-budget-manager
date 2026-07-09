@@ -1,8 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useCombobox } from 'downshift';
 import type { AlertingState, BudgetControl, UlbBudgetScope } from '@copilot-budget/core';
 import type { CostCenterSummary, HeavyUser } from '@copilot-budget/data';
 import { parseCredits, parseRecipients } from '../../lib/creditsInput';
 import './NewUlbModal.css';
+
+// Task (maintainer feedback): the Individual-scope "User" field used to be a
+// plain <select> over the full eligible roster -- unusable against a real
+// tenant's hundreds of users (no type-ahead/search). Replaced with a
+// downshift `useCombobox` (headless, WAI-ARIA combobox pattern; CLAUDE.md
+// §10 prefers an established lib over a bespoke one). Filtering is
+// case-insensitive substring match on userLogin OR costCenterName, capped at
+// 50 rendered matches with a "showing N of M" count line when truncated.
+const USER_COMBOBOX_MATCH_LIMIT = 50;
+
+function filterEligibleUsers(users: readonly HeavyUser[], query: string): HeavyUser[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return [...users];
+  return users.filter(
+    (user) =>
+      user.userLogin.toLowerCase().includes(needle) ||
+      (user.costCenterName ?? '').toLowerCase().includes(needle),
+  );
+}
+
+function userOptionLabel(user: HeavyUser): string {
+  return user.costCenterName ? `${user.userLogin} · ${user.costCenterName}` : user.userLogin;
+}
 
 // Task 4.10's CREATE affordance. The design prototype (design/*.dc.html) ships
 // no "+ New user-level budget" button or modal at all -- only a "+ New cost
@@ -57,27 +81,91 @@ export function NewUlbModal({
   const [scope, setScope] = useState<UlbBudgetScope>(
     firstAvailableScope(eligibleUsers.length > 0, eligibleCostCenters.length > 0, universalOfferable),
   );
+  // Default individual-scope selection is NONE (not eligibleUsers[0]) --
+  // maintainer-directed safety fix: pre-picking the first roster user on
+  // open/scope-change caused accidental ULBs on the wrong user. An explicit
+  // pick is required for this money-affecting control; Create stays disabled
+  // until one is made (canCreate below).
   const [entityName, setEntityName] = useState<string>(
-    scope === 'individual' ? (eligibleUsers[0]?.userLogin ?? '') : scope === 'multi_user_cost_center' ? (eligibleCostCenters[0]?.name ?? '') : '',
+    scope === 'multi_user_cost_center' ? (eligibleCostCenters[0]?.name ?? '') : '',
   );
   const [amountRaw, setAmountRaw] = useState('');
   const [willAlert, setWillAlert] = useState(false);
   const [recipientsRaw, setRecipientsRaw] = useState('');
 
+  // The user combobox's own menu handles Escape itself (close menu, revert
+  // input text) via downshift's default reducer. This document-level
+  // handler must NOT also close the modal while that menu is open -- it
+  // relies on `comboboxIsOpen` being state (not a ref), so the closure this
+  // effect captured on the LAST render (i.e. the state as it stood the
+  // instant this Escape keydown started) is what gets checked: downshift's
+  // synthetic onKeyDown runs on the bubble path to the React root container,
+  // which sits strictly below `document` in the DOM, so its state update
+  // (isOpen -> false) is scheduled but not yet committed/re-rendered by the
+  // time this native document listener fires for the SAME event. First
+  // Escape (menu open): this stale `comboboxIsOpen` reads true -> skip,
+  // downshift's own handler closes the menu. Second Escape (menu already
+  // closed): reads false -> closes the modal.
+  const [comboboxIsOpen, setComboboxIsOpen] = useState(false);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      if (comboboxIsOpen) return;
+      onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [onClose, comboboxIsOpen]);
 
   function onScopeChange(next: UlbBudgetScope) {
     setScope(next);
     setEntityName(
-      next === 'individual' ? (eligibleUsers[0]?.userLogin ?? '') : next === 'multi_user_cost_center' ? (eligibleCostCenters[0]?.name ?? '') : (universalEntityName ?? ''),
+      next === 'multi_user_cost_center' ? (eligibleCostCenters[0]?.name ?? '') : next === 'universal' ? (universalEntityName ?? '') : '',
     );
+    setUserQuery(''); // fresh, unfiltered combobox next time individual scope renders
   }
+
+  // The current typed/filter text is independent of `entityName` (the
+  // committed selection) -- see the combobox's onInputValueChange below for
+  // why they diverge while the user is typing.
+  const [userQuery, setUserQuery] = useState('');
+  const selectedUser = useMemo(() => eligibleUsers.find((user) => user.userLogin === entityName) ?? null, [eligibleUsers, entityName]);
+  const filteredUsers = useMemo(() => filterEligibleUsers(eligibleUsers, userQuery), [eligibleUsers, userQuery]);
+  const visibleUsers = useMemo(() => filteredUsers.slice(0, USER_COMBOBOX_MATCH_LIMIT), [filteredUsers]);
+
+  const {
+    isOpen: userComboboxOpen,
+    getInputProps,
+    getMenuProps,
+    getItemProps,
+    getLabelProps,
+    highlightedIndex,
+  } = useCombobox<HeavyUser>({
+    // Fixed id (not downshift's auto-generated one) so the label's htmlFor
+    // stays correctly wired AND the existing `#new-ulb-entity` selector
+    // (e2e specs, this modal's own aria wiring) keeps resolving to the input.
+    inputId: 'new-ulb-entity',
+    items: visibleUsers,
+    itemToString: (item) => item?.userLogin ?? '',
+    inputValue: userQuery,
+    selectedItem: selectedUser,
+    onIsOpenChange: ({ isOpen: nextOpen }) => setComboboxIsOpen(nextOpen ?? false),
+    onInputValueChange: ({ inputValue, type }) => {
+      setUserQuery(inputValue ?? '');
+      // Only raw typing (not a selection/click/enter, and not downshift's
+      // own revert-on-blur/-on-escape) invalidates the prior pick -- typed
+      // free text that doesn't match a real roster entry must leave
+      // entityName EMPTY (Create stays disabled) rather than silently
+      // keeping the last committed selection.
+      if (type === useCombobox.stateChangeTypes.InputChange) {
+        setEntityName('');
+      }
+    },
+    onSelectedItemChange: ({ selectedItem }) => {
+      setEntityName(selectedItem?.userLogin ?? '');
+      setUserQuery(selectedItem?.userLogin ?? '');
+    },
+  });
 
   const resolvedEntityName = scope === 'universal' ? (universalEntityName ?? '') : entityName;
   const canCreate = resolvedEntityName.trim() !== '' && amountRaw.trim() !== '';
@@ -129,24 +217,44 @@ export function NewUlbModal({
           </select>
 
           {scope === 'individual' && (
-            <>
-              <label className="new-ulb-modal__label" htmlFor="new-ulb-entity">
+            <div className="new-ulb-modal__combobox">
+              <label className="new-ulb-modal__label" {...getLabelProps()}>
                 User
               </label>
-              <select
-                id="new-ulb-entity"
-                className="new-ulb-modal__select mono"
-                value={entityName}
-                onChange={(event) => setEntityName(event.target.value)}
-              >
-                {eligibleUsers.map((user) => (
-                  <option key={user.userLogin} value={user.userLogin}>
-                    {user.userLogin}
-                    {user.costCenterName ? ` · ${user.costCenterName}` : ''}
-                  </option>
-                ))}
-              </select>
-            </>
+              <div className="new-ulb-modal__combobox-control">
+                <input
+                  className="new-ulb-modal__input new-ulb-modal__combobox-input mono"
+                  placeholder="Search users…"
+                  {...getInputProps()}
+                />
+              </div>
+              <ul className="new-ulb-modal__combobox-menu" {...getMenuProps()}>
+                {userComboboxOpen && visibleUsers.length === 0 && (
+                  <li className="new-ulb-modal__combobox-empty">No matching eligible users</li>
+                )}
+                {userComboboxOpen &&
+                  visibleUsers.map((user, index) => (
+                    <li
+                      key={user.userLogin}
+                      className={
+                        'new-ulb-modal__combobox-item' +
+                        (highlightedIndex === index ? ' new-ulb-modal__combobox-item--highlighted' : '')
+                      }
+                      {...getItemProps({ item: user, index, 'aria-label': userOptionLabel(user) })}
+                    >
+                      <span className="mono">{user.userLogin}</span>
+                      {user.costCenterName && (
+                        <span className="new-ulb-modal__combobox-item-cc"> · {user.costCenterName}</span>
+                      )}
+                    </li>
+                  ))}
+                {userComboboxOpen && filteredUsers.length > visibleUsers.length && (
+                  <li className="new-ulb-modal__combobox-count">
+                    showing {visibleUsers.length} of {filteredUsers.length}
+                  </li>
+                )}
+              </ul>
+            </div>
           )}
 
           {scope === 'multi_user_cost_center' && (

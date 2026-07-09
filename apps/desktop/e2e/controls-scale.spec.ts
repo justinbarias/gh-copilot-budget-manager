@@ -189,7 +189,12 @@ test('a staged-NEW ULB row stays visible + discoverable even under a scope filte
     await window.getByRole('button', { name: '+ New user-level budget' }).click();
     const modal = window.locator('.new-ulb-modal');
     await modal.locator('#new-ulb-scope').selectOption('individual');
-    await modal.locator('#new-ulb-entity').selectOption('rpatel2');
+    // The User field is a searchable downshift combobox (maintainer
+    // feedback: the old plain <select> over the full roster doesn't scale) --
+    // type to filter, then click the matching row (no default pre-picked
+    // entry anymore).
+    await modal.locator('#new-ulb-entity').fill('rpatel2');
+    await modal.getByRole('option', { name: /rpatel2/ }).click();
     await modal.getByLabel('Cap (credits) — new user-level budget').fill('5000');
     await modal.getByRole('button', { name: 'Create' }).click();
     await expect(modal).toHaveCount(0);

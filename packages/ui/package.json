@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@copilot-budget/core": "workspace:*",
+    "downshift": "^9.4.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "recharts": "^3.9.2"
