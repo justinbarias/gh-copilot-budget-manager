@@ -811,6 +811,65 @@ Remaining items, when the live tenant + classic PAT
       metered; cliff 468+468 out) ×2 tests; workforce 31,136 → **30,200**;
       live-shaped 972,944.5584155 → **486,860** (July MTD; each pin cites
       the decision in-test).
+26. **AUTO-BALANCE LIVE CONTEXT (CLOSED 2026-07-09 — both rebalancer modes
+    dry-run against real tenant data, STRICTLY simulate-only).**
+    `getRebalanceContext`'s live branch replaces the old
+    `{available:false, reason:'live mode'}` refusal (that pin's removal is
+    the maintainer-directed design change, validator-audited):
+    - **Pool context** (`buildLivePoolContext`): controls via
+      `fetchLiveControls`; usage via `assembleUsageState`; pool scalars
+      from the persisted **mode-scoped** enterprise forecast (item 24) —
+      `allowanceLine` at the as-of day = pool total, `p50/p90Cumulative`
+      at cycle end (last day of the as-of month; `.at(-1)` defensive
+      fallback) = projections; MTD pool consumed from the R5 fan-out
+      (cycle-month, AI-credit, per-item cent rounding — the burn-down
+      rule). **Honest gates, never fabricated numbers:** never-synced →
+      "run Sync now first"; stale forecast (series lacks today — an
+      exact-date membership test, boundary validator-checked: a series
+      ending today passes) → names the forecast's `computedAt`.
+    - **Metered context** (`buildLiveMeteredContext`): no Sync gate —
+      direct live reads only (documented). **Entity-curation rule,
+      validator-RATIFIED:** at-risk candidates are derived from the live
+      control estate — every CC holding a `cost_center` spending limit +
+      every user holding an individual ULB. Sound against the PRD's
+      metered rebalancer: its levers are exactly cost-center-budget raises
+      and individual-ULB overrides, so an entity holding neither has no
+      binding constraint to relax; uncontrolled entities are out of scope
+      by construction (mirrors the sim scenarios' hand-curation).
+      `meteredPhaseActive` = any in-cycle enterprise metered spend.
+    - **RESERVE RULING (validator, resolving the builder's "Q5 open"
+      error — Q5 was answered 2026-07-07: approval-gated / 5% reserve /
+      revert-at-reset):** the **pool** path already honors the 5% — core's
+      `reservePct` defaults to 0.05 of `poolTotalCredits` when no params
+      are passed (which the live context doesn't); validator-added pin:
+      envelope reserve = round(0.05 × 672,000) = **33,600** in the live
+      pool test. The **metered** engine takes only ABSOLUTE
+      `reserveCredits` (no percent semantics in core;
+      `DEFAULT_RESERVE_CREDITS = 0`), so "5% of what" is genuinely
+      ambiguous — **0 stands, explicitly tied to Task 7.2's policy store**
+      with the recorded 5% as its named default candidate (comments
+      corrected in impl + test).
+    - **Known limitation (flagged, Phase-7-adjacent upgrade):**
+      `projectedUsage` mirrors `currentUsage` (no live per-entity growth
+      projection exists yet — the same no-growth contract sim's healthy
+      scenario uses).
+    - **No-mutation proof:** the apply lever remains Phase-7
+      hard-disabled on both rails; the screen imports no writing bridge
+      method; a listener test asserts live context assembly issues >0
+      GitHub requests, every one a GET.
+    - **UI honesty:** a data-driven zero-ULB card (core `isUlbScope` over
+      `ctx.controls`) explains that ULBs are the pool phase's entire lever
+      set and points at Controls — the maintainer's real (zero-ULB) tenant
+      renders an explained no-op instead of an unexplained all-zero
+      proposal; the unavailable-card copy no longer says "later phase" and
+      the sim-only scenario-switch advice never renders in live mode.
+    - **Test coverage note:** live branches are unit-covered only
+      (headless e2e runs sim — 5 new hand-computed tests incl. the 96% ≥
+      `AT_RISK_THRESHOLD_PCT` 0.95 metered proposal world,
+      validator-recomputed: Alpha 48,000/50,000 cap, enterprise 53,000
+      used of 200,000 → 147,000 headroom). **Mock-side follow-up
+      suggestion:** a live-shaped scenario world so e2e can drive the live
+      gate states.
 
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   evaluateMeteredRebalance,
+  isUlbScope,
   runPoolRebalancer,
   type MeteredRebalanceInput,
   type MeteredRebalancePlan,
@@ -69,6 +70,12 @@ export function AutoBalance() {
   const [mode, setMode] = useState<AbMode | null>(null); // null until the phase default resolves
   const [poolResult, setPoolResult] = useState<RebalanceContextResult | null>(null);
   const [meteredResult, setMeteredResult] = useState<RebalanceContextResult | null>(null);
+  // 2026-07-09 live-wiring round: the app mode (simulation | live) decides the
+  // UNAVAILABLE-card advice only -- the sim copy suggests switching scenarios,
+  // which is a sim-only affordance and must never render as live advice (the
+  // old copy was a dead end there). Same existing api.getMode() signal the
+  // sim banner/Controls already read; null until resolved (treated as sim).
+  const [appMode, setAppMode] = useState<'simulation' | 'live' | null>(null);
 
   // Per-mode edit retention (see module doc comment above).
   const [abAlloc, setAbAlloc] = useState<Record<string, string>>({});
@@ -90,11 +97,14 @@ export function AutoBalance() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.getRebalanceContext('pool'), api.getRebalanceContext('metered')]).then(([pool, metered]) => {
-      if (cancelled) return;
-      setPoolResult(pool);
-      setMeteredResult(metered);
-    });
+    Promise.all([api.getRebalanceContext('pool'), api.getRebalanceContext('metered'), api.getMode()]).then(
+      ([pool, metered, resolvedAppMode]) => {
+        if (cancelled) return;
+        setPoolResult(pool);
+        setMeteredResult(metered);
+        setAppMode(resolvedAppMode);
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -134,9 +144,10 @@ export function AutoBalance() {
       </div>
 
       {mode === 'metered' ? (
-        <MeteredMode result={meteredResult} abAlloc={abAlloc} setAbAlloc={setAbAlloc} />
+        <MeteredMode result={meteredResult} appMode={appMode} abAlloc={abAlloc} setAbAlloc={setAbAlloc} />
       ) : (
         <PoolMode
+          appMode={appMode}
           result={poolResult}
           abAlloc={abAlloc}
           setAbAlloc={setAbAlloc}
@@ -154,13 +165,14 @@ export function AutoBalance() {
 
 interface PoolModeProps {
   result: RebalanceContextResult | null;
+  appMode: 'simulation' | 'live' | null;
   abAlloc: Record<string, string>;
   setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
   liftedCaps: Record<string, boolean>;
   setLiftedCaps: Dispatch<SetStateAction<Record<string, boolean>>>;
 }
 
-function PoolMode({ result, abAlloc, setAbAlloc, liftedCaps, setLiftedCaps }: PoolModeProps) {
+function PoolMode({ result, appMode, abAlloc, setAbAlloc, liftedCaps, setLiftedCaps }: PoolModeProps) {
   if (result === null) {
     return <div className="ab-loading">Loading rebalancer context…</div>;
   }
@@ -169,8 +181,12 @@ function PoolMode({ result, abAlloc, setAbAlloc, liftedCaps, setLiftedCaps }: Po
       <div className="ab-card ab-unavailable" data-testid="ab-unavailable">
         <div className="ab-eyebrow">Pool rebalancer</div>
         <p>
-          The pool dry-run isn't available here: {result.reason}. In live mode the context will come from a real
-          forecast run (later phase).
+          The pool dry-run isn't available here: {result.reason}.
+          {/* 2026-07-09 live-wiring round: live either runs the real dry-run
+              (post-Sync) or gates with the honest Sync-first reason above --
+              the old "later phase" copy is gone, and the sim scenario advice
+              never renders as live advice. */}
+          {appMode !== 'live' && ' Switch to a pool-phase scenario to see a proposal.'}
         </p>
       </div>
     );
@@ -232,9 +248,28 @@ function PoolModeLoaded({
   const fired = plan.trigger.fired;
   const consumedFraction = ctx.poolTotalCredits > 0 ? ctx.poolConsumedCredits / ctx.poolTotalCredits : 0;
 
+  // Honest empty-levers state (2026-07-09 live-wiring round; the maintainer's
+  // tenant has zero ULBs and caps disabled): the pool rebalancer's entire
+  // toolkit is ULB headroom (CLAUDE.md §5 -- "ULBs are the entire pool-phase
+  // redistribution toolkit"), so with no ULBs the dry-run legitimately finds
+  // nothing at risk and nothing grantable. Say so, usefully, instead of
+  // rendering an unexplained all-zero proposal. Data-driven (renders in any
+  // ULB-less world, either mode); reuses the unavailable-card idiom.
+  const hasUlbs = ctx.controls.some((c) => c.kind === 'budget' && isUlbScope(c.scope));
+
   return (
     <>
       <TriggerCard trigger={plan.trigger} consumedFraction={consumedFraction} asOfDate={ctx.asOfDate} />
+
+      {!hasUlbs && (
+        <div className="ab-card ab-unavailable" data-testid="ab-no-ulbs">
+          <div className="ab-eyebrow">No user-level budgets</div>
+          <p>
+            No user-level budgets exist yet — the pool rebalancer redistributes ULB headroom between users, so it has
+            no levers to move. Create ULBs on the Controls screen (User-level budgets) to enable pool rebalancing.
+          </p>
+        </div>
+      )}
 
       <div className="ab-columns">
         <div className="ab-columns__main">
@@ -304,11 +339,12 @@ function PoolModeLoaded({
 
 interface MeteredModeProps {
   result: RebalanceContextResult | null;
+  appMode: 'simulation' | 'live' | null;
   abAlloc: Record<string, string>;
   setAbAlloc: Dispatch<SetStateAction<Record<string, string>>>;
 }
 
-function MeteredMode({ result, abAlloc, setAbAlloc }: MeteredModeProps) {
+function MeteredMode({ result, appMode, abAlloc, setAbAlloc }: MeteredModeProps) {
   if (result === null) {
     return <div className="ab-loading">Loading rebalancer context…</div>;
   }
@@ -317,8 +353,13 @@ function MeteredMode({ result, abAlloc, setAbAlloc }: MeteredModeProps) {
       <div className="ab-card ab-unavailable" data-testid="ab-unavailable">
         <div className="ab-eyebrow">Metered redistributor</div>
         <p>
-          The metered dry-run isn't available here: {result.reason}. This scenario has no metered-phase story to
-          redistribute — switch to a metered scenario (or the Pool rebalancer mode) to see a proposal.
+          The metered dry-run isn't available here: {result.reason}.
+          {/* Sim-only advice: the scenario selector doesn't exist in live, so
+              the old copy was a dead end there (2026-07-09 live-wiring round;
+              live metered now always assembles a real context, so this
+              unavailable card is sim-only in practice). */}
+          {appMode !== 'live' &&
+            ' This scenario has no metered-phase story to redistribute — switch to a metered scenario (or the Pool rebalancer mode) to see a proposal.'}
         </p>
       </div>
     );

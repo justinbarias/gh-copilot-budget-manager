@@ -8,6 +8,7 @@ import {
   resolveEffectiveUlb,
   type AllowanceBasis,
   type ControlState,
+  type EntityRef,
   type ModelUsageRow,
   type Plan,
   type UlbCandidate,
@@ -1229,8 +1230,132 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // core engine over the returned context. SIM-ONLY -- refuses in live mode
   // before any fetch (same guard direction as the scenario methods above).
   // READ-ONLY: reads controls/usage; never mutates.
+  // Live pool context (Auto-balance live-wiring round, 2026-07-09;
+  // maintainer decision: BOTH modes' dry-run runs from live data, STRICTLY
+  // SIMULATE-ONLY -- this path performs GETs + local-DB reads exclusively;
+  // the screen's apply lever stays the Phase-7-gated disabled stub). Sources:
+  //   controls        -> fetchLiveControls (live-proven)
+  //   currentUsage    -> assembleUsageState (live-shaped, item-23 machinery)
+  //   pool scalars    -> the persisted, MODE-SCOPED enterprise forecast
+  //                      (item 24): allowanceLine at the as-of day =
+  //                      poolTotalCredits; p50/p90Cumulative at cycle end =
+  //                      the projections. Honest gates when the forecast is
+  //                      absent (never synced) or stale (series doesn't cover
+  //                      today) -- never fabricated numbers.
+  //   poolConsumed    -> MTD pool credits from the R5 fan-out (cycle-month,
+  //                      AI-credit rows, per-item cent rounding -- the exact
+  //                      burn-down rule).
+  //   projectedUsage  -> mirrors currentUsage (no live per-entity growth
+  //                      projection exists yet -- the documented "no growth"
+  //                      contract sim's healthy scenario also uses; FLAGGED).
+  async function buildLivePoolContext(): Promise<RebalanceContextResult> {
+    const forecast = readLatestForecast(config.db, 'github', 'enterprise');
+    if (!forecast) {
+      return {
+        available: false,
+        reason: 'no synced live data yet — run Sync now first, then the pool dry-run runs from your real forecast',
+      };
+    }
+    const asOfDate = currentDate();
+    const asOfPoint = forecast.result.dailySeries.find((p) => p.date === asOfDate);
+    if (!asOfPoint) {
+      return {
+        available: false,
+        reason: `the last synced forecast (computed ${forecast.computedAt}) does not cover today — run Sync now to refresh it`,
+      };
+    }
+
+    const live = await fetchLiveControls(octokit, enterprise, currentDateObj());
+    const currentUsage = await assembleUsageState(octokit, enterprise, live.costCenterIdByName, currentDateObj());
+
+    const usageItems = await fetchUsageFanout(octokit, enterprise, [...live.costCenterIdByName.values()]);
+    const cycleMonth = asOfDate.slice(0, 7);
+    let poolConsumedCredits = 0;
+    for (const item of aiCreditItems(usageItems)) {
+      if (item.date.slice(0, 7) !== cycleMonth) continue;
+      poolConsumedCredits += poolCreditsForItem(item);
+    }
+
+    // Cycle end = the last day of the as-of calendar month (a cycle IS a
+    // calendar month); projections read from the stored series at that day
+    // (the 90-day horizon always covers it; the last point is the defensive
+    // fallback).
+    const asOf = currentDateObj();
+    const cycleEndDate = new Date(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+    const endPoint = forecast.result.dailySeries.find((p) => p.date === cycleEndDate) ?? forecast.result.dailySeries.at(-1);
+
+    return {
+      available: true,
+      mode: 'pool',
+      context: {
+        controls: live.controls,
+        currentUsage,
+        projectedUsage: currentUsage,
+        poolTotalCredits: asOfPoint.allowanceLine,
+        poolConsumedCredits,
+        projectedPoolConsumedCredits: Math.round(endPoint?.p50Cumulative ?? poolConsumedCredits),
+        projectedPoolConsumedP90Credits: Math.round(endPoint?.p90Cumulative ?? poolConsumedCredits),
+        asOfDate,
+        cycleEndDate,
+      },
+    };
+  }
+
+  // Live metered context: needs NO persisted forecast (controls + usage are
+  // direct live reads), so it carries no Sync gate. The at-risk candidate
+  // set -- sim scenarios curate it by hand -- is derived from the live
+  // control estate: every cost center holding a cost_center spending limit,
+  // plus every user holding an individual ULB (the two entity kinds the
+  // metered engine can actually move headroom between). meteredPhaseActive =
+  // any in-cycle enterprise metered spend (the maintainer's world: ~103% of
+  // the $1,000 enterprise budget).
+  //
+  // reserveCredits = 0 -- VALIDATOR RULING (2026-07-09): CLAUDE.md §9 Q5 WAS
+  // answered 2026-07-07 (approval-gated per run / 5% reserve /
+  // revert-at-reset), and the POOL path already honors that 5%: core's
+  // runPoolRebalancer defaults reservePct to 0.05 of poolTotalCredits when no
+  // params are supplied (buildLivePoolContext supplies none). The METERED
+  // engine, however, takes only an ABSOLUTE reserveCredits (core defines no
+  // percent semantics for it -- DEFAULT_RESERVE_CREDITS = 0), so "5% of
+  // WHAT" -- the enterprise budget amount? its remaining headroom? -- is
+  // genuinely ambiguous, and guessing would silently mis-size grant capacity.
+  // 0 stays until Task 7.2's policy store defines the metered reserve
+  // explicitly, with the recorded 5% as its named default candidate.
+  async function buildLiveMeteredContext(): Promise<RebalanceContextResult> {
+    const live = await fetchLiveControls(octokit, enterprise, currentDateObj());
+    const currentUsage = await assembleUsageState(octokit, enterprise, live.costCenterIdByName, currentDateObj());
+
+    const entities: EntityRef[] = [];
+    const seenCostCenters = new Set<string>();
+    for (const control of live.controls) {
+      if (control.kind !== 'budget') continue;
+      if (control.scope === 'cost_center' && !seenCostCenters.has(control.entityName)) {
+        seenCostCenters.add(control.entityName);
+        entities.push({ kind: 'cost_center', costCenterName: control.entityName });
+      } else if (control.scope === 'individual') {
+        const user = currentUsage.users.find((u) => u.userLogin === control.entityName);
+        entities.push({ kind: 'user', userLogin: control.entityName, costCenterName: user?.costCenterName ?? null });
+      }
+    }
+
+    return {
+      available: true,
+      mode: 'metered',
+      context: {
+        controls: live.controls,
+        currentUsage,
+        projectedUsage: currentUsage,
+        entities,
+        meteredPhaseActive: currentUsage.enterprise.meteredCreditsUsed > 0,
+        reserveCredits: 0,
+      },
+    };
+  }
+
   async function getRebalanceContext(mode: 'pool' | 'metered'): Promise<RebalanceContextResult> {
-    if (config.source === 'github') return { available: false, reason: 'live mode' };
+    if (config.source === 'github') {
+      return mode === 'pool' ? buildLivePoolContext() : buildLiveMeteredContext();
+    }
     const scenarioId = getActiveScenarioSummary().id;
 
     if (mode === 'pool') {
