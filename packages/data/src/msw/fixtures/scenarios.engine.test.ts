@@ -89,8 +89,8 @@ function expectPoolScalars(
 // what the engine proves below (guards scenario-state.ts against drift).
 // ---------------------------------------------------------------------------
 describe('scenario metadata is engine-consistent', () => {
-  it('carries the four demo states in selector order', () => {
-    expect(SCENARIO_SUMMARIES.map((s) => s.id)).toEqual(['healthy', 'at-risk', 'surplus', 'metered']);
+  it('carries the demo states in selector order (long-tail last)', () => {
+    expect(SCENARIO_SUMMARIES.map((s) => s.id)).toEqual(['healthy', 'at-risk', 'surplus', 'metered', 'long-tail']);
   });
 });
 
@@ -115,6 +115,34 @@ describe('HEALTHY scenario', () => {
     expect(plan.trigger.conditions.map((c) => c.met)).toEqual([false, true, true]);
     expect(plan.trigger.daysRemaining).toBe(16);
     expect(getActiveScenarioSummary().atRiskCount).toBe(0); // badge: trigger not fired
+  });
+});
+
+// ===========================================================================
+// LONG TAIL -- the Distribution-view world. Operationally a 'healthy' twin:
+// day 13/30, no growth projection, so the pool trigger does NOT fire. Its
+// novelty is the rich per-user spread (usage-long-tail.ts), proven by
+// usage-distribution-long-tail.test.ts; here we only assert it stays calm.
+// ===========================================================================
+describe('LONG-TAIL scenario', () => {
+  it('assembles the full 81-seat roster and does NOT fire (day 13/30, 16 days out)', async () => {
+    const { controls, currentUsage, asOf } = await assemble('long-tail');
+    expect(currentUsage.users.length).toBe(81);
+    const inp = POOL_SCENARIO_INPUTS['long-tail']!;
+    // poolConsumedCredits is the generator's Σ per-CC pool draw (coherence test
+    // re-derives it from the wire); projections are a calm on-pace band.
+    expectPoolScalars(inp, { total: 567_000, consumed: 127_398, p50: 300_000, p90: 330_000, cycleEnd: '2026-06-30' });
+    expect(inp.projectedUsage).toBeNull(); // no growth -- mirror current (like 'healthy')
+    const plan = runPoolRebalancer(poolCtx(controls, currentUsage, inp, asOf));
+    expect(plan.trigger.fired).toBe(false);
+    // near-cycle-end UNMET (16 days out); underutilised MET (52.9% << 95%);
+    // at-risk MET (heavy users at their ULB ceiling + ext-dmorrow's $0-ULB block).
+    expect(plan.trigger.conditions.map((c) => c.met)).toEqual([false, true, true]);
+    expect(plan.trigger.daysRemaining).toBe(16);
+    expect(plan.trigger.projectedUtilization).toBeCloseTo(0.5291, 4);
+    // The nav badge is 0 whenever the trigger does not fire (like 'healthy'),
+    // regardless of the engine's standing internal at-risk count.
+    expect(getActiveScenarioSummary().atRiskCount).toBe(0);
   });
 });
 

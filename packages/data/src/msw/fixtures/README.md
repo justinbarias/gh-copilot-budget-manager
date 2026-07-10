@@ -227,6 +227,20 @@ Overview burn-down's cycle-to-date figure, so **burn-down == engine scalar**.
 | `at-risk` | **511,150** (90.1%) | wf 152k/168k · emp 100k/112k · dataEval 54k/63k · cyber 68k/77k · corp 82.15k/91k · **payments 55k/56k (cap-bound, →61k)** | 0 | runway **~3d**, exhaustion **2026-06-30** |
 | `surplus` | **16,000** (2.8%) | wf 8.6k · cyber 6.4k · corp 1.0k (all far under cap) | 0 | no exhaustion (drastic under-consumption) |
 | `metered` | **567,000** (100%) | ALL at cap — wf 168k · emp 112k · pay 56k · dataEval 63k · cyber 77k · corp 91k (every team tipped; overflow=metered) | **480,000** (60% of the $8,000 budget — dataEval 24.5k + wf 30k + emp 180k + pay 60k + cyber 90k + corp 95k + sam-kelly 0.5k) | pool exhausted — runway 0, exhaustion 2026-06-16 (series = Σ quantity 1,047k vs the 567k pool line) |
+| `long-tail` | **127,398** (22.5%) | derived Σ of each CC's members' generated cycle draw — wf 40,807 · emp 22,421 · pay 14,733 · dataEval 13,299 · cyber 19,242 · corp 16,896 (all <27% of cap; no cap-bound team) | 0 | day-13 twin of `healthy` — no trigger fires |
+
+- **`long-tail` (additive, day 13/30 = 2026-06-14):** a calm world whose ONLY
+  novelty is a rich, right-skewed per-user spread built for the Users →
+  Distribution view (`usage-long-tail.ts`; the other worlds leave ~44 seats idle
+  so the view reads P30 = P50 = 0). A seeded, closed-form log-normal generator
+  (`exp(MU + SIGMA·z)` at each seat's Gaussian quantile via Acklam's inverse
+  normal — no RNG) gives each of 81 seats a cycle draw, **clamped to its
+  effective ULB** (hard-stop ULBs bound single-cycle draw; ext-dmorrow's $0 →
+  0); ~8% idle. The Distribution view's rolling-month window
+  ([2026-05-13, 2026-06-12]) sums this cycle's draw plus the five history-
+  personas' backfill tail, giving **months=1: P30 697 · P50 1,209 · P95 5,445 ·
+  mean 1,872 (> median) · 8 users above the 4,600 universal ULB** (pinned by
+  `api-client/usage-distribution-long-tail.test.ts`, independently derived).
 
 - **Daily rows through day 25 (Defect 2(a)):** every alternate's CC-aggregate
   billing rows are spread across the June weekdays (Jun 2 → Jun 26, `splitDaily`)

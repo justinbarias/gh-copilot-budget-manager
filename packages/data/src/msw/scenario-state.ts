@@ -22,8 +22,11 @@
 //     server.resetHandlers() convention).
 // ============================================================================
 
-/** The four demo states (design handoff §4). 'healthy' is the boot default. */
-export type ScenarioId = 'healthy' | 'at-risk' | 'surplus' | 'metered';
+/**
+ * The demo states (design handoff §4) + the additive 'long-tail' world (built
+ * for the Users -> Distribution view). 'healthy' is the boot default.
+ */
+export type ScenarioId = 'healthy' | 'at-risk' | 'surplus' | 'metered' | 'long-tail';
 
 export const DEFAULT_SCENARIO_ID: ScenarioId = 'healthy';
 
@@ -91,6 +94,17 @@ export const SCENARIO_SUMMARIES: readonly ScenarioSummary[] = [
     phase: 'metered',
     triggerFired: true,
     atRiskCount: 2,
+  },
+  {
+    id: 'long-tail',
+    label: 'Long tail',
+    description: 'Broad per-user spread — most seats active at varying levels with a heavy tail of power users. Built for the Users → Distribution view.',
+    // Same day-13/30 anchor as 'healthy' (2026-06-14): 16 days out, OUTSIDE the
+    // pool trigger's 7-day near-cycle-end window, so nothing fires.
+    asOfDate: '2026-06-14',
+    phase: 'pool',
+    triggerFired: false,
+    atRiskCount: 0,
   },
 ];
 

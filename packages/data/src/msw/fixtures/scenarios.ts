@@ -4,6 +4,11 @@ import { COST_CENTERS, COST_CENTER_RESOURCES } from './costCenters.js';
 import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG } from './constants.js';
 import { SEATS } from './licenses.js';
 import { CREDITS_USED_ITEMS, USAGE_ITEMS, type CreditsUsedItem, type UsageItem } from './usage.js';
+import {
+  LONG_TAIL_CREDITS_USED_ITEMS,
+  LONG_TAIL_POOL_CONSUMED_CREDITS,
+  LONG_TAIL_USAGE_ITEMS,
+} from './usage-long-tail.js';
 import { getActiveScenarioId, type ScenarioId } from '../scenario-state.js';
 
 // ============================================================================
@@ -591,6 +596,18 @@ const SCENARIO_WIRE: Record<ScenarioId, ScenarioWire> = {
     usageItems: METERED_WIRE.usageItems,
     creditsUsedItems: METERED_WIRE.creditsUsedItems,
   },
+  // Long tail: the DEWR roster/cost-centers/budgets, only USAGE differs (a rich
+  // right-skewed per-user spread, authored in usage-long-tail.ts). Day-13 world,
+  // so no trigger fires -- POOL_SCENARIO_INPUTS['long-tail'] below carries a
+  // no-growth projection (like 'healthy').
+  'long-tail': {
+    budgets: BUDGETS,
+    costCenters: COST_CENTERS,
+    costCenterResources: COST_CENTER_RESOURCES,
+    seats: SEATS,
+    usageItems: LONG_TAIL_USAGE_ITEMS,
+    creditsUsedItems: LONG_TAIL_CREDITS_USED_ITEMS,
+  },
 };
 
 /** The MSW-servable fixture set for the ACTIVE scenario (handlers read this). */
@@ -622,11 +639,32 @@ const HEALTHY_POOL_INPUTS: PoolScenarioInputs = {
   cycleEndDate: '2026-06-30',
 };
 
+// ===========================================================================
+// LONG TAIL (pool phase, day 13/30 = 2026-06-14). A calm, on-pace world whose
+// ONLY novelty is a rich per-user spread (usage-long-tail.ts) for the Users ->
+// Distribution view. Same as 'healthy' operationally: no growth projection
+// (mirror assembled currentUsage), day 13/30 is OUTSIDE the 7-day near-cycle-
+// end window, so the pool trigger does NOT fire. poolConsumedCredits is the
+// generator's Σ per-CC pool draw (== the Overview burn-down; re-derived from
+// the wire and pinned by scenarios.coherence.test.ts). Projected P50/P90 are a
+// plausible on-pace end-of-cycle band (13 days elapsed -> ~2.3x annualisation),
+// unused by the (non-firing) trigger but present for the Auto-balance pane.
+// ===========================================================================
+const LONG_TAIL_POOL_INPUTS: PoolScenarioInputs = {
+  projectedUsage: null,
+  poolTotalCredits: 567_000,
+  poolConsumedCredits: LONG_TAIL_POOL_CONSUMED_CREDITS,
+  projectedPoolConsumedCredits: 300_000,
+  projectedPoolConsumedP90Credits: 330_000,
+  cycleEndDate: '2026-06-30',
+};
+
 /** The pool-rebalancer projection + scalars for a scenario (tests / 6.8). */
 export const POOL_SCENARIO_INPUTS: Partial<Record<ScenarioId, PoolScenarioInputs>> = {
   healthy: HEALTHY_POOL_INPUTS,
   'at-risk': AT_RISK_POOL_INPUTS,
   surplus: SURPLUS_POOL_INPUTS,
+  'long-tail': LONG_TAIL_POOL_INPUTS,
 };
 
 /** The metered-rebalancer projection + curation for a scenario (tests / 6.9). */

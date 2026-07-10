@@ -48,6 +48,9 @@ describe('scenario wire <-> engine-scalar coherence', () => {
     ['healthy', 189_800],
     ['at-risk', 511_150],
     ['surplus', 16_000],
+    // Long tail: Σ per-CC pool == the generator's Σ per-seat cycle draw
+    // (usage-long-tail.ts; a calm day-13 world, ~22.5% of the 567,000 pool).
+    ['long-tail', 127_398],
   ] as const)('%s: assembled Σ(per-CC pool) == poolConsumedCredits (%d)', async (id, expected) => {
     const usage = await assembled(id);
     expect(sumCcPool(usage)).toBe(expected);
@@ -87,5 +90,34 @@ describe('scenario wire <-> engine-scalar coherence', () => {
     const dataEval = usage.costCenters.find((cc) => cc.costCenterName === 'Data & Evaluation Platform')!;
     expect(dataEval.meteredCreditsUsed).toBe(24_500);
     expect(dataEval.poolCreditsUsed).toBe(63_000); // == cap, exhausted
+  });
+
+  it('long-tail: per-CC pool is the members\' cycle draw, every CC far under its cap (no cap-bound team), no metered', async () => {
+    const usage = await assembled('long-tail');
+    // Per-CC pool draws (Σ each CC's members' generated cycle credits).
+    const byName = new Map(usage.costCenters.map((cc) => [cc.costCenterName, cc.poolCreditsUsed] as const));
+    expect(byName.get('Workforce Australia Platform')).toBe(40_807);
+    expect(byName.get('Employer & Provider Portals')).toBe(22_421);
+    expect(byName.get('Payments Integrity Engineering')).toBe(14_733);
+    expect(byName.get('Data & Evaluation Platform')).toBe(13_299);
+    expect(byName.get('Cyber & Identity Services')).toBe(19_242);
+    expect(byName.get('Corporate Systems')).toBe(16_896);
+    // Calm world: every CC well under 95% of its included-usage cap (< 27%),
+    // so none is a cap-bound / at-risk CC entity.
+    const capByName: Record<string, number> = {
+      'Workforce Australia Platform': 168_000,
+      'Employer & Provider Portals': 112_000,
+      'Payments Integrity Engineering': 56_000,
+      'Data & Evaluation Platform': 63_000,
+      'Cyber & Identity Services': 77_000,
+      'Corporate Systems': 91_000,
+    };
+    for (const cc of usage.costCenters) {
+      const cap = capByName[cc.costCenterName!];
+      if (cap === undefined) continue;
+      expect(cc.poolCreditsUsed / cap).toBeLessThan(0.3);
+    }
+    // Pool phase -- no metered draw anywhere.
+    expect(usage.enterprise.meteredCreditsUsed).toBe(0);
   });
 });

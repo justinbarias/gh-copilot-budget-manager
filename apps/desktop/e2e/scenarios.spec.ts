@@ -57,7 +57,7 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
   try {
     // --- DEFAULT: healthy == the DEWR world (day 13/30), no auto-balance badge.
     await expect(selector(window)).toBeVisible();
-    await expect(selector(window).getByRole('button')).toHaveCount(4);
+    await expect(selector(window).getByRole('button')).toHaveCount(5);
     await expect(selector(window).getByRole('button', { name: 'Healthy', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 13 of 30');
     await expect(burndownHeadline(window)).toHaveText('189,800');
@@ -86,6 +86,16 @@ test('sim-mode scenario selector switches the whole fixture world across all fou
     await expect(badge(window)).toHaveText('2');
     await expect(burndownHeadline(window)).toHaveText('567,000');
     await expect(selector(window).getByRole('button', { name: 'Metered', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+    // --- LONG TAIL: a calm day-13/30 world (like Healthy: no trigger fires ->
+    // no badge) whose only novelty is the rich per-user spread for the
+    // Distribution view. Its own pool draw (Σ per-CC = the generator's Σ per-seat
+    // cycle draw) is 127,398 (~22.5% of 567,000).
+    await pickScenario(window, 'Long tail');
+    await expect(cycle(window)).toHaveText('Cycle Jun 2026 · Day 13 of 30');
+    await expect(badge(window)).toHaveCount(0); // trigger not fired -> no badge
+    await expect(burndownHeadline(window)).toHaveText('127,398');
+    await expect(selector(window).getByRole('button', { name: 'Long tail', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
     // --- Back to Healthy resets the world (deterministic re-seed).
     await pickScenario(window, 'Healthy');
@@ -146,12 +156,12 @@ test('the persisted forecast follows scenario switches (Defect 2(b): setScenario
 test('a scenario can be forced through the bridge (window.api.setScenario) without touching the selector UI', async () => {
   const { app, window, cleanup } = await launch();
   try {
-    // listScenarios returns the four states in sim mode (refuses in live).
+    // listScenarios returns the demo states in sim mode (refuses in live).
     const list = await window.evaluate(() =>
       (window as unknown as { api: { listScenarios(): Promise<{ refused: boolean; scenarios?: { id: string }[] }> } }).api.listScenarios(),
     );
     expect(list.refused).toBe(false);
-    expect(list.scenarios?.map((s) => s.id)).toEqual(['healthy', 'at-risk', 'surplus', 'metered']);
+    expect(list.scenarios?.map((s) => s.id)).toEqual(['healthy', 'at-risk', 'surplus', 'metered', 'long-tail']);
 
     // Force At risk purely via the bridge, then reload the renderer so it
     // re-reads the re-seeded world.

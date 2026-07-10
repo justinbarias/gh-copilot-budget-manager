@@ -172,3 +172,59 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
     rmSync(dbDir, { recursive: true, force: true });
   }
 });
+
+// The 'long-tail' scenario exists specifically so the Distribution view demos
+// well: 'healthy' reads P30=P50=0 (~44 idle seats), whereas long-tail has a
+// rich right-skewed per-user spread. Switching to it via the sim scenario
+// selector re-seeds MSW AND re-runs the app's syncNow (setScenario, App.tsx),
+// so the Distribution view (a pure local-SQLite read) renders the new world on
+// the remount. Every pin is the SAME months=1 distribution proven by the data
+// package's usage-distribution-long-tail.test.ts (independent derivation):
+//   window 2026-05-13 .. 2026-06-12 · P30 697 · P50 1,209 · P95 5,445 cr ·
+//   8 users above the 4,600 universal ULB.
+test('Long tail scenario: the Distribution view shows a non-zero P50 and a non-zero "N users above ULB" pill', async () => {
+  const appDir = path.join(__dirname, '..');
+  const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-longtail-dist-'));
+  const userDataDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-longtail-userdata-'));
+  const app = await electron.launch({
+    args: [appDir, `--user-data-dir=${userDataDir}`],
+    cwd: appDir,
+    env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
+  });
+
+  try {
+    const window = await app.firstWindow();
+
+    // Switch to Long tail via the sim scenario selector -- this awaits the
+    // bridge's setScenario (which re-runs syncNow), so once the button reads
+    // pressed the DB is synced with the long-tail world.
+    const selector = window.locator('.scenario-selector');
+    await expect(selector).toBeVisible();
+    await selector.getByRole('button', { name: 'Long tail', exact: true }).click();
+    await expect(selector.getByRole('button', { name: 'Long tail', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+    // Open Users -> Distribution (a fresh mount re-fetches the synced world).
+    await window.locator('.nav').getByRole('button', { name: 'Users' }).click();
+    const usersScreen = window.locator('.users-screen');
+    await expect(usersScreen).toBeVisible();
+    await usersScreen.locator('.users-screen__toggle').getByRole('tab', { name: 'Distribution' }).click();
+
+    const dist = window.locator('[data-testid="distribution"]');
+    await expect(dist).toBeVisible();
+
+    // Same trailing-month window as 'healthy', but a real distribution now.
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('13 May – 12 Jun 2026');
+    // The headline: a NON-ZERO median (the whole reason this scenario exists).
+    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('697 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,209 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('5,445 cr');
+
+    // The ULB overlay pill: a NON-ZERO "N users above" (8 power users above the
+    // 4,600 universal ULB).
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('8 users above');
+  } finally {
+    await app.close();
+    rmSync(dbDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
