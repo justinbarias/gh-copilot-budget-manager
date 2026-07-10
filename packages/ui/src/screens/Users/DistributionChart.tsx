@@ -122,6 +122,8 @@ interface Marker {
   lane: number;
   textW: number;
   pillX: number;
+  subW?: number;
+  subX?: number;
 }
 
 export interface DistributionChartProps {
@@ -185,25 +187,38 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
   // Pre-compute each pill's rendered geometry (width from label length, x
   // clamped to the plot bounds) BEFORE lane assignment, so the collision check
   // reflects real pill extents (the mockup's width-aware fix for pill overlap).
+  // This now covers BOTH the main pill and (when present) the sub-pill --
+  // reusing the exact same width/clamp formula the render code uses below, so
+  // collision detection and rendering can never drift from one another.
   for (const m of markers) {
     m.textW = m.label.length * 6.1 + 14;
     m.pillX = Math.min(Math.max(m.x - m.textW / 2, plotLeft), plotRight - m.textW);
+    if (m.sublabel) {
+      m.subW = m.sublabel.length * 6 + 12;
+      m.subX = Math.min(Math.max(m.x - m.subW / 2, plotLeft), plotRight - m.subW);
+    }
   }
+  // Greedy lane assignment, sorted by x. Every pill -- main AND, when present,
+  // sub -- is modeled as a reserved rectangle occupying its own lane: a
+  // marker's main pill goes in lane L, and if it has a sublabel, the sub-pill
+  // goes in lane L+1. L is the LOWEST lane where BOTH reservations are clear.
+  // This is what extends the width-aware fix (previously main-pills only) to
+  // sub-pills: a marker's sub-pill can no longer land on top of a different
+  // marker's main pill occupying the lane directly below it.
   const laneGap = 6;
   const laneLastRight: number[] = [];
+  const laneClear = (lane: number, x: number): boolean => {
+    const right = laneLastRight[lane];
+    return right === undefined || x >= right + laneGap;
+  };
   for (const m of [...markers].sort((a, b) => a.x - b.x)) {
-    let lane = -1;
-    for (let L = 0; L < laneLastRight.length; L++) {
-      if (m.pillX >= (laneLastRight[L] as number) + laneGap) {
-        lane = L;
-        break;
-      }
+    let lane = 0;
+    while (!(laneClear(lane, m.pillX) && (!m.sublabel || laneClear(lane + 1, m.subX as number)))) {
+      lane++;
     }
-    if (lane === -1) {
-      lane = laneLastRight.length;
-      laneLastRight.push(m.pillX + m.textW);
-    } else {
-      laneLastRight[lane] = m.pillX + m.textW;
+    laneLastRight[lane] = m.pillX + m.textW;
+    if (m.sublabel) {
+      laneLastRight[lane + 1] = (m.subX as number) + (m.subW as number);
     }
     m.lane = lane;
   }
@@ -312,7 +327,19 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
                   strokeDasharray={m.dashed ? '4,4' : 'none'}
                   opacity={m.isMean ? 0.85 : 0.9}
                 />
-                <rect x={m.pillX} y={labelY - 12} width={m.textW} height={17} rx={4} fill={COLOR.pillBg} stroke={m.color} strokeWidth={1} opacity={0.95} />
+                <rect
+                  x={m.pillX}
+                  y={labelY - 12}
+                  width={m.textW}
+                  height={17}
+                  rx={4}
+                  fill={COLOR.pillBg}
+                  stroke={m.color}
+                  strokeWidth={1}
+                  opacity={0.95}
+                  className="distribution__pill"
+                  data-testid="distribution-marker-pill"
+                />
                 <text
                   x={m.pillX + m.textW / 2}
                   y={labelY + 1}
@@ -326,12 +353,24 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
                   {m.label}
                 </text>
                 {m.sublabel && (() => {
-                  const subY = labelY + 15;
-                  const subW = m.sublabel.length * 6 + 12;
-                  const subX = Math.min(Math.max(m.x - subW / 2, plotLeft), plotRight - subW);
+                  const subY = 16 + (m.lane + 1) * 20;
+                  const subW = m.subW as number;
+                  const subX = m.subX as number;
                   return (
                     <g>
-                      <rect x={subX} y={subY - 10} width={subW} height={14} rx={3} fill={COLOR.pillBg} stroke={m.color} strokeWidth={1} opacity={0.85} />
+                      <rect
+                        x={subX}
+                        y={subY - 10}
+                        width={subW}
+                        height={14}
+                        rx={3}
+                        fill={COLOR.pillBg}
+                        stroke={m.color}
+                        strokeWidth={1}
+                        opacity={0.85}
+                        className="distribution__pill"
+                        data-testid="distribution-sub-pill"
+                      />
                       <text x={subX + subW / 2} y={subY + 1} textAnchor="middle" fontSize={9.5} fill={m.color} className="mono" data-testid="distribution-ulb-sublabel">
                         {m.sublabel}
                       </text>

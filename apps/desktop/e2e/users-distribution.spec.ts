@@ -1,7 +1,40 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
+
+// Distribution D3 regression guard (marker-pill overlap): the greedy lane
+// algorithm reserves a rectangle per PILL (main and, when a marker has one,
+// sub), not per marker -- so a sub-pill can never land on top of a different
+// marker's main pill occupying the lane below it. This walks every rendered
+// pill rect (main: [data-testid="distribution-marker-pill"], sub:
+// [data-testid="distribution-sub-pill"]) via getBoundingClientRect() and
+// asserts zero pairwise intersection area (touching edges, area === 0, are
+// allowed -- a small epsilon absorbs subpixel/antialiasing noise).
+async function assertNoPillOverlap(window: Page, windowLabel: string): Promise<void> {
+  const rects = await window.evaluate(() => {
+    const els = Array.from(
+      document.querySelectorAll('[data-testid="distribution-marker-pill"], [data-testid="distribution-sub-pill"]'),
+    );
+    return els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+  });
+  // Sanity: the pill query actually found something (a silently-empty
+  // selector would make this guard vacuously pass).
+  expect(rects.length, `expected marker/sub pills to be present in ${windowLabel} window`).toBeGreaterThan(0);
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i]!;
+      const b = rects[j]!;
+      const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+      const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+      const area = overlapX * overlapY;
+      expect(area, `pill[${i}] and pill[${j}] overlap in ${windowLabel} window (rects: ${JSON.stringify(a)} / ${JSON.stringify(b)})`).toBeLessThanOrEqual(0.5);
+    }
+  }
+}
 
 // Distribution D3: the Users screen's Table|Distribution toggle + the per-user
 // credit-consumption distribution view (SVG histogram, percentile/mean/ULB
@@ -101,6 +134,16 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
     // Insight strip: live-computed template copy (median 0, well under the $46 ULB).
     await expect(window.locator('[data-testid="distribution-insight"]')).toContainText('well under the $46.00 universal ULB');
 
+    // Regression guard (1 month window): the P95 main pill and the ULB
+    // marker's "N users above" sub-pill land close together with live data --
+    // this is the window where they used to overlap by ~53px.
+    await assertNoPillOverlap(window, '1 month');
+
+    // --- Switch to 3 months: same regression guard, different window. ---
+    await window.getByRole('tab', { name: '3 months' }).click();
+    await expect(window.locator('.distribution__svg')).toHaveCount(1);
+    await assertNoPillOverlap(window, '3 months');
+
     // --- Switch to 9 months: truncation caption, coverage range, changed tiles,
     // and the clamped ULB overlay (×9 exceeds the chart's xMax). ---
     await window.getByRole('tab', { name: '9 months' }).click();
@@ -115,6 +158,10 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
       window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 41,400 cr →' }),
     ).toBeVisible();
     await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('0 users above');
+
+    // Regression guard (9 month window): P95 (17,890 cr) and the clamped ULB
+    // marker (pinned at plotRight) are the closest pair here.
+    await assertNoPillOverlap(window, '9 months');
 
     // --- Back to Table: the regression guard that the toggle still swaps views. ---
     await toggle.getByRole('tab', { name: 'Table' }).click();
