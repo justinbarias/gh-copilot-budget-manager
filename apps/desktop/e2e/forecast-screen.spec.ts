@@ -16,7 +16,14 @@ import { test, expect, _electron as electron } from '@playwright/test';
 // see the Task 5.5 build report for the full derivation):
 //   - Enterprise (81 seats, promo 567,000): exhaustionDate 2026-06-29,
 //     runwayDays 15, mape ~1.18% ("MAPE 1.2%"), June-cycle (day 0-29)
-//     terminal P50/P90 cumulative 604,662 / 619,598 credits.
+//     terminal P50/P90 cumulative 604,662 / 623,414 credits. (P90 re-pinned
+//     for the decoupled small-sample band model: variance is now the SAMPLE
+//     variance of the SHRUNK-index residuals plus a k²·SE² run-rate term;
+//     the P50 point path is bit-identical to the original model, so 604,662
+//     stands. Hand-derived from the fixtures: nEstim 97, runRate 24,223.158,
+//     dailyVariance 10,031,876.89, SE² = var/97; last actual day 2026-06-12
+//     -> June-30 terminus is projected day k=18 -> 604,662 +
+//     1.2816·√(18·var + 18²·SE²) = 604,662 + 18,752 = 623,414.)
 //   - Standard allowance toggle: 81 x 3,900 = 315,900 (a flat hypothetical
 //     override -- the real June cycle is inside the 1 Jun-1 Sep promo
 //     window, so this never reflects live truth for this cycle).
@@ -26,7 +33,10 @@ import { test, expect, _electron as electron } from '@playwright/test';
 //   - emily-zhao (userId 5182, ranked #1 by MTD credits per users.spec.ts,
 //     so she's the entity select's default): ULB 6,000 (cost-center scope),
 //     exhaustionDate (projected block date) 2026-06-15, runwayDays 1, mape
-//     ~2.20% ("MAPE 2.2%"), June-cycle terminal P50/P90 16,858 / 17,422.
+//     ~2.20% ("MAPE 2.2%"), June-cycle terminal P50/P90 16,858 / 17,515
+//     (P90 re-pinned for the same band-model change: nEstim 97, runRate
+//     672.7622, shrunk-residual sample variance 12,294.86, k=18 at June 30
+//     -> 16,858 + 1.2816·√(18·var + 18²·var/97) = 16,858 + 657 = 17,515).
 test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes render real persisted forecasts', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-forecast-screen-'));
@@ -79,7 +89,7 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
     await expect(screen.getByTestId('mape-pill')).toHaveText('MAPE 1.2%');
     const pctRows = screen.locator('.forecast__pct-row');
     await expect(pctRows.filter({ hasText: 'P50' }).locator('.forecast__pct-value')).toHaveText('604,662');
-    await expect(pctRows.filter({ hasText: 'P90' }).locator('.forecast__pct-value')).toHaveText('619,598');
+    await expect(pctRows.filter({ hasText: 'P90' }).locator('.forecast__pct-value')).toHaveText('623,414');
 
     // Metered-phase spend card: real projected metered $ against the real
     // $8,000 enterprise budget control (alert-only, per the DEWR fixture).
@@ -124,7 +134,7 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
 
     await expect(screen.getByTestId('mape-pill')).toHaveText('MAPE 2.2%');
     await expect(pctRows.filter({ hasText: 'P50' }).locator('.forecast__pct-value')).toHaveText('16,858');
-    await expect(pctRows.filter({ hasText: 'P90' }).locator('.forecast__pct-value')).toHaveText('17,422');
+    await expect(pctRows.filter({ hasText: 'P90' }).locator('.forecast__pct-value')).toHaveText('17,515');
 
     // A user's ULB hard-stops in both phases -- no separate metered-phase card.
     await expect(screen.getByTestId('forecast-metered-headline')).toHaveCount(0);
