@@ -503,10 +503,18 @@ describe('createGitHubApiClient', () => {
     expect(emily.effectiveUlb).toEqual({ amountCredits: 4_600, scope: 'universal' });
   });
 
-  it('surfaces the pre-baked fixture alerts', async () => {
+  it('surfaces the pre-baked fixture alerts in simulation (msw source)', async () => {
     const alerts = await client.listAlerts();
     expect(alerts.length).toBeGreaterThan(0);
     expect(alerts.some((a) => a.budgetId === BUDGET_IDS.zeroUlb)).toBe(true);
+  });
+
+  it('returns NO alerts in live (github source) -- fixture alerts must not leak into a real tenant (Phase 6 derivation pending)', async () => {
+    // Live-mode alert derivation is a Phase 6 capability; until then live
+    // returns [] rather than the MSW demo alerts. Maintainer-reported bug
+    // (2026-07-10): DEWR fixture alerts (ext-dmorrow et al.) surfaced live.
+    const liveClient = createGitHubApiClient({ enterprise: ENTERPRISE_SLUG, db, source: 'github' });
+    expect(await liveClient.listAlerts()).toEqual([]);
   });
 
   it('syncNow ingests real rows into SQLite and getSyncStatus is derived from them', async () => {

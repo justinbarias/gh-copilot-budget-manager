@@ -125,7 +125,20 @@ export interface PatValidation {
  */
 export type ReadSmokeResult =
   | { refused: true; reason: string }
-  | { refused: false; ranAt: string; results: ReadSmokeEndpointResult[] };
+  | {
+      refused: false;
+      ranAt: string;
+      results: ReadSmokeEndpointResult[];
+      /**
+       * Live per-month all-zero diagnostics (2026-07-10), pre-formatted plain
+       * text for the copy-paste surface. `localCoverageText`: source-scoped DB
+       * credits coverage (what got PERSISTED). `wireR6Text`: R6 historical
+       * backfill summary (what the wire RETURNS, un-persisted; a skip note off
+       * the github source). See smoke/diagnostics.ts.
+       */
+      localCoverageText: string;
+      wireR6Text: string;
+    };
 
 /**
  * Task 9.3-lite: the live-write arming state the Settings arming card + the

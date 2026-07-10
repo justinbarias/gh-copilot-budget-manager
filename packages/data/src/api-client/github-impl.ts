@@ -42,6 +42,15 @@ import { isWriteArmed, setWriteArmed } from '../write/arming.js';
 import { assembleUsageState, fetchLiveControls } from '../write/live-state.js';
 import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS } from '../msw/fixtures/scenarios.js';
 import { runReadSmoke } from '../smoke/read-smoke.js';
+import {
+  formatLocalCreditsCoverage,
+  formatWireR6Historical,
+  summarizeWireR6Historical,
+  WIRE_R6_SIM_SKIP_NOTE,
+  type LocalCreditsCoverage,
+  type MonthCoverage,
+  type SnapshotCoverage,
+} from '../smoke/diagnostics.js';
 import { validateTenantConfig, type TenantConfig } from '../tenant/types.js';
 import type { TenantConfigStore } from '../tenant/store.js';
 import { paginateAll } from './paginate.js';
@@ -466,6 +475,173 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
   }
 
   return forecasts;
+}
+
+// Distribution: the SHARED base both distribution reads (getUsageDistribution
+// and getUserMonthObservations) start from -- the source-scoped per-user fact
+// rows plus the union/latest-wins winning-generation map and the covered date
+// bounds. Defined in exactly one place so the coverage semantics never drift.
+// Returns null for the SENTINEL case (no per-user history for this source at
+// all -- fresh DB / never synced in this mode); every caller maps null to its
+// own sentinel shape.
+export interface DistributionFactBase {
+  factRows: Array<{ date: string; userId: string; userLogin: string | null; creditsUsed: number; snapshotId: number }>;
+  /** Per date, the highest snapshotId containing it -- that day's winning generation. */
+  winnerSnapshotByDate: Map<string, number>;
+  /** Min/max winning date (YYYY-MM-DD). */
+  earliestDate: string;
+  toDate: string;
+}
+
+// Module-scope (extracted from the client closure, 2026-07-10) so the live-read
+// smoke's DB-coverage diagnostic can REUSE the exact union/latest-wins base the
+// distribution reads consume -- rather than reimplement it. The closure method
+// readDistributionFactBase() is a thin (config.db, config.source) shim over this.
+export function readDistributionFactBaseFor(db: Db, source: string): DistributionFactBase | null {
+  const sourceRows = db
+    .select({
+      date: schema.creditsUsedFact.date,
+      userId: schema.creditsUsedFact.userId,
+      userLogin: schema.creditsUsedFact.userLogin,
+      creditsUsed: schema.creditsUsedFact.creditsUsed,
+      snapshotId: schema.creditsUsedFact.snapshotId,
+    })
+    .from(schema.creditsUsedFact)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedFact.snapshotId))
+    .where(eq(schema.snapshot.source, source))
+    .all();
+
+  if (sourceRows.length === 0) return null;
+
+  // SOURCE-SCOPED WINDOW SEMANTICS (scenario-contamination fix, 2026-07-10 --
+  // maintainer-reported, screenshot-confirmed). The two client sources model
+  // fundamentally different worlds, so their coverage bases diverge HERE:
+  //
+  //  - 'github' (LIVE): ONE real enterprise accumulating history across many
+  //    real syncs. Union across ALL snapshots, latest-wins per date, is the
+  //    correct, maintainer-approved accumulation (types.ts' UsageDistribution
+  //    doc) -- a later sync legitimately extends/corrects the same timeline.
+  //
+  //  - 'msw' (SIMULATION): each scenario sync writes a snapshot from a
+  //    DIFFERENT synthetic world with its OWN date range. Unioning across
+  //    snapshots let a later-dated scenario (e.g. Metered, whose facts run
+  //    past the 1 Sep 2026 cliff) permanently hijack toDate -- so after
+  //    syncing Metered then switching to a June scenario, the "1 month"
+  //    window still read "2 Aug - 1 Sep 2026" (the metered world's dates),
+  //    the reported bug. Each sim sync persists the active scenario's FULL
+  //    ~4-cycle world in a single snapshot, so scoping to the LATEST msw
+  //    snapshot alone (same latest-snapshot pattern getLastSyncedControls /
+  //    write/engine.ts use) makes every scenario self-contained and
+  //    switch-safe. Union/latest-wins below is then a no-op (one snapshot).
+  //
+  // Both getUsageDistribution and getUserMonthObservations inherit this via
+  // the shared helper -- there is no other copy of the union logic.
+  const factRows =
+    source === 'msw'
+      ? (() => {
+          const latestSnapshotId = sourceRows.reduce((max, r) => (r.snapshotId > max ? r.snapshotId : max), 0);
+          return sourceRows.filter((r) => r.snapshotId === latestSnapshotId);
+        })()
+      : sourceRows;
+
+  // Union/latest-wins: per date, the highest snapshotId containing that
+  // date is the winning generation; its rows are that day's truth.
+  const winnerSnapshotByDate = new Map<string, number>();
+  for (const row of factRows) {
+    const winner = winnerSnapshotByDate.get(row.date);
+    if (winner === undefined || row.snapshotId > winner) winnerSnapshotByDate.set(row.date, row.snapshotId);
+  }
+
+  let toDate = '';
+  let earliestDate = '';
+  for (const date of winnerSnapshotByDate.keys()) {
+    if (toDate === '' || date > toDate) toDate = date;
+    if (earliestDate === '' || date < earliestDate) earliestDate = date;
+  }
+
+  return { factRows, winnerSnapshotByDate, earliestDate, toDate };
+}
+
+// Live per-month all-zero diagnostic (2026-07-10): what got PERSISTED for a
+// source. Per-snapshot raw stats (credits_used_fact row count, distinct user
+// ids, date min..max, null user_login count) PLUS a per-month rollup over the
+// SAME union/latest-wins winning rows getUserMonthObservations reads -- so the
+// diagnostic shows exactly what that read sees. Source-scoped (§6.8). Pure
+// local-SQLite read; no GitHub HTTP (§6.9-exempt by construction). See
+// smoke/diagnostics.ts for the hypotheses this discriminates.
+export function computeLocalCreditsCoverage(db: Db, source: string): LocalCreditsCoverage {
+  const rows = db
+    .select({
+      snapshotId: schema.creditsUsedFact.snapshotId,
+      capturedAt: schema.snapshot.capturedAt,
+      date: schema.creditsUsedFact.date,
+      userId: schema.creditsUsedFact.userId,
+      userLogin: schema.creditsUsedFact.userLogin,
+    })
+    .from(schema.creditsUsedFact)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedFact.snapshotId))
+    .where(eq(schema.snapshot.source, source))
+    .all();
+
+  interface SnapAcc {
+    capturedAt: Date;
+    rowCount: number;
+    userIds: Set<string>;
+    minDate: string | null;
+    maxDate: string | null;
+    nullLoginCount: number;
+  }
+  const bySnap = new Map<number, SnapAcc>();
+  for (const r of rows) {
+    let acc = bySnap.get(r.snapshotId);
+    if (!acc) {
+      acc = { capturedAt: r.capturedAt, rowCount: 0, userIds: new Set(), minDate: null, maxDate: null, nullLoginCount: 0 };
+      bySnap.set(r.snapshotId, acc);
+    }
+    acc.rowCount += 1;
+    acc.userIds.add(r.userId);
+    if (acc.minDate === null || r.date < acc.minDate) acc.minDate = r.date;
+    if (acc.maxDate === null || r.date > acc.maxDate) acc.maxDate = r.date;
+    if (r.userLogin === null) acc.nullLoginCount += 1;
+  }
+  const snapshots: SnapshotCoverage[] = [...bySnap.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([id, a]) => ({
+      snapshotId: id,
+      capturedAt: a.capturedAt instanceof Date ? a.capturedAt.toISOString() : String(a.capturedAt),
+      rowCount: a.rowCount,
+      distinctUserIds: a.userIds.size,
+      minDate: a.minDate,
+      maxDate: a.maxDate,
+      nullLoginCount: a.nullLoginCount,
+    }));
+
+  // Per-month rollup over the UNION view (winning rows only) -- reusing the
+  // distribution's own base, never a second copy of the union logic.
+  const base = readDistributionFactBaseFor(db, source);
+  const months: MonthCoverage[] = [];
+  if (base) {
+    const byMonthUser = new Map<string, Map<string, number>>();
+    const byMonthTotal = new Map<string, number>();
+    for (const row of base.factRows) {
+      if (row.snapshotId !== base.winnerSnapshotByDate.get(row.date)) continue; // superseded generation
+      const month = row.date.slice(0, 7);
+      byMonthTotal.set(month, (byMonthTotal.get(month) ?? 0) + row.creditsUsed);
+      let um = byMonthUser.get(month);
+      if (!um) {
+        um = new Map();
+        byMonthUser.set(month, um);
+      }
+      um.set(row.userId, (um.get(row.userId) ?? 0) + row.creditsUsed);
+    }
+    for (const month of [...byMonthUser.keys()].sort()) {
+      const um = byMonthUser.get(month)!;
+      const usersWithNonzero = [...um.values()].filter((v) => v > 0).length;
+      months.push({ month, totalCredits: byMonthTotal.get(month) ?? 0, distinctUsers: um.size, usersWithNonzero });
+    }
+  }
+
+  return { source, hasData: base !== null, snapshots, months };
 }
 
 export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient {
@@ -964,77 +1140,8 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // semantics are defined in exactly one place. Returns null for the SENTINEL
   // case (no per-user history for this source at all -- fresh DB / never synced
   // in this mode); every caller maps null to its own sentinel shape.
-  interface DistributionFactBase {
-    factRows: Array<{ date: string; userId: string; userLogin: string | null; creditsUsed: number; snapshotId: number }>;
-    /** Per date, the highest snapshotId containing it -- that day's winning generation. */
-    winnerSnapshotByDate: Map<string, number>;
-    /** Min/max winning date (YYYY-MM-DD). */
-    earliestDate: string;
-    toDate: string;
-  }
   function readDistributionFactBase(): DistributionFactBase | null {
-    const sourceRows = config.db
-      .select({
-        date: schema.creditsUsedFact.date,
-        userId: schema.creditsUsedFact.userId,
-        userLogin: schema.creditsUsedFact.userLogin,
-        creditsUsed: schema.creditsUsedFact.creditsUsed,
-        snapshotId: schema.creditsUsedFact.snapshotId,
-      })
-      .from(schema.creditsUsedFact)
-      .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedFact.snapshotId))
-      .where(eq(schema.snapshot.source, config.source))
-      .all();
-
-    if (sourceRows.length === 0) return null;
-
-    // SOURCE-SCOPED WINDOW SEMANTICS (scenario-contamination fix, 2026-07-10 --
-    // maintainer-reported, screenshot-confirmed). The two client sources model
-    // fundamentally different worlds, so their coverage bases diverge HERE:
-    //
-    //  - 'github' (LIVE): ONE real enterprise accumulating history across many
-    //    real syncs. Union across ALL snapshots, latest-wins per date, is the
-    //    correct, maintainer-approved accumulation (types.ts' UsageDistribution
-    //    doc) -- a later sync legitimately extends/corrects the same timeline.
-    //
-    //  - 'msw' (SIMULATION): each scenario sync writes a snapshot from a
-    //    DIFFERENT synthetic world with its OWN date range. Unioning across
-    //    snapshots let a later-dated scenario (e.g. Metered, whose facts run
-    //    past the 1 Sep 2026 cliff) permanently hijack toDate -- so after
-    //    syncing Metered then switching to a June scenario, the "1 month"
-    //    window still read "2 Aug - 1 Sep 2026" (the metered world's dates),
-    //    the reported bug. Each sim sync persists the active scenario's FULL
-    //    ~4-cycle world in a single snapshot, so scoping to the LATEST msw
-    //    snapshot alone (same latest-snapshot pattern getLastSyncedControls /
-    //    write/engine.ts use) makes every scenario self-contained and
-    //    switch-safe. Union/latest-wins below is then a no-op (one snapshot).
-    //
-    // Both getUsageDistribution and getUserMonthObservations inherit this via
-    // the shared helper -- there is no other copy of the union logic.
-    const factRows =
-      config.source === 'msw'
-        ? (() => {
-            const latestSnapshotId = sourceRows.reduce((max, r) => (r.snapshotId > max ? r.snapshotId : max), 0);
-            return sourceRows.filter((r) => r.snapshotId === latestSnapshotId);
-          })()
-        : sourceRows;
-
-    // Union/latest-wins: per date, the highest snapshotId containing that
-    // date is the winning generation; its rows are that day's truth.
-    const winnerSnapshotByDate = new Map<string, number>();
-    for (const row of factRows) {
-      const winner = winnerSnapshotByDate.get(row.date);
-      if (winner === undefined || row.snapshotId > winner) winnerSnapshotByDate.set(row.date, row.snapshotId);
-    }
-
-    let toDate = '';
-    let earliestDate = '';
-    for (const date of winnerSnapshotByDate.keys()) {
-      if (toDate === '' || date > toDate) toDate = date;
-      if (earliestDate === '' || date < earliestDate) earliestDate = date;
-    }
-
-    return { factRows, winnerSnapshotByDate, earliestDate, toDate };
+    return readDistributionFactBaseFor(config.db, config.source);
   }
 
   // Distribution: the SHARED roster/name lookups both reads apply after
@@ -1270,7 +1377,13 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   }
 
   async function listAlerts(): Promise<Alert[]> {
-    return ALERTS;
+    // Live-mode alert derivation is a Phase 6 capability (PRD FR17 custom
+    // alerting). Until then, LIVE returns an EMPTY list rather than leaking the
+    // MSW demo fixtures (ext-dmorrow, the DEWR cap/cliff alerts, ...) into a
+    // real tenant's Overview -- a maintainer-reported live-mode bug (2026-07-10:
+    // fixture alerts surfaced against the live tenant). Simulation keeps its
+    // pre-baked fixture alerts (scenario semantics untouched).
+    return config.source === 'msw' ? ALERTS : [];
   }
 
   // Mode-isolation (item 24 / CLAUDE.md §6.8): scoped to THIS client's source
@@ -1599,7 +1712,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // days). Derived from the clock seam, never bare wall-clock.
     const probeDay = new Date(currentDateObj().getTime() - DAY_MS).toISOString().slice(0, 10);
     const results = await runReadSmoke(octokit, enterprise, probeDay);
-    return { refused: false, ranAt: new Date().toISOString(), results };
+
+    // Live per-month all-zero diagnostics (2026-07-10). Section 1: what got
+    // PERSISTED (source-scoped DB coverage). Section 2: what the R6 historical
+    // backfill RETURNS, WITHOUT persisting -- reusing fetchHistoricalCreditsUsed-
+    // Items verbatim (the SAME already-§6.9-validated users-1-day fetch syncNow
+    // runs; no new endpoint / request shape, so this stays §6.9-exempt).
+    const localCoverageText = formatLocalCreditsCoverage(computeLocalCreditsCoverage(config.db, config.source));
+    let wireR6Text: string;
+    if (config.source === 'github') {
+      const items = await fetchHistoricalCreditsUsedItems();
+      wireR6Text = formatWireR6Historical(summarizeWireR6Historical(items));
+    } else {
+      wireR6Text = WIRE_R6_SIM_SKIP_NOTE;
+    }
+
+    return { refused: false, ranAt: new Date().toISOString(), results, localCoverageText, wireR6Text };
   }
 
   // Task 6.7: scenario selector bridge. The mirror-image of runLiveReadSmoke's

@@ -281,3 +281,22 @@
 .token-health__smoke-row--http_error td {
   color: var(--amber, #b7791f);
 }
+
+.token-health__smoke-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.token-health__smoke-section {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--border-row);
+  border-radius: 6px;
+}

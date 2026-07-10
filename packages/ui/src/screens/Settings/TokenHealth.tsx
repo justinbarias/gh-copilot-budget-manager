@@ -86,7 +86,9 @@ function readSmokeToText(result: ReadSmokeResult): string {
   }
   const header = `Live read smoke — ${result.ranAt}`;
   const rows = result.results.map((r) => `[${r.docRef}] ${r.status.toUpperCase().padEnd(14)} ${r.endpoint}\n    ${r.details}`);
-  return [header, ...rows].join('\n');
+  // Append the per-month all-zero diagnostics (2026-07-10) so the copied report
+  // carries the DB-coverage + live-wire-R6 sections the maintainer pastes back.
+  return [header, ...rows, '', result.localCoverageText, '', result.wireR6Text].join('\n');
 }
 
 export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) {
@@ -566,6 +568,17 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
               ))}
             </tbody>
           </table>
+        )}
+
+        {smoke && !smoke.refused && (
+          <div className="token-health__smoke-diagnostics" data-testid="smoke-diagnostics">
+            <pre className="mono token-health__smoke-section" data-testid="smoke-local-coverage">
+              {smoke.localCoverageText}
+            </pre>
+            <pre className="mono token-health__smoke-section" data-testid="smoke-wire-r6">
+              {smoke.wireR6Text}
+            </pre>
+          </div>
         )}
       </div>
 

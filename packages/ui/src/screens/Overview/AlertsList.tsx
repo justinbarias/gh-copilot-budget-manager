@@ -48,7 +48,12 @@ export function AlertsList({ alerts, onNavigateToAudit }: AlertsListProps) {
       </div>
 
       {alerts.length === 0 ? (
-        <p className="alerts-list__empty">No active alerts.</p>
+        // Data-driven empty state (live-only in practice: sim always ships
+        // fixture alerts, live returns [] until Phase 6 alert derivation --
+        // see ApiClient.listAlerts). Header + "View in audit ->" stay above.
+        <p className="alerts-list__empty" data-testid="alerts-empty">
+          No alerts. Live alert derivation lands with Phase 6 custom alerting.
+        </p>
       ) : (
         <ul className="alerts-list__items">
           {alerts.map((alert) => {
