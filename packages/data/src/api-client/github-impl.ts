@@ -34,6 +34,7 @@ import {
   type IngestCostCenterMember,
   type IngestData,
   type IngestForecastItem,
+  type IngestMonthlyCreditsRow,
   type IngestResourceType,
 } from '../sync/sync-now.js';
 import { applyPlan as applyPlanEngine, dryRunPlan as dryRunPlanEngine } from '../write/engine.js';
@@ -70,6 +71,7 @@ import {
   type AttributedUsageItem,
 } from './usage-fetch.js';
 import { fetchCycleUserCredits, fetchUserCreditsForDays, type CycleUserCreditsResult } from './users-report.js';
+import { fetchAiCreditUsage, sumNetQuantity } from './ai-credit-usage.js';
 import { resolveClockDate } from './clock.js';
 import type { Db } from '../db/client.js';
 import * as schema from '../db/schema.js';
@@ -646,6 +648,204 @@ export function readDistributionFactBaseFor(db: Db, source: string): Distributio
   }
 
   return { factRows, winnerSnapshotByDate, earliestDate, toDate };
+}
+
+// ===========================================================================
+// Monthly per-user AI-credit backfill (billing ai_credit/usage report; migration
+// 0007 credits_used_monthly_fact). github-source only -- MSW has no
+// ai_credit/usage handler, so the sim path never fans out and this table stays
+// empty (simulation behavior + pins byte-identical).
+// ===========================================================================
+
+// 'YYYY-MM' one calendar month earlier (Date.UTC normalizes the January wrap).
+function previousMonth(month: string): string {
+  const [y, m] = month.split('-').map(Number) as [number, number];
+  const d = new Date(Date.UTC(y, m - 2, 1)); // m-2: m is 1-based, and we want the prior month's 0-based index
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// The unattributed-remainder epsilon (brief-pinned): a remainder is persisted
+// only when it exceeds this many credits. Guards against float noise in
+// monthAggregate − Σ attributed reading as a spurious departed-user remainder.
+const REMAINDER_EPSILON = 0.005;
+
+// Same bounded-concurrency ceiling as the per-day cycle fan-out
+// (users-report.ts's USERS_REPORT_CONCURRENCY): 10 per-seat calls in flight per
+// month, to stay under secondary rate limits on a wide roster.
+const MONTHLY_BACKFILL_CONCURRENCY = 10;
+
+// The accessibility window GitHub documents for the billing usage report ("only
+// data from the past 24 months"): the backward candidate scan never looks
+// further than this many months before the current month.
+const MONTHLY_BACKFILL_MAX_SCAN = 24;
+
+// Bounded-concurrency ordered map (mirrors fetchUserCreditsForDays' chunked
+// waves): at most `limit` promises in flight; results follow input order.
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  for (let i = 0; i < items.length; i += limit) {
+    const chunk = items.slice(i, i + limit);
+    const settled = await Promise.all(chunk.map((item) => fn(item)));
+    settled.forEach((r, j) => {
+      results[i + j] = r;
+    });
+  }
+  return results;
+}
+
+// The months already banked in credits_used_monthly_fact for this source (any
+// snapshot -- append-once). The candidate scan skips these so a banked month is
+// never refetched.
+function readBankedMonthsFor(db: Db, source: string): Set<string> {
+  const rows = db
+    .select({ month: schema.creditsUsedMonthlyFact.month })
+    .from(schema.creditsUsedMonthlyFact)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedMonthlyFact.snapshotId))
+    .where(eq(schema.snapshot.source, source))
+    .all();
+  return new Set(rows.map((r) => r.month));
+}
+
+// The monthly facts for a source, keyed by month: per-month attributed sums (by
+// userId, with the row's login) + the unattributed remainder. Defensively takes
+// the LATEST snapshot per month (append-once makes this a single snapshot in
+// practice, but a month that was somehow rewritten across snapshots resolves to
+// its newest generation). Excludes the remainder row from `attributed`.
+export interface MonthlyCreditsFacts {
+  attributed: Map<string, { login: string | null; credits: number }>;
+  remainder: number;
+}
+export function readMonthlyCreditsFactsFor(db: Db, source: string): Map<string, MonthlyCreditsFacts> {
+  const rows = db
+    .select({
+      month: schema.creditsUsedMonthlyFact.month,
+      userId: schema.creditsUsedMonthlyFact.userId,
+      userLogin: schema.creditsUsedMonthlyFact.userLogin,
+      creditsUsed: schema.creditsUsedMonthlyFact.creditsUsed,
+      snapshotId: schema.creditsUsedMonthlyFact.snapshotId,
+    })
+    .from(schema.creditsUsedMonthlyFact)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedMonthlyFact.snapshotId))
+    .where(eq(schema.snapshot.source, source))
+    .all();
+
+  const latestSnapByMonth = new Map<string, number>();
+  for (const row of rows) {
+    const cur = latestSnapByMonth.get(row.month);
+    if (cur === undefined || row.snapshotId > cur) latestSnapByMonth.set(row.month, row.snapshotId);
+  }
+
+  const byMonth = new Map<string, MonthlyCreditsFacts>();
+  for (const row of rows) {
+    if (row.snapshotId !== latestSnapByMonth.get(row.month)) continue; // superseded generation
+    let facts = byMonth.get(row.month);
+    if (!facts) {
+      facts = { attributed: new Map(), remainder: 0 };
+      byMonth.set(row.month, facts);
+    }
+    if (row.userId === null) {
+      facts.remainder += row.creditsUsed; // the NULL-user remainder row (append-once -> exactly one)
+    } else {
+      facts.attributed.set(row.userId, { login: row.userLogin, credits: row.creditsUsed });
+    }
+  }
+  return byMonth;
+}
+
+export interface MonthlyBackfillSeat {
+  id: string;
+  login: string;
+}
+
+export interface MonthlyBackfillResult {
+  rows: IngestMonthlyCreditsRow[];
+  /** Months whose fan-out succeeded and produced >=1 persisted row (attributed and/or remainder). */
+  monthsPersisted: string[];
+  /** Months whose unfiltered aggregate returned items but Σ attributed left no positive remainder and no attributed rows (rare: all seats zero, aggregate ~0). */
+  monthsEmptyAfterFanout: string[];
+  /** The month whose unfiltered aggregate returned ZERO items -- the era floor that stopped the scan (null if the scan hit the 24-month cap or a bank/failure chain instead). */
+  eraFloorMonth: string | null;
+  /** Months skipped because already banked. */
+  monthsSkippedBanked: string[];
+  /** Months whose fan-out threw -- persisted nothing, retried next sync. */
+  monthsFailed: string[];
+  /** Months where Σ attributed EXCEEDED the aggregate (negative remainder) -- surfaced, but no remainder row persisted. */
+  monthsNegativeRemainder: string[];
+}
+
+// The candidate fan-out. From (currentMonth − 1) backward, at most 24 months:
+// skip banked months; for each candidate, one unfiltered aggregate call (empty
+// items => era floor, stop the scan), then a bounded per-seat fan-out summing
+// netQuantity (skip seats with sum <= 0, the same roster-zero rule the daily
+// path applies at read time), then the remainder = aggregate − Σ attributed
+// (persist a NULL-user row only when > epsilon). Each month is error-isolated:
+// a throw aborts THAT month (no rows) and the scan proceeds to older months.
+export async function backfillMonthlyCredits(
+  octokit: Octokit,
+  enterprise: string,
+  opts: { currentMonth: string; seats: readonly MonthlyBackfillSeat[]; bankedMonths: ReadonlySet<string> },
+): Promise<MonthlyBackfillResult> {
+  const result: MonthlyBackfillResult = {
+    rows: [],
+    monthsPersisted: [],
+    monthsEmptyAfterFanout: [],
+    eraFloorMonth: null,
+    monthsSkippedBanked: [],
+    monthsFailed: [],
+    monthsNegativeRemainder: [],
+  };
+
+  let month = previousMonth(opts.currentMonth);
+  for (let scanned = 0; scanned < MONTHLY_BACKFILL_MAX_SCAN; scanned++, month = previousMonth(month)) {
+    if (opts.bankedMonths.has(month)) {
+      result.monthsSkippedBanked.push(month);
+      continue;
+    }
+    const [year, mon] = month.split('-').map(Number) as [number, number];
+    try {
+      const aggregate = await fetchAiCreditUsage(octokit, enterprise, { year, month: mon });
+      if (aggregate.usageItems.length === 0) {
+        // Era floor: no usage in this month at all -> nothing older either.
+        // No persistence (cheap 1-call retry next sync if history later appears).
+        result.eraFloorMonth = month;
+        break;
+      }
+      const monthAggregate = sumNetQuantity(aggregate);
+
+      const perSeat = await mapWithConcurrency(opts.seats, MONTHLY_BACKFILL_CONCURRENCY, async (seat) => {
+        const report = await fetchAiCreditUsage(octokit, enterprise, { year, month: mon, user: seat.login });
+        return { userId: seat.id, login: seat.login, sum: sumNetQuantity(report) };
+      });
+
+      const monthRows: IngestMonthlyCreditsRow[] = [];
+      let attributedTotal = 0;
+      for (const s of perSeat) {
+        if (s.sum <= 0) continue; // roster/idle zero -- reconstructed at read time from the license join
+        attributedTotal += s.sum;
+        monthRows.push({ month, userId: s.userId, userLogin: s.login, creditsUsed: s.sum });
+      }
+
+      const remainder = monthAggregate - attributedTotal;
+      if (remainder > REMAINDER_EPSILON) {
+        monthRows.push({ month, userId: null, userLogin: null, creditsUsed: remainder });
+      } else if (remainder < -REMAINDER_EPSILON) {
+        result.monthsNegativeRemainder.push(month); // surface, persist no remainder row
+      }
+
+      if (monthRows.length > 0) {
+        result.rows.push(...monthRows);
+        result.monthsPersisted.push(month);
+      } else {
+        result.monthsEmptyAfterFanout.push(month);
+      }
+    } catch {
+      // Month-level error isolation: this month persists nothing; older months
+      // proceed. §6.6: the error is NOT logged (it can embed a login/URL); the
+      // month string alone is recorded for the summary.
+      result.monthsFailed.push(month);
+    }
+  }
+  return result;
 }
 
 // Live per-month all-zero diagnostic (2026-07-10): what got PERSISTED for a
@@ -1380,40 +1580,58 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       throw new Error(`getUserMonthObservations: months must be 1, 3, or 9 (got ${String(months)}).`);
     }
 
+    // The daily coverage base (per-user-per-DAY, from the metrics users-1-day
+    // report). May be null (never synced this source) or fully zero-filled
+    // (toDate === ''); either way it contributes NO daily complete months, but
+    // the MONTHLY backfill can still carry history the daily report zero-filled.
     const base = readDistributionFactBase();
-    // SENTINEL (types.ts): no per-user history for this source at all, OR the
-    // whole covered timeline is zero-fill (base.toDate === '' -- zero-filled-
-    // history fix: a fully zero-filled source has no nonzero coverage bound, so
-    // no complete month to report either).
-    if (base === null || base.toDate === '') {
-      return { months: [], truncated: false, observations: [] };
-    }
-    const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;
+    const factRows = base?.factRows ?? [];
+    const winnerSnapshotByDate = base?.winnerSnapshotByDate ?? new Map<string, number>();
 
-    // Enumerate every calendar month from the earliest covered month through
-    // the toDate month; keep the COMPLETE ones (monthStart >= earliestDate AND
-    // monthEnd <= toDate). String comparison is valid on YYYY-MM-DD. Naturally
-    // ascending.
-    const completeMonths: string[] = [];
-    const startY = Number(earliestDate.slice(0, 4));
-    const startM = Number(earliestDate.slice(5, 7));
-    const endY = Number(toDate.slice(0, 4));
-    const endM = Number(toDate.slice(5, 7));
-    for (let y = startY, m = startM; y < endY || (y === endY && m <= endM); ) {
-      const mm = String(m).padStart(2, '0');
-      const monthStart = `${y}-${mm}-01`;
-      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month = last day of this month
-      const monthEnd = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`;
-      if (monthStart >= earliestDate && monthEnd <= toDate) completeMonths.push(`${y}-${mm}`);
-      m++;
-      if (m > 12) {
-        m = 1;
-        y++;
+    // MONTHLY facts (per-user-per-MONTH, from the billing ai_credit/usage
+    // backfill; migration 0007). github-source only -- empty in sim, so the sim
+    // path is byte-identical to the daily-only original below. Each key is a
+    // CLOSED billing month (the current partial month is never backfilled), so
+    // every monthly-fact month is inherently a "complete" month.
+    const monthlyFacts = readMonthlyCreditsFactsFor(config.db, config.source);
+
+    // Daily-derived complete months (unchanged rule): enumerate calendar months
+    // from the earliest nonzero covered day through toDate, keeping those fully
+    // inside [earliestDate, toDate]. Only when the daily base has nonzero
+    // coverage (base.toDate !== '').
+    const dailyCompleteMonths: string[] = [];
+    if (base !== null && base.toDate !== '') {
+      const { earliestDate, toDate } = base;
+      const startY = Number(earliestDate.slice(0, 4));
+      const startM = Number(earliestDate.slice(5, 7));
+      const endY = Number(toDate.slice(0, 4));
+      const endM = Number(toDate.slice(5, 7));
+      for (let y = startY, m = startM; y < endY || (y === endY && m <= endM); ) {
+        const mm = String(m).padStart(2, '0');
+        const monthStart = `${y}-${mm}-01`;
+        const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month = last day of this month
+        const monthEnd = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`;
+        if (monthStart >= earliestDate && monthEnd <= toDate) dailyCompleteMonths.push(`${y}-${mm}`);
+        m++;
+        if (m > 12) {
+          m = 1;
+          y++;
+        }
       }
     }
 
-    // No complete calendar month at all -> sentinel (types.ts): the UI renders
-    // "sync again after month end".
+    // MERGE: completeMonths = daily-derived ∪ monthly-fact months, ascending.
+    // For a month present in BOTH, the MONTHLY FACT wins at OBSERVATION time
+    // (below) -- billing (ai_credit/usage) is the money source of truth; the
+    // metrics daily report is an approximation that zero-fills past retention.
+    // The month SET is the same union either way; only which data feeds a
+    // conflicting month's observations differs.
+    const monthlyFactMonths = new Set(monthlyFacts.keys());
+    const completeMonths = [...new Set([...dailyCompleteMonths, ...monthlyFactMonths])].sort();
+
+    // No complete calendar month at all (neither daily nor monthly) -> sentinel
+    // (types.ts): the UI renders "sync again after month end". EXACT 3-key shape
+    // preserved -- sim never has monthly facts, so this stays byte-identical.
     if (completeMonths.length === 0) {
       return { months: [], truncated: false, observations: [] };
     }
@@ -1422,31 +1640,52 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // truncated when fewer than N complete months exist.
     const truncated = completeMonths.length < months;
     const includedMonths = completeMonths.slice(-months);
-    const includedSet = new Set(includedMonths);
 
-    // Per (userId, month) sums over the WINNING rows only, restricted to the
-    // included months; the login candidate is the latest-dated non-null
-    // user_login among the user's winning in-window rows (rung 1 of the D2
-    // ladder), shared across all of that user's month observations.
+    // Per (userId, month) sums; the login candidate is the latest-dated non-null
+    // login among the user's contributing rows (rung 1 of the D2 ladder), shared
+    // across all of that user's month observations.
     interface UmAccumulator {
       byMonth: Map<string, number>;
       loginDate: string;
       login: string | null;
     }
     const accByUserId = new Map<string, UmAccumulator>();
-    for (const row of factRows) {
-      if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
-      const month = row.date.slice(0, 7);
-      if (!includedSet.has(month)) continue;
-      let acc = accByUserId.get(row.userId);
+    const getAcc = (userId: string): UmAccumulator => {
+      let acc = accByUserId.get(userId);
       if (!acc) {
         acc = { byMonth: new Map(), loginDate: '', login: null };
-        accByUserId.set(row.userId, acc);
+        accByUserId.set(userId, acc);
       }
-      acc.byMonth.set(month, (acc.byMonth.get(month) ?? 0) + row.creditsUsed);
-      if (row.userLogin !== null && row.date >= acc.loginDate) {
-        acc.loginDate = row.date;
-        acc.login = row.userLogin;
+      return acc;
+    };
+    const noteLogin = (acc: UmAccumulator, login: string | null, dateKey: string): void => {
+      if (login !== null && dateKey >= acc.loginDate) {
+        acc.loginDate = dateKey;
+        acc.login = login;
+      }
+    };
+
+    for (const month of includedMonths) {
+      if (monthlyFactMonths.has(month)) {
+        // MONTHLY-FACT month wins: attributed rows are the per-user whole-month
+        // sums; the NULL-user remainder is EXCLUDED here (surfaced separately as
+        // unattributedCredits below). Pseudo-date `${month}-31` for the login
+        // priority so a later real daily login can still supersede it.
+        const facts = monthlyFacts.get(month)!;
+        for (const [userId, rec] of facts.attributed) {
+          const acc = getAcc(userId);
+          acc.byMonth.set(month, (acc.byMonth.get(month) ?? 0) + rec.credits);
+          noteLogin(acc, rec.login, `${month}-31`);
+        }
+      } else {
+        // DAILY-only month: sum the winning per-day rows (unchanged rule).
+        for (const row of factRows) {
+          if (row.date.slice(0, 7) !== month) continue;
+          if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
+          const acc = getAcc(row.userId);
+          acc.byMonth.set(month, (acc.byMonth.get(month) ?? 0) + row.creditsUsed);
+          noteLogin(acc, row.userLogin, row.date);
+        }
       }
     }
 
@@ -1489,7 +1728,23 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // is order-invariant, but a stable order keeps the surface testable.
     observations.sort((a, b) => a.userLogin.localeCompare(b.userLogin) || a.month.localeCompare(b.month));
 
-    return { months: includedMonths, truncated, observations };
+    // Unattributed remainder (departed users): the NULL-user monthly-fact row,
+    // EXCLUDED from observations (it has no user to bucket) but surfaced so the
+    // UI can caption it. Only included months with a positive rounded remainder
+    // appear. ADDITIVE + optional: omitted entirely when empty, so sim (no
+    // monthly facts) and every daily-only month return the exact original
+    // 3-key shape (byte-identical -- the existing suites are the oracle).
+    const unattributedCredits: Record<string, number> = {};
+    for (const month of includedMonths) {
+      const facts = monthlyFacts.get(month);
+      if (!facts) continue;
+      const rounded = Math.round(facts.remainder);
+      if (rounded > 0) unattributedCredits[month] = rounded;
+    }
+
+    const result: UserMonthObservationsResult = { months: includedMonths, truncated, observations };
+    if (Object.keys(unattributedCredits).length > 0) result.unattributedCredits = unattributedCredits;
+    return result;
   }
 
   async function listAlerts(): Promise<Alert[]> {
@@ -1576,6 +1831,30 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       loginToCostCenterName,
     });
 
+    // Monthly per-user AI-credit backfill (migration 0007) -- github-source
+    // ONLY. MSW has no ai_credit/usage handler and sim pins must stay
+    // byte-identical, so the sim path skips the fan-out entirely and persists no
+    // monthly facts. From (currentMonth − 1) backward, banked months are never
+    // refetched (append-once); each candidate month is error-isolated. The
+    // resulting rows persist inside ingestSnapshot's transaction below.
+    let monthlyBackfill: IngestMonthlyCreditsRow[] = [];
+    if (config.source === 'github') {
+      const backfill = await backfillMonthlyCredits(octokit, enterprise, {
+        currentMonth: currentDate().slice(0, 7),
+        seats: seats.map((s) => ({ id: String(s.assignee.id), login: s.assignee.login })),
+        bankedMonths: readBankedMonthsFor(config.db, config.source),
+      });
+      monthlyBackfill = backfill.rows;
+      // §6.6-safe summary (months + counts only, never a login). eslint-safe
+      // console use matches the warn* tracing helpers elsewhere in this module.
+      console.info(
+        `[monthly-backfill] persisted ${backfill.monthsPersisted.length} month(s) / ${backfill.rows.length} row(s); ` +
+          `banked-skipped ${backfill.monthsSkippedBanked.length}; failed ${backfill.monthsFailed.length}; ` +
+          `negative-remainder ${backfill.monthsNegativeRemainder.length}; ` +
+          `era-floor ${backfill.eraFloorMonth ?? 'none'}`,
+      );
+    }
+
     const data: IngestData = {
       entity: enterprise,
       // Persist-vs-drop ruling (2026-07-09 sku-filter round, FLAGGED for the
@@ -1630,6 +1909,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       })),
       controls: live.controls,
       forecasts,
+      monthlyBackfill,
     };
 
     ingestSnapshot(config.db, config.source, data);

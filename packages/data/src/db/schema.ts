@@ -73,6 +73,34 @@ export const creditsUsedFact = sqliteTable('credits_used_fact', {
   creditsUsed: real('credits_used').notNull(),
 });
 
+// Monthly per-user AI-credit backfill (billing ai_credit/usage report, migration
+// 0007, maintainer-approved). GRAIN: one row per (snapshot, month, user) plus one
+// per (snapshot, month) UNATTRIBUTED remainder. Distinct from credits_used_fact:
+// that table is per-user-per-DAY from the Copilot metrics users-1-day report,
+// which zero-fills history past retention; THIS table is per-user-per-MONTH,
+// sourced from the enterprise billing `ai_credit/usage` report (which HAS
+// history), and is the money source of truth a monthly-fact month wins on at
+// read time. `month` is 'YYYY-MM'. REMAINDER CONVENTION: a row with userId AND
+// userLogin NULL is that month's unattributed remainder (monthAggregate − Σ
+// attributed), persisted only when > 0.005 credits -- it captures credits drawn
+// by users no longer on the seat roster (departed users). Attributed rows carry
+// userId + userLogin from the seat that produced them (seats carry both).
+// Append-once per (source, month): a banked month is never refetched (github-impl
+// syncNow's candidate scan skips months already present), so the reader takes the
+// latest snapshot per month defensively. github-source only -- simulation/MSW has
+// no ai_credit/usage handler, so this table stays empty in sim (behavior
+// byte-identical).
+export const creditsUsedMonthlyFact = sqliteTable('credits_used_monthly_fact', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  snapshotId: integer('snapshot_id')
+    .notNull()
+    .references(() => snapshot.id),
+  month: text('month').notNull(), // 'YYYY-MM'
+  userId: text('user_id'), // NULL === the month's unattributed remainder row (see convention above)
+  userLogin: text('user_login'), // NULL on the remainder row; the seat login on attributed rows
+  creditsUsed: real('credits_used').notNull(),
+});
+
 // Read-only mirror of GitHub's budget object (PRD §2.1). No write path in MVP.
 export const budget = sqliteTable('budget', {
   id: text('id').primaryKey(),

@@ -354,6 +354,18 @@ export interface UserMonthObservationsResult {
   truncated: boolean;
   /** One entry per (included user, included month); see the ROSTER RULE above. */
   observations: UserMonthObservation[];
+  /**
+   * Monthly-backfill only (migration 0007): per included month, the UNATTRIBUTED
+   * remainder in credits (monthAggregate − Σ attributed) -- credits drawn by
+   * users no longer on the seat roster (departed users), which therefore have no
+   * `observations` entry. Keyed 'YYYY-MM', integer credits, positive-only.
+   * ADDITIVE + OPTIONAL: present ONLY on live (github) months that carry a
+   * nonzero remainder; ABSENT (not `{}`) otherwise -- so simulation and every
+   * daily-only month keep the exact original 3-key shape. The UI appends a
+   * caption note when present ("+ N unattributed credits in <month> (departed
+   * users)"); it never enters the histogram (observations are the histogram).
+   */
+  unattributedCredits?: Record<string, number>;
 }
 
 export interface Alert {

@@ -25,6 +25,21 @@ export interface IngestCreditsUsedItem {
   creditsUsed: number;
 }
 
+/**
+ * Monthly backfill (migration 0007 `credits_used_monthly_fact`): one row per
+ * (month, user) from the billing ai_credit/usage per-user fan-out, plus one
+ * NULL-user remainder row per month. `month` is 'YYYY-MM'. An attributed row
+ * carries userId + userLogin (both from the seat); the REMAINDER row carries
+ * both NULL (see schema.ts's convention). github-source only -- sim/MSW never
+ * produces these (no ai_credit/usage handler), so the array is empty in sim.
+ */
+export interface IngestMonthlyCreditsRow {
+  month: string;
+  userId: string | null;
+  userLogin: string | null;
+  creditsUsed: number;
+}
+
 export interface IngestCostCenter {
   id: string;
   name: string;
@@ -89,6 +104,15 @@ export interface IngestData {
    * alongside the snapshot/control rows it derives from (FR18 "forecast basis").
    */
   forecasts: IngestForecastItem[];
+  /**
+   * Monthly per-user AI-credit backfill rows to append (migration 0007). Each
+   * candidate month contributes its attributed rows + at most one remainder row
+   * (already assembled all-or-nothing per month by the caller's fan-out: a
+   * month whose fetch failed contributes NO rows here). Optional so existing
+   * test call sites and the sim path (which never backfills) can omit it. All
+   * rows persist inside the SAME sync transaction as everything else below.
+   */
+  monthlyBackfill?: IngestMonthlyCreditsRow[];
 }
 
 export interface SyncResult {
@@ -98,6 +122,10 @@ export interface SyncResult {
   creditsUsedFactCount: number;
   controlCount: number;
   forecastCount: number;
+  /** Migration 0007: total credits_used_monthly_fact rows persisted this sync (attributed + remainder). 0 in sim. */
+  monthlyBackfillRowCount: number;
+  /** Migration 0007: distinct months represented among those rows. 0 in sim. */
+  monthlyBackfillMonths: number;
 }
 
 /** Task 5.4: `getLatestForecast`'s return shape -- the latest persisted forecast for a (scope, entity). */
@@ -246,6 +274,31 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       })
       .run();
 
+    // Migration 0007: append this sync's monthly per-user AI-credit backfill
+    // rows (github-source only; empty in sim). Same append-only convention +
+    // chunking as the fact tables above, and inside the SAME transaction -- so
+    // if any insert here (or elsewhere in this transaction) throws, the whole
+    // sync rolls back. The caller has already assembled these rows
+    // all-or-nothing per month (a month whose fan-out failed contributes none),
+    // so there is no partial-month row set to worry about at this layer.
+    const monthlyBackfill = data.monthlyBackfill ?? [];
+    if (monthlyBackfill.length > 0) {
+      chunked(monthlyBackfill, (chunk) =>
+        tx
+          .insert(schema.creditsUsedMonthlyFact)
+          .values(
+            chunk.map((row) => ({
+              snapshotId: snapshotRow.id,
+              month: row.month,
+              userId: row.userId,
+              userLogin: row.userLogin,
+              creditsUsed: row.creditsUsed,
+            })),
+          )
+          .run(),
+      );
+    }
+
     // Task 5.4: one forecast row per (scope, entity), in the SAME transaction
     // as the snapshot/control writes above -- append-only, same convention
     // (never conditioned on "something changed"; every row references this
@@ -272,6 +325,8 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       creditsUsedFactCount: nonzeroCreditsUsedItems.length,
       controlCount: data.controls.length,
       forecastCount: data.forecasts.length,
+      monthlyBackfillRowCount: monthlyBackfill.length,
+      monthlyBackfillMonths: new Set(monthlyBackfill.map((row) => row.month)).size,
     };
   });
 }

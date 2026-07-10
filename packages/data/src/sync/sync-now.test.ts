@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import type { BudgetControl, ControlState, ForecastResult, IncludedCapControl } from '@copilot-budget/core';
-import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from '../db/schema.js';
+import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, creditsUsedMonthlyFact, license, snapshot, usageFact } from '../db/schema.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { getLastSyncedControls, getLatestForecast, getSyncStatus, syncNow, type IngestData, type IngestForecastItem } from './sync-now.js';
 
@@ -111,6 +111,38 @@ describe('syncNow', () => {
     expect(db.select().from(costCenter).all()).toHaveLength(2);
     expect(db.select().from(costCenterMember).all()).toHaveLength(2);
     expect(db.select().from(license).all()).toHaveLength(2);
+    // No monthlyBackfill field on baseData -> optional, defaults to no rows.
+    expect(result.monthlyBackfillRowCount).toBe(0);
+    expect(result.monthlyBackfillMonths).toBe(0);
+    expect(db.select().from(creditsUsedMonthlyFact).all()).toHaveLength(0);
+  });
+
+  it('persists monthly backfill rows (attributed + NULL-user remainder) under the sync snapshot, on a populated DB (migration 0007)', () => {
+    // migration 0007 is a pure additive CREATE TABLE -- runMigrations (beforeEach)
+    // already applied it to this DB that also carries every prior table's data.
+    // Two months, each with attributed rows + one remainder row = 4 rows / 2 months.
+    const data: IngestData = {
+      ...baseData,
+      monthlyBackfill: [
+        { month: '2026-06', userId: '1001', userLogin: 'user-01', creditsUsed: 400 },
+        { month: '2026-06', userId: null, userLogin: null, creditsUsed: 98 }, // remainder
+        { month: '2026-05', userId: '1016', userLogin: 'user-16', creditsUsed: 250 },
+        { month: '2026-05', userId: null, userLogin: null, creditsUsed: 12 }, // remainder
+      ],
+    };
+    const result = syncNow(db, 'github', data);
+    expect(result.monthlyBackfillRowCount).toBe(4);
+    expect(result.monthlyBackfillMonths).toBe(2);
+
+    const rows = db.select().from(creditsUsedMonthlyFact).all();
+    expect(rows).toHaveLength(4);
+    expect(rows.every((r) => r.snapshotId === result.snapshotId)).toBe(true);
+    // The remainder rows carry NULL userId + NULL userLogin; attributed carry both.
+    const remainder = rows.filter((r) => r.userId === null);
+    expect(remainder).toHaveLength(2);
+    expect(remainder.every((r) => r.userLogin === null)).toBe(true);
+    const june = rows.find((r) => r.month === '2026-06' && r.userId === '1001');
+    expect(june).toMatchObject({ userLogin: 'user-01', creditsUsed: 400 });
   });
 
   it('chunks large fact inserts across the 500-row boundary, all under one snapshot (SQLITE_MAX_VARIABLE_NUMBER guard)', () => {

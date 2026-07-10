@@ -57,6 +57,24 @@ function formatMonthCaption(months: readonly string[], observationCount: number,
   return truncated ? `${base} · truncated to available history` : base;
 }
 
+// Monthly-backfill only: appends "+ N unattributed credits in <Mon YYYY>
+// (departed users)" per month carrying a nonzero remainder (getUserMonthObserva-
+// tions' unattributedCredits; live-github only, absent in sim). Empty string
+// when there is nothing to surface, so the caption is unchanged in every other
+// case. Months ascending 'YYYY-MM'.
+function formatUnattributedNote(unattributed: Record<string, number> | undefined): string {
+  if (!unattributed) return '';
+  const entries = Object.entries(unattributed)
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries
+    .map(([ym, n]) => {
+      const [y, m] = ym.split('-').map(Number) as [number, number];
+      return ` · + ${n.toLocaleString()} unattributed credits in ${MONTH_NAMES[m - 1]} ${y} (departed users)`;
+    })
+    .join('');
+}
+
 // The universal ULB's monthly credit cap, resolved from getControls() the same
 // way the Controls screen identifies it (a budget control at scope
 // 'universal'); null when no universal ULB exists (state, not silence).
@@ -213,7 +231,8 @@ export function Distribution() {
 
   const dateCaption =
     mode === 'permonth' && obsData
-      ? formatMonthCaption(obsData.months, obsData.observations.length, obsData.truncated)
+      ? formatMonthCaption(obsData.months, obsData.observations.length, obsData.truncated) +
+        formatUnattributedNote(obsData.unattributedCredits)
       : totalsData
         ? formatDateRange(totalsData.fromDate, totalsData.toDate, totalsData.truncated)
         : '';

@@ -274,6 +274,24 @@ server involved). **Live values for the real product/sku/model label space
 remain unpinned** — this probe is the instrument the maintainer runs to pin
 them on the next authed smoke.
 
+**ADOPTED for the monthly per-user backfill (2026-07-10).** `ai_credit/usage`
+is now a live READ path, not just a smoke probe: `syncNow` (github source only)
+backfills per-user-per-**month** AI-credit history from it via a new typed
+wrapper (`api-client/ai-credit-usage.ts`) → migration 0007
+`credits_used_monthly_fact` → merged into `getUserMonthObservations` (a
+monthly-fact month wins a daily-covered conflict; billing is the money source of
+truth). The endpoint surface is unchanged and **already §6.9 machine-verified**
+by the N1 + R7 entries above — no new endpoint, path, or param is introduced
+(the backfill uses only `year`/`month` integers + the `user` string, all pinned
+here), so this adoption adds **no** new §6.9 obligation; the wrapper cites this
+section at its call site. Fan-out per Sync (maintainer's tenant, ~50 seats, June
+era floor): the current month is skipped, then per closed month one unfiltered
+aggregate call + one `?user=` call per seat (~51 calls/month), banked months
+never refetched — so the first live Sync pays ~1 aggregate + ~50 user calls for
+June alone, and re-syncs cost only the 1-call era-floor retry once every month is
+banked. Sim/MSW has no `ai_credit/usage` handler and never fans out (pins
+byte-identical).
+
 **First live-contact finding (2026-07-08 smoke, unauthenticated).** The
 maintainer's first real live read smoke returned **`401 "Requires
 authentication"` on every read (R1–R6)** — a wiring bug, not a shape
