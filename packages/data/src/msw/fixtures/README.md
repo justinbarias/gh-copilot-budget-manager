@@ -236,11 +236,20 @@ Overview burn-down's cycle-to-date figure, so **burn-down == engine scalar**.
   (`exp(MU + SIGMA·z)` at each seat's Gaussian quantile via Acklam's inverse
   normal — no RNG) gives each of 81 seats a cycle draw, **clamped to its
   effective ULB** (hard-stop ULBs bound single-cycle draw; ext-dmorrow's $0 →
-  0); ~8% idle. The Distribution view's rolling-month window
-  ([2026-05-13, 2026-06-12]) sums this cycle's draw plus the five history-
-  personas' backfill tail, giving **months=1: P30 697 · P50 1,209 · P95 5,445 ·
-  mean 1,872 (> median) · 8 users above the 4,600 universal ULB** (pinned by
-  `api-client/usage-distribution-long-tail.test.ts`, independently derived).
+  0); ~8% idle. **Full-roster monthly backfill:** the SAME generator also gives
+  each of the 76 non-persona seats a deterministic Mar/Apr/May 2026 monthly
+  history (the five personas keep their shared `usage-history.ts` tail — disjoint
+  by login, so `usage-history.ts` stays byte-identical for every other scenario),
+  daily-spread weekday:weekend 10:3, so the "Per month" lens is a real bell curve
+  (non-zero P50) instead of the all-persona `P50 = 0`. Pinned by
+  `api-client/usage-distribution-long-tail.test.ts` (independently derived):
+  - **Totals months=1** ([2026-05-13, 2026-06-12] = June cycle + May 13-31 tail):
+    P30 1,126 · P50 1,965 · P95 7,436 · mean 2,785 (> median) · 19 users above
+    the 4,600 universal ULB.
+  - **Per month months=1** ([2026-05], 81 user-months): P30 697 · P50 1,172 ·
+    P95 6,699 · 8 user-months above the ULB.
+  - **Per month months=3** ([Mar,Apr,May], 243 user-months): P30 663 · P50 1,207
+    · P95 6,000 · 25 user-months above the ULB.
 
 - **Daily rows through day 25 (Defect 2(a)):** every alternate's CC-aggregate
   billing rows are spread across the June weekdays (Jun 2 → Jun 26, `splitDaily`)

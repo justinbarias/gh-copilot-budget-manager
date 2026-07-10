@@ -284,10 +284,15 @@ test('Distribution "Per month" lens (healthy): toggle switches to per-user-month
 // rich right-skewed per-user spread. Switching to it via the sim scenario
 // selector re-seeds MSW AND re-runs the app's syncNow (setScenario, App.tsx),
 // so the Distribution view (a pure local-SQLite read) renders the new world on
-// the remount. Every pin is the SAME months=1 distribution proven by the data
-// package's usage-distribution-long-tail.test.ts (independent derivation):
-//   window 2026-05-13 .. 2026-06-12 · P30 697 · P50 1,209 · P95 5,445 cr ·
-//   8 users above the 4,600 universal ULB.
+// the remount. Every pin is the SAME distribution proven by the data package's
+// usage-distribution-long-tail.test.ts (independent derivation). With the
+// full-roster Mar/Apr/May backfill, all 81 seats carry monthly history:
+//   Totals months=1  window 2026-05-13 .. 2026-06-12 (June cycle + May 13-31)
+//     P30 1,126 · P50 1,965 · P95 7,436 cr · 19 users above the 4,600 ULB
+//   Per month months=1  [2026-05] 81 user-months
+//     P30 697 · P50 1,172 · P95 6,699 cr · 8 user-months above the 4,600 ULB
+//   Per month months=3  [Mar,Apr,May] 243 user-months
+//     P50 1,207 · P95 6,000 cr · 25 user-months above the 4,600 ULB
 test('Long tail scenario: the Distribution view shows a non-zero P50 and a non-zero "N users above ULB" pill', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-longtail-dist-'));
@@ -321,13 +326,33 @@ test('Long tail scenario: the Distribution view shows a non-zero P50 and a non-z
     // Same trailing-month window as 'healthy', but a real distribution now.
     await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('13 May – 12 Jun 2026');
     // The headline: a NON-ZERO median (the whole reason this scenario exists).
-    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('697 cr');
-    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,209 cr');
-    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('5,445 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('1,126 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,965 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('7,436 cr');
 
-    // The ULB overlay pill: a NON-ZERO "N users above" (8 power users above the
-    // 4,600 universal ULB).
-    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('8 users above');
+    // The ULB overlay pill: a NON-ZERO "N users above" (19 seats above the
+    // 4,600 universal ULB once the June cycle + May tail are summed).
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('19 users above');
+
+    // --- Per month lens: the full-roster backfill makes this a non-zero-median
+    // bell curve too (the point of the backfill; 'healthy' reads P30=P50=0). ---
+    await window.getByRole('tab', { name: 'Per month' }).click();
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText(
+      'May 2026 · 81 user-months · current month excluded (partial)',
+    );
+    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('697 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,172 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('6,699 cr');
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('8 user-months above');
+
+    // 3 months (still Per month): 243 user-months, a wider bell.
+    await window.getByRole('tab', { name: '3 months' }).click();
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText(
+      'Mar–May 2026 · 243 user-months · current month excluded (partial)',
+    );
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,207 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('6,000 cr');
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('25 user-months above');
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

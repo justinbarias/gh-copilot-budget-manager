@@ -133,15 +133,154 @@ function splitDaily(total: number, days: readonly string[]): Map<string, number>
   return out;
 }
 
+// ============================================================================
+// FULL-ROSTER MONTHLY BACKFILL (Mar/Apr/May 2026) -- the per-month lens fuel.
+// ---------------------------------------------------------------------------
+// The Distribution view's "Per month" lens (getUserMonthObservations) buckets
+// synced history by whole calendar month. Before this, only the FIVE shared
+// history personas (usage-history.ts's HISTORICAL_CREDITS_USED_ITEMS, appended
+// to EVERY scenario) carried Mar/Apr/May rows, so per-month mode read
+// P50 = 0 in every world (76 of 81 seats idle every month). This backfill gives
+// the OTHER 76 seats a deterministic monthly history so the long-tail per-month
+// lens is a real bell curve with a heavy tail.
+//
+// RECONCILIATION with the five personas (brief decision, documented):
+//   The five personas (emily-zhao, liam-obrien, faisal-noor, hannah-webb,
+//   noah-tanaka) ALREADY carry Mar/Apr/May daily backfill via the SHARED
+//   HISTORICAL_CREDITS_USED_ITEMS, which handlers.ts appends to every scenario
+//   (including long-tail). To keep usage-history.ts BYTE-IDENTICAL (every other
+//   scenario reads it too) and to avoid double-counting, this generator covers
+//   the 76 NON-persona seats only; the personas keep their existing HISTORICAL
+//   tail. So long-tail's persisted history = these 76-seat rows (here) UNION the
+//   5 personas' rows (HISTORICAL) -- disjoint by login, no overlap. The
+//   generator remains the single source of truth for the seats it owns; the
+//   personas' cross-cycle heavy-user tail (monthly totals that legitimately
+//   exceed 4,600 -- the same tail the Totals view already documents) is
+//   unchanged.
+//
+// SHAPE: each non-persona seat's monthly draw reuses the SAME closed-form
+// log-normal engine as its cycle draw (MU/SIGMA/rank-z above), times a small
+// per-(seat, month) variation factor so months differ per user yet stay pure
+// (no RNG). For a factor-1.0 month the monthly total EQUALS the seat's cycle
+// draw ("the same person, an earlier month"); the 0.85/1.1 months are +-10-15%.
+// Clamped to the seat's effective monthly ULB (a ULB hard-stops a person's
+// TOTAL per cycle, and a calendar month IS a cycle -- same clamp as the cycle
+// draw). The same 7 seats idle in the cycle (6 lowest ranks + ext-dmorrow's
+// $0 ULB) stay idle every month -- one consistent inactive story.
+// ============================================================================
+
+const BACKFILL_MONTHS: ReadonlyArray<{ key: string; year: number; month: number }> = [
+  { key: '2026-03', year: 2026, month: 3 },
+  { key: '2026-04', year: 2026, month: 4 },
+  { key: '2026-05', year: 2026, month: 5 },
+];
+
+const HISTORY_PERSONAS: ReadonlySet<string> = new Set([
+  'emily-zhao',
+  'liam-obrien',
+  'faisal-noor',
+  'hannah-webb',
+  'noah-tanaka',
+]);
+
+// Per-(seat, month) variation factor: 0.85 / 1.0 / 1.1 rotated by
+// (rank + monthIndex) % 3, so each seat's three months differ AND neighbouring
+// seats differ within a month -- deterministic, no RNG.
+const MONTH_FACTORS = [0.85, 1.0, 1.1] as const;
+function monthFactor(rank: number, monthIndex: number): number {
+  return MONTH_FACTORS[(rank + monthIndex) % 3] as number;
+}
+
+/** A non-persona seat's authored monthly total (credits) for a backfill month, clamped to its ULB. */
+function historyMonthlyFor(login: string, rank: number, monthIndex: number): number {
+  if (HISTORY_PERSONAS.has(login)) return 0; // supplied by the shared HISTORICAL_CREDITS_USED_ITEMS
+  if (rank < INACTIVE_RANKS) return 0; // the same idle seats as the cycle
+  const ulb = effectiveUlbCredits(login);
+  if (ulb === 0) return 0; // ext-dmorrow's $0-ULB block, coherent every month
+  const p = (rank + 0.5) / N;
+  const raw = Math.round(Math.exp(MU + SIGMA * invNormalCdf(p)) * monthFactor(rank, monthIndex));
+  return Math.min(raw, ulb);
+}
+
+/** login -> (monthKey -> authored monthly credits) for the 76 non-persona seats (pinned by tests). */
+export const LONG_TAIL_HISTORY_MONTHLY_BY_LOGIN: ReadonlyMap<string, ReadonlyMap<string, number>> = new Map(
+  LOGINS_SORTED.map((login, rank) => [
+    login,
+    new Map(BACKFILL_MONTHS.map((m, mi) => [m.key, historyMonthlyFor(login, rank, mi)] as const)),
+  ]),
+);
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+function isWeekendUTC(year: number, month: number, day: number): boolean {
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return dow === 0 || dow === 6;
+}
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+// Spread a month's integer total across its days, weekdays weighted 10 :
+// weekends 3 (the same ~0.3 weekend ratio the usage-history backfill uses), so
+// day-windowed Totals queries behave sensibly. Largest-remainder rounding
+// (tie-break by date asc) makes the daily series EXACT-sum == the monthly total
+// -- so getUserMonthObservations' whole-month re-sum returns exactly the
+// authored monthly value. Deterministic.
+function splitMonthly(total: number, year: number, month: number): Map<string, number> {
+  const out = new Map<string, number>();
+  if (total <= 0) return out;
+  const nDays = daysInMonth(year, month);
+  const weights: Array<{ date: string; weight: number }> = [];
+  let totalWeight = 0;
+  for (let day = 1; day <= nDays; day++) {
+    const weight = isWeekendUTC(year, month, day) ? 3 : 10;
+    weights.push({ date: `${year}-${pad2(month)}-${pad2(day)}`, weight });
+    totalWeight += weight;
+  }
+  const parts = weights.map((w) => {
+    const raw = (total * w.weight) / totalWeight;
+    const floor = Math.floor(raw);
+    return { date: w.date, floor, frac: raw - floor };
+  });
+  let remainder = total - parts.reduce((s, p) => s + p.floor, 0);
+  // Give the remaining +1s to the largest fractional parts (date asc breaks ties).
+  const order = [...parts].sort((a, b) => b.frac - a.frac || a.date.localeCompare(b.date));
+  const bump = new Set<string>();
+  for (let i = 0; i < remainder; i++) bump.add(order[i]!.date);
+  for (const p of parts) {
+    const credits = p.floor + (bump.has(p.date) ? 1 : 0);
+    if (credits > 0) out.set(p.date, credits);
+  }
+  return out;
+}
+
 // --- per-user metrics rows (drives the Users screen + getUsageDistribution) --
+// Current-cycle (June) draws PLUS the full-roster Mar/Apr/May backfill (76
+// non-persona seats). June rows are byte-identical to before (the cycle
+// generator is untouched), so the Overview burn-down / coherence / engine pins
+// survive; the backfill rows only ever surface in the trailing-month/per-month
+// Distribution reads.
 export const LONG_TAIL_CREDITS_USED_ITEMS: readonly CreditsUsedItem[] = (() => {
   const rows: CreditsUsedItem[] = [];
+  // Current cycle (June) -- unchanged.
   for (const login of LOGINS_SORTED) {
     const total = LONG_TAIL_CYCLE_BY_LOGIN.get(login) ?? 0;
     if (total <= 0) continue;
     for (const [date, credits] of splitDaily(total, LONG_TAIL_WEEKDAYS)) {
       if (credits <= 0) continue;
       rows.push({ date, user_id: SEAT_ID_BY_LOGIN[login] ?? '0', user_login: login, ai_credits_used: credits });
+    }
+  }
+  // Mar/Apr/May backfill -- 76 non-persona seats, daily-spread.
+  for (const login of LOGINS_SORTED) {
+    const byMonth = LONG_TAIL_HISTORY_MONTHLY_BY_LOGIN.get(login);
+    if (!byMonth) continue;
+    for (const m of BACKFILL_MONTHS) {
+      const monthTotal = byMonth.get(m.key) ?? 0;
+      for (const [date, credits] of splitMonthly(monthTotal, m.year, m.month)) {
+        rows.push({ date, user_id: SEAT_ID_BY_LOGIN[login] ?? '0', user_login: login, ai_credits_used: credits });
+      }
     }
   }
   return rows;

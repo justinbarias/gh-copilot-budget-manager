@@ -183,24 +183,71 @@ describe('getUserMonthObservations', () => {
     expect(r1.observations).toEqual([{ userLogin: 'zed', costCenterName: null, month: '2026-06', creditsUsed: 7 }]);
   });
 
-  it('union/latest-wins within a month: a superseded day takes the later snapshot; an older-only day still contributes', async () => {
+  it("union/latest-wins within a month (LIVE 'github' source): a superseded day takes the later snapshot; an older-only day still contributes", async () => {
+    // Union-across-snapshots is the LIVE accumulation oracle (one real
+    // enterprise, many syncs). The 'msw' source now scopes to the latest
+    // snapshot only (scenario-contamination fix 2026-07-10; see the msw-scoping
+    // test below), so this test -- unchanged in every assertion -- runs on a
+    // 'github' client + 'github' snapshots to keep exercising the union path.
+    const liveClient = createGitHubApiClient({ enterprise: 'test-ent', db, source: 'github' });
     db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
-    const s1 = addSnapshot();
+    const s1 = addSnapshot('github');
     addFacts(s1, [
       { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 10 }, // only in S1 -> still counts
       { date: '2026-05-10', userId: '1001', userLogin: 'alice', creditsUsed: 100 }, // superseded by S2's 60
       { date: '2026-05-31', userId: '1001', userLogin: 'alice', creditsUsed: 5 }, // makes May's end covered
     ]);
-    const s2 = addSnapshot();
+    const s2 = addSnapshot('github');
     expect(s2).toBeGreaterThan(s1);
     addFacts(s2, [{ date: '2026-05-10', userId: '1001', userLogin: 'alice', creditsUsed: 60 }]);
 
     // Coverage {05-01,05-10,05-31}: earliest 05-01, toDate 05-31 -> May complete.
-    const result = await client.getUserMonthObservations({ months: 1 });
+    const result = await liveClient.getUserMonthObservations({ months: 1 });
     expect(result.months).toEqual(['2026-05']);
     expect(result.truncated).toBe(false);
     // 10 (S1-only) + 60 (S2 wins over S1's 100) + 5 = 75 -- NOT 175, NOT 115.
     expect(result.observations).toEqual([{ userLogin: 'alice', costCenterName: null, month: '2026-05', creditsUsed: 75 }]);
+  });
+
+  it('is scenario-scoped on the msw source: the complete-month set comes from the LATEST snapshot only (a later scenario never contaminates an earlier one)', async () => {
+    // Per-month counterpart to the D2 scenario-contamination fix: the reported
+    // bug had a later scenario widen an earlier one's month set. Latest-snapshot
+    // scoping keeps each scenario's month set its own. Default msw client.
+    db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+
+    // Snapshot A -- a March world (complete March: earliest 03-01, toDate 03-31).
+    const sA = addSnapshot();
+    addFacts(sA, [
+      { date: '2026-03-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+      { date: '2026-03-31', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
+    ]);
+    const afterA = await client.getUserMonthObservations({ months: 1 });
+    expect(afterA.months).toEqual(['2026-03']);
+    expect(afterA.observations).toEqual([{ userLogin: 'alice', costCenterName: null, month: '2026-03', creditsUsed: 150 }]);
+
+    // Snapshot B -- a LATER world (August). Under old union, earliest 03-01 +
+    // toDate 08-31 would have made Mar..Aug all complete (contamination).
+    const sB = addSnapshot();
+    addFacts(sB, [
+      { date: '2026-08-01', userId: '1001', userLogin: 'alice', creditsUsed: 300 },
+      { date: '2026-08-31', userId: '1001', userLogin: 'alice', creditsUsed: 200 },
+    ]);
+    // ONLY B: earliest 08-01, toDate 08-31 -> August complete; March absent.
+    const afterB = await client.getUserMonthObservations({ months: 3 });
+    expect(afterB.months).toEqual(['2026-08']);
+    expect(afterB.truncated).toBe(true); // 1 complete < 3
+    expect(afterB.observations).toEqual([{ userLogin: 'alice', costCenterName: null, month: '2026-08', creditsUsed: 500 }]);
+
+    // Snapshot C -- back to a May world; only C is read, B's August gone.
+    const sC = addSnapshot();
+    expect(sC).toBeGreaterThan(sB);
+    addFacts(sC, [
+      { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 70 },
+      { date: '2026-05-31', userId: '1001', userLogin: 'alice', creditsUsed: 30 },
+    ]);
+    const afterC = await client.getUserMonthObservations({ months: 1 });
+    expect(afterC.months).toEqual(['2026-05']);
+    expect(afterC.observations).toEqual([{ userLogin: 'alice', costCenterName: null, month: '2026-05', creditsUsed: 100 }]);
   });
 
   it('returns the sentinel on a fresh, never-synced DB', async () => {

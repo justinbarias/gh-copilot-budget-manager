@@ -113,6 +113,69 @@ describe('syncNow', () => {
     expect(db.select().from(license).all()).toHaveLength(2);
   });
 
+  it('chunks large fact inserts across the 500-row boundary, all under one snapshot (SQLITE_MAX_VARIABLE_NUMBER guard)', () => {
+    // 501 credits rows -> 2 chunks (500 + 1); 500 usage rows -> exactly 1 chunk.
+    // The boundary that matters: chunk math must lose no rows and every row must
+    // land under the SAME snapshot generation (all chunks share one tx).
+    const bigData: IngestData = {
+      ...baseData,
+      creditsUsedItems: Array.from({ length: 501 }, (_, i) => ({
+        date: '2026-06-14',
+        userId: `u-${i}`,
+        userLogin: `login-${i}`,
+        creditsUsed: i,
+      })),
+      usageItems: Array.from({ length: 500 }, (_, i) => ({
+        date: '2026-06-14',
+        costCenterId: 'cc-platform',
+        userLogin: `login-${i}`,
+        sku: 'ai_credits',
+        quantity: i,
+        netAmountUsd: 0,
+      })),
+    };
+
+    const result = syncNow(db, 'msw', bigData);
+    expect(result.creditsUsedFactCount).toBe(501);
+    expect(result.usageFactCount).toBe(500);
+
+    const credits = db.select().from(creditsUsedFact).all();
+    expect(credits).toHaveLength(501);
+    expect(credits.every((r) => r.snapshotId === result.snapshotId)).toBe(true);
+    // Exact-sum survives chunking: Σ 0..500 = 125,250.
+    expect(credits.reduce((s, r) => s + r.creditsUsed, 0)).toBe(125_250);
+
+    const usage = db.select().from(usageFact).all();
+    expect(usage).toHaveLength(500);
+    expect(usage.every((r) => r.snapshotId === result.snapshotId)).toBe(true);
+    // Exactly one snapshot generation for the whole chunked write.
+    expect(db.select().from(snapshot).all()).toHaveLength(1);
+  });
+
+  it('rolls back EVERY chunk + the snapshot row when a later chunk throws (chunked inserts share the one transaction)', () => {
+    // A bad row (null date violates NOT NULL) at index 500 lands in the SECOND
+    // credits chunk. Chunk 1 (rows 0..499) inserts first; chunk 2 throws. If the
+    // chunked inserts were NOT inside the snapshot's transaction, chunk 1's 500
+    // rows and/or the snapshot row would survive. They must not.
+    const rows = Array.from({ length: 501 }, (_, i) => ({
+      date: '2026-06-14',
+      userId: `u-${i}`,
+      userLogin: `login-${i}`,
+      creditsUsed: i,
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rows[500] as any).date = null; // NOT NULL violation -> chunk 2 throws
+    const badData: IngestData = { ...baseData, creditsUsedItems: rows };
+
+    expect(() => syncNow(db, 'msw', badData)).toThrow();
+
+    // Full rollback: no snapshot, no credits rows, no usage rows, no dimensions.
+    expect(db.select().from(snapshot).all()).toHaveLength(0);
+    expect(db.select().from(creditsUsedFact).all()).toHaveLength(0);
+    expect(db.select().from(usageFact).all()).toHaveLength(0);
+    expect(db.select().from(costCenter).all()).toHaveLength(0);
+  });
+
   it('produces two distinct snapshot generations across two calls, without duplicating dimension rows', () => {
     const first = syncNow(db, 'msw', baseData);
 

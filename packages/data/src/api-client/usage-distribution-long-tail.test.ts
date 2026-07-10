@@ -4,8 +4,13 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { computeUsageDistribution } from '@copilot-budget/core';
 import { server } from '../msw/server.js';
-import { ENTERPRISE_SLUG, GITHUB_API_BASE, HISTORICAL_CREDITS_USED_ITEMS } from '../msw/fixtures/index.js';
-import { LONG_TAIL_CYCLE_BY_LOGIN } from '../msw/fixtures/usage-long-tail.js';
+import {
+  ENTERPRISE_SLUG,
+  GITHUB_API_BASE,
+  HISTORICAL_CREDITS_USED_ITEMS,
+  SEATS,
+} from '../msw/fixtures/index.js';
+import { LONG_TAIL_CREDITS_USED_ITEMS } from '../msw/fixtures/usage-long-tail.js';
 import { resetActiveScenario } from '../msw/scenario-state.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { createGitHubApiClient } from './github-impl.js';
@@ -13,40 +18,26 @@ import { createGitHubApiClient } from './github-impl.js';
 // ============================================================================
 // The 'long-tail' scenario is built for the Users -> Distribution view. This
 // test drives the REAL runtime path -- setScenario('long-tail') re-seeds MSW +
-// re-runs the same syncNow ingestion the app runs, then getUsageDistribution
-// (a pure local-SQLite read) feeds computeUsageDistribution (packages/core) --
-// exactly what the Distribution screen renders. It PINS the months=1
-// distribution statistics of the new world.
+// re-runs the same syncNow ingestion the app runs, then getUsageDistribution /
+// getUserMonthObservations (pure local-SQLite reads) feed
+// computeUsageDistribution (packages/core) -- exactly what the Distribution
+// screen renders. It PINS both the "Totals" (trailing-month) and "Per month"
+// (whole-calendar-month) distribution statistics of the new world.
 //
-// INDEPENDENT DERIVATION of the pins (never copied from the impl's output):
+// FULL-ROSTER MONTHLY BACKFILL (this change): every one of the 81 seats now
+// carries Mar/Apr/May 2026 history -- the 76 non-persona seats from the
+// long-tail generator (LONG_TAIL_CREDITS_USED_ITEMS), the 5 history personas
+// from the shared HISTORICAL_CREDITS_USED_ITEMS (disjoint by login). So the
+// per-month lens is a real bell curve (non-zero P50), AND the trailing-"Totals"
+// months=1 window (which reaches back to 2026-05-13) now sums every seat's
+// May 13-31 history on top of its June cycle draw -- moving the Totals pins.
 //
-//   getUsageDistribution({months:1}) sums each seat's credits over the trailing
-//   month ending at the report's MAX date. The long-tail current-cycle rows all
-//   land on June weekdays <= 2026-06-12 (usage-long-tail.ts), and the
-//   scenario-blind per-user backfill (HISTORICAL_CREDITS_USED_ITEMS) ends
-//   2026-05-31, so MAX date = 2026-06-12 -> window [2026-05-13, 2026-06-12]
-//   (06-12 minus 1 month + 1 day), fully covered (earliest fact 2026-03-01) ->
-//   truncated=false. n = 81 (the full licensed roster).
-//
-//   Each seat's window value = its long-tail CYCLE draw (LONG_TAIL_CYCLE_BY_LOGIN,
-//   the seeded log-normal generator) PLUS, for the five history-carrying
-//   personas, their backfill rows that fall inside the window. Those five
-//   window sums are a deterministic function of the committed historical
-//   fixture: emily-zhao 5,804 · liam-obrien 5,225 · hannah-webb 4,620 ·
-//   faisal-noor 4,427 · noah-tanaka 4,131 (the SAME rows 'healthy' shows in
-//   this window). `deriveWindowValues()` below re-computes the full 81-seat
-//   multiset independently (NOT via getUsageDistribution) and the test asserts
-//   the two agree, so the pins are anchored to the generator + the fixture, not
-//   to the function under test.
-//
-//   Over that 81-value multiset (7 idle seats -> 0; the 6 lowest roster ranks
-//   plus ext-dmorrow's $0-ULB clamp): nearest-rank percentiles are
-//     P30 = value at ceil(.30*81)=25th  -> 697
-//     P50 = value at ceil(.50*81)=41st  -> 1,209
-//     P95 = value at ceil(.95*81)=77th  -> 5,445  (hannah-webb: 825 + 4,620)
-//   total 151,605 -> mean 1,871.67 (> median 1,209: the right skew is visible);
-//   usersAboveP95 = 4; users strictly above the 4,600 universal ULB = 8 (each
-//   governed by a higher, more-specific ULB or carrying cross-cycle history).
+// INDEPENDENT DERIVATION (never copied from the impl's output): each test
+// re-derives the per-seat / per-(seat,month) multiset by SUMMING the actual
+// persisted fixture rows (LONG_TAIL_CREDITS_USED_ITEMS UNION
+// HISTORICAL_CREDITS_USED_ITEMS) over the 81-seat licensed roster, then asserts
+// the impl agrees AND that the pinned percentiles hold -- anchoring the pins to
+// the generator + committed fixtures, not to the function under test.
 // ============================================================================
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -56,18 +47,22 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-/** Re-derive the months=1 per-seat window multiset independently of the impl. */
-function deriveWindowValues(fromDate: string, toDate: string): number[] {
-  const byLogin = new Map<string, number>(LONG_TAIL_CYCLE_BY_LOGIN);
-  for (const h of HISTORICAL_CREDITS_USED_ITEMS) {
-    if (h.date >= fromDate && h.date <= toDate) {
-      byLogin.set(h.user_login, (byLogin.get(h.user_login) ?? 0) + h.ai_credits_used);
-    }
+// The full licensed roster (every seat appears in the distribution, 0 when idle
+// that window). All long-tail + persona fixture logins are licensed seats, so
+// this is exactly the impl's user set.
+const ROSTER: readonly string[] = SEATS.map((s) => s.assignee.login);
+const ALL_FIXTURE_ROWS = [...LONG_TAIL_CREDITS_USED_ITEMS, ...HISTORICAL_CREDITS_USED_ITEMS];
+
+/** Re-derive a per-seat window/month multiset independently of the impl, from the raw fixture rows. */
+function deriveMultiset(inWindow: (date: string) => boolean): number[] {
+  const byLogin = new Map<string, number>(ROSTER.map((l) => [l, 0]));
+  for (const r of ALL_FIXTURE_ROWS) {
+    if (inWindow(r.date)) byLogin.set(r.user_login, (byLogin.get(r.user_login) ?? 0) + r.ai_credits_used);
   }
-  return [...byLogin.values()];
+  return ROSTER.map((l) => Math.round(byLogin.get(l) ?? 0));
 }
 
-describe('long-tail scenario: Users -> Distribution (months=1)', () => {
+describe('long-tail scenario: Users -> Distribution', () => {
   let tmpDir: string;
   let db: Db;
   let client: ReturnType<typeof createGitHubApiClient>;
@@ -83,11 +78,26 @@ describe('long-tail scenario: Users -> Distribution (months=1)', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('a real syncNow -> getUsageDistribution -> computeUsageDistribution reproduces the pinned distribution', async () => {
+  // -- "Totals" lens (trailing-month), months=1 --------------------------------
+  //
+  //   toDate = MAX fact date = 2026-06-12 (June weekdays); earliest = 2026-03-01
+  //   (the backfill) -> window [2026-05-13, 2026-06-12] (06-12 minus 1 month + 1
+  //   day), fully covered -> truncated=false. n = 81.
+  //
+  //   Each seat's window value = its June cycle draw (all June rows fall in the
+  //   window) PLUS its May 13-31 history (the backfill's partial-May tail). Over
+  //   the 81-value multiset (7 idle seats -> 0), nearest-rank percentiles:
+  //     P30 = 25th value -> 1,126
+  //     P50 = 41st value -> 1,965
+  //     P95 = 77th value -> 7,436
+  //   total 225,590 -> mean 2,785.06 (> median 1,965: right skew visible);
+  //   usersAboveP95 = 3; user-window-values strictly above the 4,600 universal
+  //   ULB = 19 (heavy seats governed by a higher ULB, plus every seat whose
+  //   June draw + May tail crosses 4,600).
+  it('Totals months=1: a real syncNow -> getUsageDistribution reproduces the pinned trailing-month distribution', async () => {
     await client.setScenario('long-tail'); // re-seeds MSW + runs the app's syncNow
     const window = await client.getUsageDistribution({ months: 1 });
 
-    // Window boundaries (derivation above).
     expect(window.fromDate).toBe('2026-05-13');
     expect(window.toDate).toBe('2026-06-12');
     expect(window.truncated).toBe(false);
@@ -95,35 +105,106 @@ describe('long-tail scenario: Users -> Distribution (months=1)', () => {
 
     // The impl's per-seat window multiset equals the independent derivation.
     const implVals = window.users.map((u) => u.creditsUsed).sort((a, b) => a - b);
-    const derivedVals = deriveWindowValues(window.fromDate, window.toDate).sort((a, b) => a - b);
+    const derivedVals = deriveMultiset((d) => d >= '2026-05-13' && d <= '2026-06-12').sort((a, b) => a - b);
     expect(implVals).toEqual(derivedVals);
 
-    // computeUsageDistribution takes core's UserCreditUsage[] ({userId, creditsUsed});
-    // the window rows are UsageDistributionUser[] ({userLogin, creditsUsed, ...}) --
-    // map login -> userId (only creditsUsed is read, but keep the contract honest).
     const dist = computeUsageDistribution(window.users.map((u) => ({ userId: u.userLogin, creditsUsed: u.creditsUsed })));
     expect(dist.n).toBe(81);
-    expect(dist.total).toBe(151_605);
-    // Right skew: mean (1,871.67) strictly greater than the median (1,209).
-    expect(dist.mean).toBeCloseTo(151_605 / 81, 6);
-    expect(dist.mean).toBeGreaterThan(dist.p50);
+    expect(dist.total).toBe(225_590);
+    expect(dist.mean).toBeCloseTo(225_590 / 81, 6);
+    expect(dist.mean).toBeGreaterThan(dist.p50); // right skew
 
-    // Nearest-rank percentiles (the Distribution view's P30/P50/P95 tiles).
-    expect(dist.p30).toBe(697);
-    expect(dist.p50).toBe(1_209);
-    expect(dist.p95).toBe(5_445);
-    expect(dist.spread).toBeCloseTo(5_445 / 1_209, 6);
+    expect(dist.p30).toBe(1_126);
+    expect(dist.p50).toBe(1_965);
+    expect(dist.p95).toBe(7_436);
+    expect(dist.spread).toBeCloseTo(7_436 / 1_965, 6);
 
-    // The heavy tail + the ULB overlay pill.
-    expect(dist.usersAboveP95).toBe(4);
+    expect(dist.usersAboveP95).toBe(3);
     const above4600 = window.users.filter((u) => u.creditsUsed > 4_600).length;
-    expect(above4600).toBe(8);
+    expect(above4600).toBe(19);
 
-    // ~8% idle: the 6 lowest roster ranks + ext-dmorrow's $0-ULB clamp.
+    // ~8% idle: the 6 lowest roster ranks + ext-dmorrow's $0-ULB clamp, idle in
+    // June AND every backfill month.
     expect(window.users.filter((u) => u.creditsUsed === 0).length).toBe(7);
 
-    // P30/P50 are non-zero here (the whole point) -- 'healthy' reads P30=P50=0.
+    // P30/P50 non-zero (the whole point) -- 'healthy' reads P30=P50=0 here.
     expect(dist.p30).toBeGreaterThan(0);
+    expect(dist.p50).toBeGreaterThan(0);
+  });
+
+  // -- "Per month" lens (whole calendar month) ---------------------------------
+  //
+  //   Coverage 2026-03-01 .. 2026-06-12 -> complete months Mar/Apr/May (partial
+  //   June excluded). Every one of the 81 seats emits one observation per
+  //   included month (0 when idle). The multiset is derived by summing each
+  //   seat's fixture rows within the month.
+  it('Per month months=1 [2026-05]: 81 user-months, a non-zero-median bell curve', async () => {
+    await client.setScenario('long-tail');
+    const result = await client.getUserMonthObservations({ months: 1 });
+
+    expect(result.months).toEqual(['2026-05']);
+    expect(result.truncated).toBe(false);
+    expect(result.observations.length).toBe(81);
+
+    const implVals = result.observations.map((o) => o.creditsUsed).sort((a, b) => a - b);
+    const derivedVals = deriveMultiset((d) => d >= '2026-05-01' && d <= '2026-05-31').sort((a, b) => a - b);
+    expect(implVals).toEqual(derivedVals);
+
+    const dist = computeUsageDistribution(result.observations.map((o) => ({ userId: o.userLogin, creditsUsed: o.creditsUsed })));
+    expect(dist.n).toBe(81);
+    expect(dist.total).toBe(159_447);
+    expect(dist.mean).toBeCloseTo(159_447 / 81, 6);
+    expect(dist.mean).toBeGreaterThan(dist.p50); // right skew
+
+    // Nearest-rank percentiles over the 81 May observations:
+    //   P30 = 25th -> 697 · P50 = 41st -> 1,172 · P95 = 77th -> 6,699 (noah-tanaka)
+    expect(dist.p30).toBe(697);
+    expect(dist.p50).toBe(1_172);
+    expect(dist.p95).toBe(6_699);
+    expect(dist.usersAboveP95).toBe(4);
+
+    // User-months strictly above the plain 4,600 monthly ULB (5 personas + 3
+    // higher-ULB generator seats at their May ceiling).
+    const above4600 = result.observations.filter((o) => o.creditsUsed > 4_600).length;
+    expect(above4600).toBe(8);
+
+    expect(dist.p30).toBeGreaterThan(0);
+    expect(dist.p50).toBeGreaterThan(0);
+  });
+
+  it('Per month months=3 [Mar, Apr, May]: 243 user-months across the full backfill', async () => {
+    await client.setScenario('long-tail');
+    const result = await client.getUserMonthObservations({ months: 3 });
+
+    expect(result.months).toEqual(['2026-03', '2026-04', '2026-05']);
+    expect(result.truncated).toBe(false);
+    expect(result.observations.length).toBe(243); // 81 seats x 3 months
+
+    // 243 per-(seat, month) observations: each seat contributes ONE value per
+    // month (its within-month sum), NOT a single 3-month total.
+    const implVals = result.observations.map((o) => o.creditsUsed).sort((a, b) => a - b);
+    const derivedVals = [
+      ...deriveMultiset((d) => d.slice(0, 7) === '2026-03'),
+      ...deriveMultiset((d) => d.slice(0, 7) === '2026-04'),
+      ...deriveMultiset((d) => d.slice(0, 7) === '2026-05'),
+    ].sort((a, b) => a - b);
+    expect(implVals).toEqual(derivedVals);
+
+    const dist = computeUsageDistribution(result.observations.map((o) => ({ userId: o.userLogin, creditsUsed: o.creditsUsed })));
+    expect(dist.n).toBe(243);
+    expect(dist.total).toBe(466_983);
+    expect(dist.mean).toBeCloseTo(466_983 / 243, 6);
+    expect(dist.mean).toBeGreaterThan(dist.p50);
+
+    // Nearest-rank over 243 obs: P30 = 73rd, P50 = 122nd, P95 = 231st.
+    expect(dist.p30).toBe(663);
+    expect(dist.p50).toBe(1_207);
+    expect(dist.p95).toBe(6_000);
+    expect(dist.usersAboveP95).toBe(12);
+
+    const above4600 = result.observations.filter((o) => o.creditsUsed > 4_600).length;
+    expect(above4600).toBe(25);
+
     expect(dist.p50).toBeGreaterThan(0);
   });
 });

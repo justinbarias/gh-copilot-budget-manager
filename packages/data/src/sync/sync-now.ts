@@ -136,6 +136,19 @@ function stripDisplayOnlyFields(control: ControlState): ControlState {
   return { kind: 'budget', scope, entityName, amountCredits, preventFurtherUsage, alerting };
 }
 
+// A single multi-row INSERT binds one parameter per column per row, so a large
+// batch can exceed SQLite's SQLITE_MAX_VARIABLE_NUMBER (32,766) and throw "too
+// many SQL variables". The daily-grain fact tables can now carry thousands of
+// rows per sync (e.g. the long-tail scenario's full-roster Mar/Apr/May
+// backfill), so their inserts are chunked. 500 rows keeps even a wide fact row
+// far under the cap while staying inside the one transaction.
+const INSERT_CHUNK_ROWS = 500;
+function chunked<T>(rows: readonly T[], run: (chunk: T[]) => void): void {
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK_ROWS) {
+    run(rows.slice(i, i + INSERT_CHUNK_ROWS));
+  }
+}
+
 // Facts (usage_fact/credits_used_fact) are snapshot-scoped and append a new
 // generation every call (CLAUDE.md §6: append-only). Dimensions (cost_center,
 // cost_center_member, license) have no snapshotId column in the Task 1.2
@@ -165,34 +178,40 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
     }
 
     if (data.usageItems.length > 0) {
-      tx.insert(schema.usageFact)
-        .values(
-          data.usageItems.map((item) => ({
-            snapshotId: snapshotRow.id,
-            date: item.date,
-            entity: data.entity,
-            userId: item.userLogin,
-            costCenterId: item.costCenterId,
-            model: item.sku,
-            netQuantity: item.quantity,
-            netAmount: item.netAmountUsd,
-          })),
-        )
-        .run();
+      chunked(data.usageItems, (chunk) =>
+        tx
+          .insert(schema.usageFact)
+          .values(
+            chunk.map((item) => ({
+              snapshotId: snapshotRow.id,
+              date: item.date,
+              entity: data.entity,
+              userId: item.userLogin,
+              costCenterId: item.costCenterId,
+              model: item.sku,
+              netQuantity: item.quantity,
+              netAmount: item.netAmountUsd,
+            })),
+          )
+          .run(),
+      );
     }
 
     if (data.creditsUsedItems.length > 0) {
-      tx.insert(schema.creditsUsedFact)
-        .values(
-          data.creditsUsedItems.map((item) => ({
-            snapshotId: snapshotRow.id,
-            date: item.date,
-            userId: item.userId,
-            userLogin: item.userLogin,
-            creditsUsed: item.creditsUsed,
-          })),
-        )
-        .run();
+      chunked(data.creditsUsedItems, (chunk) =>
+        tx
+          .insert(schema.creditsUsedFact)
+          .values(
+            chunk.map((item) => ({
+              snapshotId: snapshotRow.id,
+              date: item.date,
+              userId: item.userId,
+              userLogin: item.userLogin,
+              creditsUsed: item.creditsUsed,
+            })),
+          )
+          .run(),
+      );
     }
 
     // Task 4.15: one control_snapshot row per generation, always inserted

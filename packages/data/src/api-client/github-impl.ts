@@ -973,7 +973,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     toDate: string;
   }
   function readDistributionFactBase(): DistributionFactBase | null {
-    const factRows = config.db
+    const sourceRows = config.db
       .select({
         date: schema.creditsUsedFact.date,
         userId: schema.creditsUsedFact.userId,
@@ -986,7 +986,38 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       .where(eq(schema.snapshot.source, config.source))
       .all();
 
-    if (factRows.length === 0) return null;
+    if (sourceRows.length === 0) return null;
+
+    // SOURCE-SCOPED WINDOW SEMANTICS (scenario-contamination fix, 2026-07-10 --
+    // maintainer-reported, screenshot-confirmed). The two client sources model
+    // fundamentally different worlds, so their coverage bases diverge HERE:
+    //
+    //  - 'github' (LIVE): ONE real enterprise accumulating history across many
+    //    real syncs. Union across ALL snapshots, latest-wins per date, is the
+    //    correct, maintainer-approved accumulation (types.ts' UsageDistribution
+    //    doc) -- a later sync legitimately extends/corrects the same timeline.
+    //
+    //  - 'msw' (SIMULATION): each scenario sync writes a snapshot from a
+    //    DIFFERENT synthetic world with its OWN date range. Unioning across
+    //    snapshots let a later-dated scenario (e.g. Metered, whose facts run
+    //    past the 1 Sep 2026 cliff) permanently hijack toDate -- so after
+    //    syncing Metered then switching to a June scenario, the "1 month"
+    //    window still read "2 Aug - 1 Sep 2026" (the metered world's dates),
+    //    the reported bug. Each sim sync persists the active scenario's FULL
+    //    ~4-cycle world in a single snapshot, so scoping to the LATEST msw
+    //    snapshot alone (same latest-snapshot pattern getLastSyncedControls /
+    //    write/engine.ts use) makes every scenario self-contained and
+    //    switch-safe. Union/latest-wins below is then a no-op (one snapshot).
+    //
+    // Both getUsageDistribution and getUserMonthObservations inherit this via
+    // the shared helper -- there is no other copy of the union logic.
+    const factRows =
+      config.source === 'msw'
+        ? (() => {
+            const latestSnapshotId = sourceRows.reduce((max, r) => (r.snapshotId > max ? r.snapshotId : max), 0);
+            return sourceRows.filter((r) => r.snapshotId === latestSnapshotId);
+          })()
+        : sourceRows;
 
     // Union/latest-wins: per date, the highest snapshotId containing that
     // date is the winning generation; its rows are that day's truth.
