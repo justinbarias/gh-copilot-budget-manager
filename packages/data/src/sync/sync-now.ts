@@ -197,8 +197,27 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       );
     }
 
-    if (data.creditsUsedItems.length > 0) {
-      chunked(data.creditsUsedItems, (chunk) =>
+    // Persist-time zero-drop (zero-erosion fix, 2026-07-11): a credits_used_fact
+    // row with creditsUsed <= 0 carries no information -- roster/idle zeros are
+    // reconstructed from the license join at read time, never from persisted
+    // fact rows -- so dropping them costs no read output while removing DB bloat
+    // and, crucially, the EROSION VECTOR: GitHub's users-1-day report ZERO-FILLS
+    // per-user history beyond its retention window, and persisting those zeros
+    // let a newer snapshot's zero-filled rows supersede an earlier snapshot's
+    // real values for the same date (readDistributionFactBaseFor's read-time
+    // winner rule is the paired defence that repairs zeros already persisted by
+    // pre-fix DBs). Applies to BOTH the current cycle and the historical
+    // backfill (they arrive concatenated in creditsUsedItems). A date whose
+    // items are ALL zero produces NO rows for that date this generation -- which
+    // is exactly what lets the winner rule's fallback keep the older real
+    // snapshot for that date. Forecast inputs are UNAFFECTED: computeSyncForecasts
+    // (github-impl.ts) folds the in-memory userCreditItems arrays, never this
+    // table (established D2, re-verified 2026-07-11). creditsUsedFactCount below
+    // reports the ACTUAL persisted (nonzero) row count, so the smoke diagnostics
+    // that read raw rows show the true persisted set.
+    const nonzeroCreditsUsedItems = data.creditsUsedItems.filter((item) => item.creditsUsed > 0);
+    if (nonzeroCreditsUsedItems.length > 0) {
+      chunked(nonzeroCreditsUsedItems, (chunk) =>
         tx
           .insert(schema.creditsUsedFact)
           .values(
@@ -250,7 +269,7 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       snapshotId: snapshotRow.id,
       capturedAt: snapshotRow.capturedAt,
       usageFactCount: data.usageItems.length,
-      creditsUsedFactCount: data.creditsUsedItems.length,
+      creditsUsedFactCount: nonzeroCreditsUsedItems.length,
       controlCount: data.controls.length,
       forecastCount: data.forecasts.length,
     };

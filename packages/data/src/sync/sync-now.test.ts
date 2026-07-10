@@ -117,13 +117,18 @@ describe('syncNow', () => {
     // 501 credits rows -> 2 chunks (500 + 1); 500 usage rows -> exactly 1 chunk.
     // The boundary that matters: chunk math must lose no rows and every row must
     // land under the SAME snapshot generation (all chunks share one tx).
+    // creditsUsed is i+1 (1..501), all NONZERO, so the persist-time zero-drop
+    // (zero-erosion fix) leaves the full 501-row count intact -- keeping this a
+    // pure test of chunk math across the 500-row boundary. (Pre-fix this seeded
+    // i = 0..501, whose i=0 zero row would now be dropped, collapsing 501 -> 500
+    // rows and destroying the two-chunk boundary this test exists to exercise.)
     const bigData: IngestData = {
       ...baseData,
       creditsUsedItems: Array.from({ length: 501 }, (_, i) => ({
         date: '2026-06-14',
         userId: `u-${i}`,
         userLogin: `login-${i}`,
-        creditsUsed: i,
+        creditsUsed: i + 1,
       })),
       usageItems: Array.from({ length: 500 }, (_, i) => ({
         date: '2026-06-14',
@@ -142,8 +147,8 @@ describe('syncNow', () => {
     const credits = db.select().from(creditsUsedFact).all();
     expect(credits).toHaveLength(501);
     expect(credits.every((r) => r.snapshotId === result.snapshotId)).toBe(true);
-    // Exact-sum survives chunking: Σ 0..500 = 125,250.
-    expect(credits.reduce((s, r) => s + r.creditsUsed, 0)).toBe(125_250);
+    // Exact-sum survives chunking: Σ 1..501 = 125,751.
+    expect(credits.reduce((s, r) => s + r.creditsUsed, 0)).toBe(125_751);
 
     const usage = db.select().from(usageFact).all();
     expect(usage).toHaveLength(500);
@@ -156,12 +161,14 @@ describe('syncNow', () => {
     // A bad row (null date violates NOT NULL) at index 500 lands in the SECOND
     // credits chunk. Chunk 1 (rows 0..499) inserts first; chunk 2 throws. If the
     // chunked inserts were NOT inside the snapshot's transaction, chunk 1's 500
-    // rows and/or the snapshot row would survive. They must not.
+    // rows and/or the snapshot row would survive. They must not. creditsUsed is
+    // i+1 (all nonzero) so the persist-time zero-drop keeps all 501 rows -> the
+    // two-chunk split the rollback assertion depends on is preserved.
     const rows = Array.from({ length: 501 }, (_, i) => ({
       date: '2026-06-14',
       userId: `u-${i}`,
       userLogin: `login-${i}`,
-      creditsUsed: i,
+      creditsUsed: i + 1,
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (rows[500] as any).date = null; // NOT NULL violation -> chunk 2 throws
@@ -214,6 +221,51 @@ describe('syncNow', () => {
     const licenseRows = db.select().from(license).all();
     expect(licenseRows.find((r) => r.userId === '1001')).toMatchObject({ userLogin: 'user-01', costCenterId: 'cc-platform' });
     expect(licenseRows.find((r) => r.userId === '1016')).toMatchObject({ userLogin: 'user-16' });
+  });
+
+  // Persist-time zero-drop (zero-erosion fix, 2026-07-11): rows with
+  // creditsUsed <= 0 are never inserted -- they carry no information (roster
+  // zeros are reconstructed from the license join at read time) and are the
+  // erosion vector for GitHub's zero-filled per-user history.
+  it('drops creditsUsed <= 0 rows at persist: a mixed array persists only the nonzero rows', () => {
+    const mixed: IngestData = {
+      ...baseData,
+      creditsUsedItems: [
+        { date: '2026-06-14', userId: '1001', userLogin: 'user-01', creditsUsed: 420 }, // kept
+        { date: '2026-06-14', userId: '1002', userLogin: 'user-02', creditsUsed: 0 }, // dropped (zero)
+        { date: '2026-06-13', userId: '1003', userLogin: 'user-03', creditsUsed: -5 }, // dropped (negative, defensive)
+        { date: '2026-06-14', userId: '1016', userLogin: 'user-16', creditsUsed: 310 }, // kept
+      ],
+    };
+    const result = syncNow(db, 'msw', mixed);
+
+    // Only the 2 nonzero rows persist; the count reflects the ACTUAL persisted set.
+    expect(result.creditsUsedFactCount).toBe(2);
+    const rows = db.select().from(creditsUsedFact).all();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.userId).sort()).toEqual(['1001', '1016']);
+    // No zero/negative row survives.
+    expect(rows.every((r) => r.creditsUsed > 0)).toBe(true);
+  });
+
+  it('a whole-date all-zero backfill persists NO rows for those dates (winner-rule fallback keeps the older real snapshot)', () => {
+    // A months-long zero-filled backfill (every ai_credits_used = 0) -- the exact
+    // shape GitHub returns for history beyond its retention window.
+    const allZero: IngestData = {
+      ...baseData,
+      creditsUsedItems: [
+        { date: '2026-04-01', userId: '1001', userLogin: 'user-01', creditsUsed: 0 },
+        { date: '2026-05-01', userId: '1001', userLogin: 'user-01', creditsUsed: 0 },
+        { date: '2026-06-01', userId: '1001', userLogin: 'user-01', creditsUsed: 0 },
+        { date: '2026-04-01', userId: '1016', userLogin: 'user-16', creditsUsed: 0 },
+      ],
+    };
+    const result = syncNow(db, 'msw', allZero);
+    expect(result.creditsUsedFactCount).toBe(0);
+    expect(db.select().from(creditsUsedFact).all()).toHaveLength(0);
+    // The snapshot row itself still exists (append-only; a sync always records a
+    // generation even when it persisted no per-user facts).
+    expect(db.select().from(snapshot).all()).toHaveLength(1);
   });
 
   it('reports sync status derived from the latest snapshot, not a separate copy', () => {

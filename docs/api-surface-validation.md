@@ -997,6 +997,53 @@ filter). **§6.9:** local-only change; no `octokit.request`/`fetch`/hand-wrapped
 path added or modified — this section is the recorded wire-behavior fact, not a
 new call to validate.
 
+### Follow-up: the retention window SLIDES, and zero-fill was ERODING real history (2026-07-11)
+
+**Live-observed fact (maintainer's tenant, 2026-07-11).** The zero-fill window is
+not fixed — it **slides forward one day per day**. Yesterday the DB held real
+`ai_credits_used` for 07-01..07-08; after today's sync the per-user view showed
+02 Jul–09 Jul, and **07-01 had flipped from real to zero**. Because snapshots are
+append-only and the distribution read took a naive per-date *latest-snapshot-wins*
+merge, the newest snapshot's **zero-filled 07-01 rows won over the earlier
+snapshot's real 07-01 rows** and erased them from the view. Left unfixed, each
+daily sync would erode one more day, so the app could **never accumulate per-user
+history past the wire's retention** — the whole point of persisting it. (Nothing
+was actually lost: the real rows still live in the older, append-only snapshots.)
+
+Also note the "~8-day / current-cycle" retention span is an **unverified
+hypothesis**: GitHub's docs document **no** retention for this report, and
+`ai_credits_used` only launched **2026-06-19** (changelog), yet the maintainer's
+19–30 Jun rows came back zero-filled too. The fix below is deliberately
+independent of any particular window size.
+
+**Chosen winner rule (read-time) + persist-time drop — both local, no migration.**
+
+1. **Read-time winner rule** (`readDistributionFactBaseFor`, `github` branch):
+   per date, the winning snapshot is the **latest snapshot that has ≥1 row with
+   `creditsUsed > 0` on that date**; if no snapshot has a nonzero row for the
+   date, fall back to the latest snapshot with any row (preserves genuinely-idle
+   days + old all-zero persistence). Rows for the date still come only from the
+   winning snapshot. Semantics: **zero-fill never overwrites real data**; a
+   genuine settling correction that zeroes ONE user while others stay nonzero on
+   that date still wins (its snapshot has nonzero rows → eligible), so that
+   user's real zero is honored; whole-date zero-fill (retention aging) is ignored
+   in favor of the older real snapshot. **Self-healing**: already-eroded dates
+   (e.g. the maintainer's 07-01) **reappear with NO data migration**. Correct
+   under every retention hypothesis and robust to transient wire zero-fill
+   glitches (depends only on "nonzero beats zero for the same date"). The `msw`
+   (simulation) latest-snapshot-only path is behaviorally untouched.
+
+2. **Persist-time zero-drop** (`sync-now.ts`): `syncNow` skips items with
+   `creditsUsed <= 0` when inserting `credits_used_fact` (cycle AND historical
+   backfill). Zero rows carry no information (roster/idle zeros are reconstructed
+   from the license join at read time), so dropping them removes both DB bloat
+   and the erosion vector for future syncs. Forecast inputs are unaffected
+   (`computeSyncForecasts` folds the in-memory arrays, not the table).
+
+**§6.9:** both halves are local-only; no `octokit.request`/`fetch`/hand-wrapped
+path added or modified — this is a recorded wire-behavior observation plus local
+handling, not a new call to validate.
+
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 
 - **`github/rest-api-description`, `descriptions/ghec/ghec.2026-03-10.json`**

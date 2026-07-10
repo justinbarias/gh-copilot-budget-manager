@@ -414,3 +414,121 @@ describe('getUsageDistribution', () => {
     });
   });
 });
+
+// Zero-erosion winner rule (2026-07-11, live-observed): GitHub's users-1-day
+// report zero-fills history beyond its retention window, so a newer sync's
+// zero-filled rows must NEVER supersede an earlier sync's real values for the
+// same date. Per date the winning generation is the LATEST snapshot with a
+// NONZERO row (fallback: latest snapshot with any row). Union-across-snapshots
+// is the LIVE ('github') accumulation model, so these run on a github client.
+// Every expectation is hand-computed from the seeded rows.
+describe('getUsageDistribution -- zero-erosion winner rule', () => {
+  function liveClient(): ApiClient {
+    return createGitHubApiClient({ enterprise: 'test-ent', db, source: 'github' });
+  }
+  function addGithubSnapshot(): number {
+    return db.insert(schema.snapshot).values({ capturedAt: new Date('2026-07-11T00:00:00Z'), source: 'github' }).returning().get().id;
+  }
+  function addGithubFacts(snapshotId: number, rows: SeedFact[]): void {
+    db.insert(schema.creditsUsedFact)
+      .values(rows.map((r) => ({ snapshotId, date: r.date, userId: r.userId, userLogin: r.userLogin ?? null, creditsUsed: r.creditsUsed })))
+      .run();
+  }
+  function seedTwoUserLicenses(): void {
+    db.insert(schema.license)
+      .values([
+        { userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null },
+        { userId: '1002', userLogin: 'bob', costCenterId: null, assignedAt: null },
+      ])
+      .run();
+  }
+
+  it('EROSION REPRO: snap B zero-fills 07-01; the older real snap A still wins that date (self-healing, no migration)', async () => {
+    seedTwoUserLicenses();
+    // Snap A -- yesterday's sync: 07-01 + 07-02 REAL.
+    const sA = addGithubSnapshot();
+    addGithubFacts(sA, [
+      { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+      { date: '2026-07-01', userId: '1002', userLogin: 'bob', creditsUsed: 50 },
+      { date: '2026-07-02', userId: '1001', userLogin: 'alice', creditsUsed: 30 },
+      { date: '2026-07-02', userId: '1002', userLogin: 'bob', creditsUsed: 20 },
+    ]);
+    // Snap B -- today's sync: 07-01 ZERO-FILLED (seeded directly, exactly as a
+    // pre-fix DB already holds them -- half 2 would drop these at persist, but
+    // the read-time winner rule must repair the ones already persisted); 07-02
+    // CORRECTED (B wins, it has real data); 07-05/07-09 REAL (B only).
+    const sB = addGithubSnapshot();
+    expect(sB).toBeGreaterThan(sA);
+    addGithubFacts(sB, [
+      { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+      { date: '2026-07-01', userId: '1002', userLogin: 'bob', creditsUsed: 0 },
+      { date: '2026-07-02', userId: '1001', userLogin: 'alice', creditsUsed: 35 },
+      { date: '2026-07-02', userId: '1002', userLogin: 'bob', creditsUsed: 25 },
+      { date: '2026-07-05', userId: '1001', userLogin: 'alice', creditsUsed: 10 },
+      { date: '2026-07-05', userId: '1002', userLogin: 'bob', creditsUsed: 5 },
+      { date: '2026-07-09', userId: '1001', userLogin: 'alice', creditsUsed: 7 },
+    ]);
+
+    const result = await liveClient().getUsageDistribution({ months: 1 });
+    // Winners: 07-01 -> A (B is all-zero there); 07-02 -> B (corrected, both
+    // nonzero, higher id); 07-05,07-09 -> B only. Nonzero coverage 07-01..07-09.
+    // months=1 requested from = 07-09 minus 1 month (06-09) + 1 day = 06-10;
+    // earliest 07-01 > 06-10 -> truncated, fromDate clamps to 07-01.
+    expect(result.toDate).toBe('2026-07-09');
+    expect(result.fromDate).toBe('2026-07-01');
+    expect(result.truncated).toBe(true);
+    // alice = 100 (A 07-01) + 35 (B 07-02) + 10 (B 07-05) + 7 (B 07-09) = 152.
+    //   (Buggy latest-wins would take B's zero for 07-01 -> 52. The fix -> 152.)
+    // bob   = 50 (A 07-01) + 25 (B 07-02) + 5 (B 07-05)             = 80.
+    expect(result.users).toEqual([
+      { userLogin: 'alice', costCenterName: null, creditsUsed: 152 },
+      { userLogin: 'bob', costCenterName: null, creditsUsed: 80 },
+    ]);
+  });
+
+  it('settling-to-zero user: snap B wins 07-02 (it has a nonzero row) even though bob is ABSENT there, so bob contributes 0', async () => {
+    seedTwoUserLicenses();
+    // Snap A: 07-02 both users real.
+    const sA = addGithubSnapshot();
+    addGithubFacts(sA, [
+      { date: '2026-07-02', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+      { date: '2026-07-02', userId: '1002', userLogin: 'bob', creditsUsed: 50 },
+    ]);
+    // Snap B: 07-02 alice nonzero, bob ABSENT (his zero row was dropped at
+    // persist by half 2). B has a nonzero row for 07-02 -> B wins the DATE; bob
+    // has no row in B, so bob's 07-02 total is 0. Intended: within the wire's
+    // real-data window the newest report is the truth, INCLUDING a user's
+    // genuine settling to zero -- the winner rule is per-DATE, not per-user.
+    const sB = addGithubSnapshot();
+    addGithubFacts(sB, [{ date: '2026-07-02', userId: '1001', userLogin: 'alice', creditsUsed: 60 }]);
+
+    const result = await liveClient().getUsageDistribution({ months: 1 });
+    // Single covered date 07-02: toDate 07-02, window clamps to [07-02, 07-02].
+    expect(result.toDate).toBe('2026-07-02');
+    expect(result.fromDate).toBe('2026-07-02');
+    expect(result.users).toEqual([
+      { userLogin: 'alice', costCenterName: null, creditsUsed: 60 }, // B wins, NOT A's 100
+      { userLogin: 'bob', costCenterName: null, creditsUsed: 0 }, // roster zero -- absent from the winning snap B
+    ]);
+  });
+
+  it('whole-org idle day: a date with no rows in ANY snapshot is simply not in coverage (unchanged)', async () => {
+    seedTwoUserLicenses();
+    const s1 = addGithubSnapshot();
+    // 07-02 has no rows at all in any snapshot -- a genuine gap between 07-01
+    // and 07-03. It never appears in coverage and contributes nothing.
+    addGithubFacts(s1, [
+      { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 40 },
+      { date: '2026-07-03', userId: '1001', userLogin: 'alice', creditsUsed: 60 },
+    ]);
+    const result = await liveClient().getUsageDistribution({ months: 1 });
+    expect(result.toDate).toBe('2026-07-03');
+    expect(result.fromDate).toBe('2026-07-01'); // earliest, truncated
+    expect(result.truncated).toBe(true);
+    // alice 40 + 60 = 100 across the two real days; the idle 07-02 adds nothing.
+    expect(result.users).toEqual([
+      { userLogin: 'alice', costCenterName: null, creditsUsed: 100 },
+      { userLogin: 'bob', costCenterName: null, creditsUsed: 0 },
+    ]);
+  });
+});

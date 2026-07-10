@@ -77,12 +77,34 @@ export interface WireR6MonthSummary {
   sumCredits: number;
 }
 
+export interface WireR6DaySummary {
+  /** YYYY-MM-DD. */
+  date: string;
+  itemCount: number;
+  /** Items whose ai_credits_used > 0 (per-day zero-fill footprint). */
+  itemsWithNonzeroCredits: number;
+  /** Sum of ai_credits_used across the day's items. */
+  sumCredits: number;
+}
+
 export interface WireR6Summary {
   totalItems: number;
   /** Ascending months; capped to the LAST 12 (this is a copy-paste surface). */
   monthsShown: WireR6MonthSummary[];
   /** Count of earlier months omitted by the 12-month cap (0 when uncapped). */
   truncatedMonths: number;
+  /**
+   * Per-day breakdown (scope amendment, 2026-07-11): the trailing
+   * WIRE_DAY_WINDOW (35) calendar days ENDING at the max item date, ascending,
+   * ONE entry per day that HAS items -- days with no items are omitted. This
+   * measures the wire's zero-fill footprint day by day, because the "retention
+   * window" is an unverified hypothesis (GitHub docs document NO retention for
+   * this report, and ai_credits_used only launched 2026-06-19, yet both older
+   * and recent days came back zero-filled). Counts/dates/sums only (§6.6).
+   */
+  daysShown: WireR6DaySummary[];
+  /** Count of days-WITH-items older than the trailing-35-day window (omitted). */
+  truncatedDays: number;
 }
 
 /** The R6 historical item shape (users-report.ts DatedUsersReportRecord /
@@ -95,6 +117,10 @@ export interface WireR6Item {
 }
 
 const MAX_WIRE_MONTHS = 12;
+// Per-day breakdown window: the trailing 35 calendar days ending at the max
+// item date (scope amendment 2026-07-11). Strictly capped at 35 lines.
+const WIRE_DAY_WINDOW = 35;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Section 2: summarize the R6 historical per-user backfill WITHOUT persisting.
 // Grouped by calendar month (from item.date); per month: item count, distinct
@@ -108,7 +134,13 @@ export function summarizeWireR6Historical(items: ReadonlyArray<WireR6Item>): Wir
     itemsWithNonzeroCredits: number;
     sumCredits: number;
   }
+  interface DayAcc {
+    itemCount: number;
+    itemsWithNonzeroCredits: number;
+    sumCredits: number;
+  }
   const byMonth = new Map<string, MonthAcc>();
+  const byDay = new Map<string, DayAcc>();
   for (const item of items) {
     const month = item.date.slice(0, 7);
     let acc = byMonth.get(month);
@@ -121,6 +153,17 @@ export function summarizeWireR6Historical(items: ReadonlyArray<WireR6Item>): Wir
     if (typeof item.user_login === 'string' && item.user_login.length > 0) acc.itemsWithLogin += 1;
     if (item.ai_credits_used > 0) acc.itemsWithNonzeroCredits += 1;
     acc.sumCredits += item.ai_credits_used;
+
+    // Per-day accumulation (same single pass) -- one bucket per DATE that has
+    // items (days with no items never get a bucket, so they are omitted).
+    let day = byDay.get(item.date);
+    if (!day) {
+      day = { itemCount: 0, itemsWithNonzeroCredits: 0, sumCredits: 0 };
+      byDay.set(item.date, day);
+    }
+    day.itemCount += 1;
+    if (item.ai_credits_used > 0) day.itemsWithNonzeroCredits += 1;
+    day.sumCredits += item.ai_credits_used;
   }
 
   const allMonths = [...byMonth.keys()].sort();
@@ -137,7 +180,33 @@ export function summarizeWireR6Historical(items: ReadonlyArray<WireR6Item>): Wir
     };
   });
 
-  return { totalItems: items.length, monthsShown, truncatedMonths: allMonths.length - shownMonths.length };
+  // Per-day breakdown: the trailing WIRE_DAY_WINDOW calendar days ending at the
+  // max item date (inclusive), ascending, days-with-items only, strictly capped
+  // at WIRE_DAY_WINDOW lines. truncatedDays counts the days-with-items that fall
+  // OLDER than that window (surfaced in the formatter header).
+  const allDays = [...byDay.keys()].sort();
+  let daysShown: WireR6DaySummary[] = [];
+  if (allDays.length > 0) {
+    const maxDate = allDays[allDays.length - 1]!;
+    const thresholdMs = Date.parse(`${maxDate}T00:00:00.000Z`) - (WIRE_DAY_WINDOW - 1) * DAY_MS;
+    const windowDays = allDays.filter((d) => Date.parse(`${d}T00:00:00.000Z`) >= thresholdMs);
+    // Belt-and-suspenders strict cap (the 35-day window already bounds this to
+    // <=35 distinct dates, but keep the last WIRE_DAY_WINDOW explicitly).
+    const cappedDays = windowDays.length > WIRE_DAY_WINDOW ? windowDays.slice(-WIRE_DAY_WINDOW) : windowDays;
+    daysShown = cappedDays.map((date) => {
+      const d = byDay.get(date)!;
+      return { date, itemCount: d.itemCount, itemsWithNonzeroCredits: d.itemsWithNonzeroCredits, sumCredits: d.sumCredits };
+    });
+  }
+  const truncatedDays = allDays.length - daysShown.length;
+
+  return {
+    totalItems: items.length,
+    monthsShown,
+    truncatedMonths: allMonths.length - shownMonths.length,
+    daysShown,
+    truncatedDays,
+  };
 }
 
 // Round for display only (credits are real; never mutate the underlying sum).
@@ -193,6 +262,23 @@ export function formatWireR6Historical(summary: WireR6Summary): string {
       `    ${m.month}: items=${m.itemCount} users=${m.distinctUserIds} with_login=${m.itemsWithLogin} ` +
         `nonzero_credits=${m.itemsWithNonzeroCredits} sum=${fmtCredits(m.sumCredits)}`,
     );
+  }
+
+  // Per-day breakdown (scope amendment 2026-07-11): one line per day-with-items
+  // over the trailing 35-day window ending at the max item date. Days with no
+  // items are omitted; older days-with-items beyond the window are counted in
+  // the header. daysShown is non-empty whenever monthsShown is (both derive
+  // from the same items), so this only renders when there is data above.
+  if (summary.daysShown.length > 0) {
+    const lastDay = summary.daysShown[summary.daysShown.length - 1]!.date;
+    const dayHeader =
+      summary.truncatedDays > 0
+        ? `  Per-day (trailing ${WIRE_DAY_WINDOW} days ending ${lastDay}; ${summary.truncatedDays} earlier day${summary.truncatedDays === 1 ? '' : 's'} with items omitted; days with no items omitted):`
+        : `  Per-day (trailing ${WIRE_DAY_WINDOW} days ending ${lastDay}; days with no items omitted):`;
+    lines.push(dayHeader);
+    for (const d of summary.daysShown) {
+      lines.push(`    ${d.date}: items=${d.itemCount} nonzero_credits=${d.itemsWithNonzeroCredits} sum=${fmtCredits(d.sumCredits)}`);
+    }
   }
   return lines.join('\n');
 }

@@ -232,22 +232,88 @@ describe('summarizeWireR6Historical', () => {
 
   it('handles an empty item set (H1 signal: no historical rows at all)', () => {
     const summary = summarizeWireR6Historical([]);
-    expect(summary).toEqual({ totalItems: 0, monthsShown: [], truncatedMonths: 0 });
+    expect(summary).toEqual({ totalItems: 0, monthsShown: [], truncatedMonths: 0, daysShown: [], truncatedDays: 0 });
+  });
+
+  // Per-day breakdown (scope amendment 2026-07-11): measure the wire's zero-fill
+  // footprint day by day. Trailing 35 days ending at the max item date, days
+  // with items only, strictly capped at 35 lines.
+  describe('per-day breakdown', () => {
+    it('rolls per day within the trailing 35-day window: item count, nonzero-credit count, summed credits', () => {
+      // Max item date 2026-07-09. Window threshold = 07-09 minus 34 days =
+      // 2026-06-05. 06-19 and 07-09 are inside; the two June dates 06-19/06-20
+      // sit inside too. All shown; nothing older than 06-05 here.
+      const items: WireR6Item[] = [
+        { date: '2026-06-19', user_id: '100', user_login: 'alice', ai_credits_used: 0 }, // launch day, zero-filled
+        { date: '2026-06-19', user_id: '101', user_login: 'bob', ai_credits_used: 0 },
+        { date: '2026-07-08', user_id: '100', user_login: 'alice', ai_credits_used: 30 },
+        { date: '2026-07-08', user_id: '101', user_login: 'bob', ai_credits_used: 12 },
+        { date: '2026-07-09', user_id: '100', user_login: 'alice', ai_credits_used: 5 },
+      ];
+      const summary = summarizeWireR6Historical(items);
+      expect(summary.truncatedDays).toBe(0);
+      expect(summary.daysShown).toEqual([
+        // 06-19: 2 items, both zero -> nonzero 0, sum 0 (zero-fill footprint).
+        { date: '2026-06-19', itemCount: 2, itemsWithNonzeroCredits: 0, sumCredits: 0 },
+        // 07-08: 2 items, both nonzero, sum 42.
+        { date: '2026-07-08', itemCount: 2, itemsWithNonzeroCredits: 2, sumCredits: 42 },
+        // 07-09: 1 item, nonzero, sum 5.
+        { date: '2026-07-09', itemCount: 1, itemsWithNonzeroCredits: 1, sumCredits: 5 },
+      ]);
+    });
+
+    it('strictly caps at the trailing 35 days ending at the max date; older days-with-items are counted in truncatedDays and omitted', () => {
+      // One item per day for 40 consecutive days ending 2026-07-09. The window
+      // is the last 35 (threshold = 07-09 minus 34 days = 2026-06-05), so the
+      // earliest 5 days (05-31 .. 06-04) are omitted -> truncatedDays 5.
+      const items: WireR6Item[] = [];
+      const start = Date.parse('2026-07-09T00:00:00.000Z') - 39 * 24 * 60 * 60 * 1000;
+      for (let i = 0; i < 40; i++) {
+        const date = new Date(start + i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        items.push({ date, user_id: 'u', user_login: 'u', ai_credits_used: 1 });
+      }
+      const summary = summarizeWireR6Historical(items);
+      expect(summary.daysShown).toHaveLength(35);
+      expect(summary.truncatedDays).toBe(5);
+      expect(summary.daysShown[0]!.date).toBe('2026-06-05'); // window start (07-09 - 34d)
+      expect(summary.daysShown.at(-1)!.date).toBe('2026-07-09'); // max date, inclusive
+    });
+
+    it('omits days with no items (only dates that actually carry items appear)', () => {
+      // A gap: 07-01 and 07-05 have items; 07-02..07-04 have none -> absent.
+      const items: WireR6Item[] = [
+        { date: '2026-07-01', user_id: '100', user_login: 'alice', ai_credits_used: 10 },
+        { date: '2026-07-05', user_id: '100', user_login: 'alice', ai_credits_used: 20 },
+      ];
+      const summary = summarizeWireR6Historical(items);
+      expect(summary.daysShown.map((d) => d.date)).toEqual(['2026-07-01', '2026-07-05']);
+      expect(summary.truncatedDays).toBe(0);
+    });
   });
 });
 
 describe('formatWireR6Historical', () => {
-  it('renders total items, month count, and one indented line per month', () => {
+  it('renders total items, month count, and one indented line per month, then the per-day section', () => {
     const text = formatWireR6Historical({
       totalItems: 6,
       truncatedMonths: 0,
       monthsShown: [
         { month: '2026-06', itemCount: 3, distinctUserIds: 3, itemsWithLogin: 2, itemsWithNonzeroCredits: 0, sumCredits: 0 },
       ],
+      daysShown: [
+        { date: '2026-06-19', itemCount: 2, itemsWithNonzeroCredits: 0, sumCredits: 0 },
+        { date: '2026-06-20', itemCount: 1, itemsWithNonzeroCredits: 0, sumCredits: 0 },
+      ],
+      truncatedDays: 0,
     });
     expect(text).toMatch(/Live wire R6 historical \(users-1-day backfill -- NOT persisted\)/);
     expect(text).toContain('total items: 6 (1 month)');
     expect(text).toContain('2026-06: items=3 users=3 with_login=2 nonzero_credits=0 sum=0');
+    // Per-day section: header notes the trailing-35-day window ending at the
+    // last shown day, and one line per day (counts/dates/sums only, no logins).
+    expect(text).toContain('Per-day (trailing 35 days ending 2026-06-20; days with no items omitted):');
+    expect(text).toContain('2026-06-19: items=2 nonzero_credits=0 sum=0');
+    expect(text).toContain('2026-06-20: items=1 nonzero_credits=0 sum=0');
   });
 
   it('notes the last-12 truncation in the header', () => {
@@ -255,12 +321,26 @@ describe('formatWireR6Historical', () => {
       totalItems: 14,
       truncatedMonths: 2,
       monthsShown: [{ month: '2025-03', itemCount: 1, distinctUserIds: 1, itemsWithLogin: 1, itemsWithNonzeroCredits: 1, sumCredits: 1 }],
+      daysShown: [{ date: '2026-02-15', itemCount: 1, itemsWithNonzeroCredits: 1, sumCredits: 1 }],
+      truncatedDays: 0,
     });
     expect(text).toContain('showing last 1 of 3 months');
   });
 
-  it('renders the empty-items note', () => {
-    const text = formatWireR6Historical({ totalItems: 0, monthsShown: [], truncatedMonths: 0 });
+  it('notes older days-with-items omitted by the 35-day window in the per-day header', () => {
+    const text = formatWireR6Historical({
+      totalItems: 40,
+      truncatedMonths: 0,
+      monthsShown: [{ month: '2026-07', itemCount: 40, distinctUserIds: 1, itemsWithLogin: 40, itemsWithNonzeroCredits: 40, sumCredits: 40 }],
+      daysShown: [{ date: '2026-07-09', itemCount: 1, itemsWithNonzeroCredits: 1, sumCredits: 1 }],
+      truncatedDays: 5,
+    });
+    expect(text).toContain('Per-day (trailing 35 days ending 2026-07-09; 5 earlier days with items omitted; days with no items omitted):');
+  });
+
+  it('renders the empty-items note (no per-day section when there are no items)', () => {
+    const text = formatWireR6Historical({ totalItems: 0, monthsShown: [], truncatedMonths: 0, daysShown: [], truncatedDays: 0 });
     expect(text).toContain('(no items returned)');
+    expect(text).not.toContain('Per-day');
   });
 });

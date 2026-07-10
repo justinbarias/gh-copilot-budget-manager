@@ -486,7 +486,12 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
 // own sentinel shape.
 export interface DistributionFactBase {
   factRows: Array<{ date: string; userId: string; userLogin: string | null; creditsUsed: number; snapshotId: number }>;
-  /** Per date, the highest snapshotId containing it -- that day's winning generation (over ALL rows, zero-credit included). */
+  /**
+   * Per date, that day's winning generation: the LATEST snapshot with >=1
+   * NONZERO (creditsUsed > 0) row on that date; if no snapshot has a nonzero
+   * row for the date, the latest snapshot with any row (zero-erosion fix, see
+   * readDistributionFactBaseFor). Rows for a date come only from this snapshot.
+   */
   winnerSnapshotByDate: Map<string, number>;
   /**
    * Min/max NONZERO winning date (YYYY-MM-DD) -- the coverage bounds derive
@@ -550,15 +555,56 @@ export function readDistributionFactBaseFor(db: Db, source: string): Distributio
         })()
       : sourceRows;
 
-  // Union/latest-wins: per date, the highest snapshotId containing that
-  // date is the winning generation; its rows are that day's truth. Built over
-  // ALL winning rows (zero-credit rows included) so both the winning-row SUMS
-  // the readers compute AND the raw truth computeLocalCreditsCoverage shows are
-  // untouched -- only the coverage BOUNDS below change.
-  const winnerSnapshotByDate = new Map<string, number>();
+  // Union/latest-wins with a ZERO-FILL-RESISTANT winner rule (zero-erosion
+  // fix, 2026-07-11). Per date, the winning generation is the LATEST snapshot
+  // that has >=1 row with creditsUsed > 0 on that date; if NO snapshot has a
+  // nonzero row for that date, fall back to the latest snapshot with any row
+  // (preserves genuinely-idle days + old all-zero persistence). Its rows are
+  // that day's truth -- rows for a date still come only from the winning
+  // snapshot (unchanged principle).
+  //
+  // WHY (live-observed, maintainer 2026-07-11): GitHub's users-1-day report
+  // returns REAL per-user values only within a trailing wire-retention window
+  // and ZERO-FILLS older dates. A naive "latest snapshot wins" let each daily
+  // sync's zero-filled older rows SUPERSEDE the real values an earlier snapshot
+  // had recorded for the same date -- eroding one day of real history per sync,
+  // so the app could never accumulate history past the wire's retention. Keying
+  // the winner off the latest NONZERO snapshot makes zero-fill never overwrite
+  // real data: the older real snapshot keeps winning that date. Self-healing --
+  // already-eroded dates reappear with NO data migration (the real rows still
+  // live in the older, append-only snapshots). Half 2 (sync-now.ts) stops
+  // persisting new zero rows at all; this read-time rule additionally repairs
+  // the zeros pre-fix DBs already hold.
+  //
+  // Semantics this yields:
+  //   - Whole-date zero-fill (retention aging) is IGNORED in favor of the older
+  //     real snapshot for that date.
+  //   - A genuine settling correction that zeroes ONE user while OTHERS stay
+  //     nonzero on that date still wins (its snapshot HAS nonzero rows -> it is
+  //     eligible), so that user's real zero is honored -- within the wire's
+  //     real-data window the newest report is the truth, including a genuine 0.
+  //   - A date all-zero in EVERY snapshot falls back to the latest snapshot (no
+  //     real data anywhere to prefer); it adds nothing to any sum and is
+  //     excluded from the coverage bounds below.
+  // Correct under EVERY retention-window hypothesis (the "~8-day window" is
+  // itself unverified) and also robust to a transient wire zero-fill glitch --
+  // the rule depends only on "nonzero beats zero for the same date", not on any
+  // particular window size. Built over ALL rows so the winning-row SUMS the
+  // readers compute AND the raw truth computeLocalCreditsCoverage shows are
+  // untouched -- only which generation wins a zero-eroded date changes.
+  const latestNonzeroByDate = new Map<string, number>();
+  const latestAnyByDate = new Map<string, number>();
   for (const row of factRows) {
-    const winner = winnerSnapshotByDate.get(row.date);
-    if (winner === undefined || row.snapshotId > winner) winnerSnapshotByDate.set(row.date, row.snapshotId);
+    const anyWinner = latestAnyByDate.get(row.date);
+    if (anyWinner === undefined || row.snapshotId > anyWinner) latestAnyByDate.set(row.date, row.snapshotId);
+    if (row.creditsUsed > 0) {
+      const nonzeroWinner = latestNonzeroByDate.get(row.date);
+      if (nonzeroWinner === undefined || row.snapshotId > nonzeroWinner) latestNonzeroByDate.set(row.date, row.snapshotId);
+    }
+  }
+  const winnerSnapshotByDate = new Map<string, number>();
+  for (const [date, anyWinner] of latestAnyByDate) {
+    winnerSnapshotByDate.set(date, latestNonzeroByDate.get(date) ?? anyWinner);
   }
 
   // COVERAGE BOUNDS FROM NONZERO WINNING ROWS ONLY (zero-filled-history fix,

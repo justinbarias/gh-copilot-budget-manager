@@ -345,3 +345,57 @@ describe('getUserMonthObservations', () => {
     });
   });
 });
+
+// Zero-erosion winner rule (2026-07-11, live-observed): a newer sync's
+// zero-filled rows must never supersede an earlier sync's real values for the
+// same date. Per date the winner is the LATEST snapshot with a NONZERO row.
+// Union-across-snapshots is the LIVE ('github') model, so these run on a github
+// client. Every expectation is hand-computed from the seeded rows.
+describe('getUserMonthObservations -- zero-erosion winner rule', () => {
+  function liveClient(): ApiClient {
+    return createGitHubApiClient({ enterprise: 'test-ent', db, source: 'github' });
+  }
+
+  it('EROSION REPRO: snap B zero-fills 06-01; the older real snap A still wins that date, so June is complete with the REAL totals', async () => {
+    db.insert(schema.license)
+      .values([
+        { userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null },
+        { userId: '1002', userLogin: 'bob', costCenterId: null, assignedAt: null },
+      ])
+      .run();
+    // Snap A -- yesterday's sync: June REAL (06-01 anchors the month start).
+    const sA = addSnapshot('github');
+    addFacts(sA, [
+      { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+      { date: '2026-06-01', userId: '1002', userLogin: 'bob', creditsUsed: 50 },
+      { date: '2026-06-20', userId: '1001', userLogin: 'alice', creditsUsed: 40 },
+      { date: '2026-06-20', userId: '1002', userLogin: 'bob', creditsUsed: 10 },
+    ]);
+    // Snap B -- today's sync: 06-01 ZERO-FILLED (seeded directly, as pre-fix DBs
+    // hold them); 06-20 CORRECTED (B wins); 07-10 REAL (anchors toDate so June
+    // is a COMPLETE month and July stays the excluded partial current month).
+    const sB = addSnapshot('github');
+    expect(sB).toBeGreaterThan(sA);
+    addFacts(sB, [
+      { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+      { date: '2026-06-01', userId: '1002', userLogin: 'bob', creditsUsed: 0 },
+      { date: '2026-06-20', userId: '1001', userLogin: 'alice', creditsUsed: 45 },
+      { date: '2026-06-20', userId: '1002', userLogin: 'bob', creditsUsed: 12 },
+      { date: '2026-07-10', userId: '1001', userLogin: 'alice', creditsUsed: 8 },
+    ]);
+
+    const result = await liveClient().getUserMonthObservations({ months: 1 });
+    // Nonzero coverage: earliest 06-01, toDate 07-10. Complete months: June only
+    // (06-30 <= 07-10); July's 07-31 > toDate -> excluded partial. 1 complete
+    // month, months=1 -> not truncated.
+    expect(result.months).toEqual(['2026-06']);
+    expect(result.truncated).toBe(false);
+    // Winners: 06-01 -> A (B all-zero there), 06-20 -> B (corrected).
+    // alice June = 100 (A) + 45 (B) = 145; bob June = 50 (A) + 12 (B) = 62.
+    //   (Buggy latest-wins would take B's 06-01 zeros -> alice 45, bob 12.)
+    expect(result.observations).toEqual([
+      { userLogin: 'alice', costCenterName: null, month: '2026-06', creditsUsed: 145 },
+      { userLogin: 'bob', costCenterName: null, month: '2026-06', creditsUsed: 62 },
+    ]);
+  });
+});
