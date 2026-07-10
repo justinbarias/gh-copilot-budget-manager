@@ -12,10 +12,14 @@ import type { AuditEventRow } from './writer.js';
 // pulling data's Node-only dependency graph, better-sqlite3/drizzle-orm/
 // octokit, along with it). This copy is the vitest-covered, canonical one.
 //
-// Both formats carry EVERY stored field, including prev_hash/hash, so either
-// export is independently re-verifiable offline with nothing but
+// Both formats carry EVERY stored field, including prev_hash/hash AND `source`,
+// so either export is independently re-verifiable offline with nothing but
 // packages/core/src/auditChain.ts's verifyAuditChain + a SHA-256 stand-in --
 // no database, no this package, required to check a chain's integrity later.
+// `source` is load-bearing for that offline check: it selects the hash recipe
+// (source-null == the v1 10-field recipe; source-set == v2, with `source`
+// folded in) -- omitting it would leave an offline verifier unable to recompute
+// the hash of any post-migration-0006 row.
 //
 // envelopeSnapshot/before/after are re-emitted VERBATIM as the strings
 // already stored in SQLite (never JSON.parse'd and re-stringified here) --
@@ -36,6 +40,8 @@ export interface ExportedAuditEvent {
   after: string | null;
   justification: string | null;
   dataSnapshotId: number | null;
+  /** 'msw' | 'github', or null for a legacy row. Load-bearing for offline hash-recipe selection (see file header). */
+  source: string | null;
   prevHash: string;
   hash: string;
 }
@@ -54,6 +60,7 @@ export function toExportedAuditEvent(row: AuditEventRow): ExportedAuditEvent {
     after: row.after,
     justification: row.justification,
     dataSnapshotId: row.dataSnapshotId,
+    source: row.source,
     prevHash: row.prevHash,
     hash: row.hash,
   };
@@ -76,6 +83,7 @@ const CSV_COLUMNS = [
   'after',
   'justification',
   'data_snapshot_id',
+  'source',
   'prev_hash',
   'hash',
 ] as const;
@@ -105,6 +113,7 @@ export function auditChainToCsv(events: readonly ExportedAuditEvent[]): string {
       e.after,
       e.justification,
       e.dataSnapshotId,
+      e.source,
       e.prevHash,
       e.hash,
     ]

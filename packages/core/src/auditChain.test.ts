@@ -124,6 +124,46 @@ describe('canonicalizeAuditPayload', () => {
     }
   });
 
+  // --- Recipe versioning (migration 0006 / per-source chains) --------------
+
+  it('legacy recipe (source absent/null) is byte-identical to the frozen 10-element array', () => {
+    // The EXACT canonical bytes a pre-0006 row was hashed under -- hand-pinned
+    // here so any future change to the v1 recipe (which would silently break
+    // every historical hash) fails this test loudly.
+    const fields = baseFields();
+    const expectedV1 = JSON.stringify([
+      fields.ts,
+      fields.actor,
+      fields.action,
+      fields.entityRef,
+      fields.trigger,
+      fields.envelopeSnapshot,
+      fields.before,
+      fields.after,
+      fields.justification,
+      fields.dataSnapshotId,
+    ]);
+    // source omitted, explicit undefined, and explicit null all take the v1 recipe.
+    expect(canonicalizeAuditPayload(fields)).toBe(expectedV1);
+    expect(canonicalizeAuditPayload({ ...fields, source: undefined })).toBe(expectedV1);
+    expect(canonicalizeAuditPayload({ ...fields, source: null })).toBe(expectedV1);
+  });
+
+  it('v2 recipe (source set) appends source as an 11th element and differs from v1', () => {
+    const fields = baseFields();
+    const v1 = canonicalizeAuditPayload(fields);
+    const v2 = canonicalizeAuditPayload({ ...fields, source: 'github' });
+    expect(v2).not.toBe(v1);
+    expect(v2).toBe(v1.replace(/]$/, ',"github"]'));
+  });
+
+  it('distinguishes msw from github (re-labelling changes the hash input)', () => {
+    const fields = baseFields();
+    expect(canonicalizeAuditPayload({ ...fields, source: 'msw' })).not.toBe(
+      canonicalizeAuditPayload({ ...fields, source: 'github' }),
+    );
+  });
+
   it('is not affected by extra/reordered object properties (array encoding, not object)', () => {
     const fields = baseFields();
     // Constructing the same logical fields via a different property-insertion

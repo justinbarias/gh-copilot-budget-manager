@@ -30,6 +30,7 @@ const baseInput: AppendAuditEventInput = {
   action: 'budget.create',
   entityRef: 'budget:universal:acme-enterprise',
   trigger: 'manual',
+  source: 'msw',
   before: null,
   after: { amountCredits: 4000, preventFurtherUsage: true },
   justification: null,
@@ -38,11 +39,21 @@ const baseInput: AppendAuditEventInput = {
 
 describe('appendAuditEvent', () => {
   it('exposes no update/delete surface -- only append + read-only verification helpers', () => {
-    // Locks the module's export surface: if anyone ever adds an
+    // Locks the module's runtime export surface: if anyone ever adds an
     // `updateAuditEvent`/`deleteAuditEvent` export, this test fails,
     // catching the regression against CLAUDE.md §6.5's append-only invariant
-    // at review time rather than relying on convention alone.
-    expect(Object.keys(writerModule).sort()).toEqual(['appendAuditEvent', 'readAuditChain', 'verifyStoredChain']);
+    // at review time rather than relying on convention alone. (Type-only
+    // exports -- AuditSource, AppendAuditEventInput, etc. -- are erased at
+    // runtime and never appear here; only functions do.) The read/verify
+    // helpers grew with migration 0006's per-source chains
+    // (readScopedAuditChain, verifyAllSegments) but remain strictly read-only.
+    expect(Object.keys(writerModule).sort()).toEqual([
+      'appendAuditEvent',
+      'readAuditChain',
+      'readScopedAuditChain',
+      'verifyAllSegments',
+      'verifyStoredChain',
+    ]);
   });
 
   it('chains the first event to the genesis sentinel', () => {
@@ -191,6 +202,7 @@ describe('0001_audit migration -- upgrade path smoke test', () => {
         action: 'budget.create',
         entityRef: 'budget:universal:acme-enterprise',
         trigger: 'manual',
+        source: 'msw',
         after: { amountCredits: 4000 },
         dataSnapshotId: seededSnapshot.id,
       });

@@ -65,6 +65,19 @@
   white-space: nowrap;
 }
 
+/* Legacy (pre-separation) badge -- a muted, neutral pill distinct from the
+   blue action pill, matching the app's amber/neutral badge convention. */
+.audit-event__source-badge {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-neutral);
+  background: var(--surface-2);
+  border: 1px solid var(--surface-2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
 .audit-event__body {
   flex: 1;
   min-width: 0;

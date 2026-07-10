@@ -23,7 +23,7 @@ import {
   type AssembleCreditsUsedRow,
   type AssembleUsageRow,
 } from '../forecast/compute.js';
-import { readAuditChain, verifyStoredChain } from '../audit/writer.js';
+import { readScopedAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { ALERTS } from '../msw/fixtures/alerts.js';
 import { API_VERSION } from '../msw/fixtures/constants.js';
 import {
@@ -1586,14 +1586,17 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     });
   }
 
-  // Task 8.4: a thin read-through to the audit package's own read-only
-  // surface (readAuditChain) -- ts is projected to an ISO string (the same
-  // boundary convention every other timestamp on this interface already
-  // uses), but envelopeSnapshot/before/after/prevHash/hash are passed through
-  // completely unchanged (see AuditChainEvent's doc comment in types.ts for
-  // why re-serializing them here would be unsafe).
+  // Task 8.4 / migration 0006: a thin read-through to the audit package's
+  // read-only surface, SCOPED to this client's own source
+  // (readScopedAuditChain returns the legacy rows + this mode's rows) so the
+  // Audit screen shows only the current mode's chain. `ts` is projected to an
+  // ISO string (the same boundary convention every other timestamp on this
+  // interface already uses), but source/envelopeSnapshot/before/after/prevHash/
+  // hash are passed through completely unchanged (see AuditChainEvent's doc
+  // comment in types.ts for why re-serializing the JSON fields here would be
+  // unsafe).
   async function getAuditChain(): Promise<AuditChainEvent[]> {
-    return readAuditChain(config.db).map((row) => ({
+    return readScopedAuditChain(config.db, config.source).map((row) => ({
       id: row.id,
       ts: row.ts.toISOString(),
       actor: row.actor,
@@ -1605,17 +1608,21 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       after: row.after,
       justification: row.justification,
       dataSnapshotId: row.dataSnapshotId,
+      source: row.source,
       prevHash: row.prevHash,
       hash: row.hash,
     }));
   }
 
-  // Task 8.5: verification runs entirely in this (main) process against the
-  // raw SQLite rows -- never over a renderer-supplied chain, which would let
-  // a compromised/renderer-side actor "verify" a chain it hadn't actually
-  // read from disk.
+  // Task 8.5 / migration 0006: verification runs entirely in this (main)
+  // process against the raw SQLite rows -- never over a renderer-supplied
+  // chain, which would let a compromised/renderer-side actor "verify" a chain
+  // it hadn't actually read from disk. verifyStoredChain checks EVERY segment
+  // (legacy + each source) for compliance and maps any failure onto this
+  // mode's scoped index space (config.source) so the Audit screen's per-row
+  // indicators stay aligned with getAuditChain()'s scoped rows.
   async function verifyAuditChain(): Promise<AuditChainVerification> {
-    return verifyStoredChain(config.db);
+    return verifyStoredChain(config.db, config.source);
   }
 
   // Task 9.1: the non-secret tenant pointer, read/written through the injected

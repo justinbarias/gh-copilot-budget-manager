@@ -572,6 +572,12 @@ function buildAuditInput(
     actor: options.actor,
     action,
     entityRef: entry.id,
+    // Per-source audit chains (migration 0006): stamp the client's mode so this
+    // event joins THIS mode's chain -- 'msw' (simulation) or 'github' (live).
+    // Threaded straight from ApplyPlanOptions.source (the same flag that gates
+    // arming and scopes dataSnapshotId above), so a simulated apply is logged
+    // to the sim chain and never renders in live's Audit view.
+    source: options.source,
     // Phase-4 manual applies carry no rebalancer envelope (auditChain.ts's
     // binding_constraint doc comment: "a manual Phase-4 apply has no binding
     // constraint at all") -- null here, populated by Phase 6/7.

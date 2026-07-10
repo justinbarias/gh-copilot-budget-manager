@@ -91,6 +91,15 @@ export function AuditEventRow({ event, chainStatus, expanded, onToggle }: AuditE
           <span aria-hidden="true">{statusMeta.icon}</span>
         </span>
         <span className="mono audit-event__action">{event.action}</span>
+        {/* Per-source chains (migration 0006): legacy (source-null) rows predate
+            the sim/live split and appear in BOTH modes, so they carry a badge
+            distinguishing them from the current mode's own events. Current-mode
+            rows need no badge -- the whole screen is that mode. */}
+        {event.source === null && (
+          <span className="audit-event__source-badge" title="Written before sim/live audit chains were separated" data-testid="audit-event-legacy-badge">
+            legacy (pre-separation)
+          </span>
+        )}
         <div className="audit-event__body">
           <div className="audit-event__entity">{event.entityRef}</div>
           <div className="audit-event__meta">

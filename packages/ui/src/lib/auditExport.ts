@@ -40,6 +40,7 @@ const CSV_COLUMNS = [
   'after',
   'justification',
   'data_snapshot_id',
+  'source',
   'prev_hash',
   'hash',
 ] as const;
@@ -65,6 +66,7 @@ export function auditChainToCsv(events: readonly AuditChainEvent[]): string {
       e.after,
       e.justification,
       e.dataSnapshotId,
+      e.source,
       e.prevHash,
       e.hash,
     ]

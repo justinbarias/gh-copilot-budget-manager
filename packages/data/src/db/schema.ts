@@ -181,6 +181,19 @@ export const auditEvent = sqliteTable('audit_event', {
   after: text('after'),
   justification: text('justification'),
   dataSnapshotId: integer('data_snapshot_id').references(() => snapshot.id),
+  // Per-source audit chains (migration 0006, maintainer-approved). The client
+  // MODE that wrote this event: 'msw' (simulation) or 'github' (live) -- the
+  // same two-value vocabulary snapshot.source and the write engine's
+  // ApplyPlanOptions.source already use. NULLABLE on purpose: rows written
+  // before this migration have no source and stay null -- they are the
+  // "legacy" (pre-separation) segment, one closed chain from genesis, and
+  // still verify byte-identically under the v1 hash recipe (packages/core's
+  // canonicalizeAuditPayload recipe-versioning note). Each non-null source
+  // gets its OWN tamper-evident chain, anchored at the legacy tip; the Audit
+  // screen shows only the current mode's chain plus the badged legacy rows.
+  // `source` is folded into the hash for new (non-null) rows, so an event
+  // cannot be re-labelled sim<->live without breaking its stored hash.
+  source: text('source'),
   prevHash: text('prev_hash').notNull(),
   hash: text('hash').notNull(),
 });

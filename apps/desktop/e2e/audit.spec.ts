@@ -194,12 +194,19 @@ test('seeded event: renders newest-first, correct family filtering, before->afte
     await window.getByTestId('audit-export-csv').click();
     const csvPath = await waitForDownloadedFile(downloadsDir, /^audit-chain-export-.*\.csv$/);
     const csvLines = readFileSync(csvPath, 'utf8').split('\r\n');
+    // Per-source chains (migration 0006): `source` is emitted between
+    // data_snapshot_id and prev_hash so an offline verifier can pick the hash
+    // recipe. This seeded event is a simulation-mode apply, so its source is
+    // 'msw' (a current-mode row -- no legacy badge).
     expect(csvLines[0]).toBe(
-      'id,ts,actor,action,entity_ref,trigger,envelope_snapshot,before,after,justification,data_snapshot_id,prev_hash,hash',
+      'id,ts,actor,action,entity_ref,trigger,envelope_snapshot,before,after,justification,data_snapshot_id,source,prev_hash,hash',
     );
     expect(csvLines).toHaveLength(2);
     expect(csvLines[1]).toContain('budget.update');
     expect(csvLines[1]).toContain(AUDIT_CHAIN_GENESIS_PREV_HASH);
+    // The source value is actually written (simulation apply -> 'msw'), sitting
+    // just before the genesis prev_hash column.
+    expect(csvLines[1]).toContain(`,msw,${AUDIT_CHAIN_GENESIS_PREV_HASH}`);
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

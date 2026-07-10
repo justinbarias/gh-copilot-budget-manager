@@ -37,6 +37,7 @@ const baseInput: AppendAuditEventInput = {
   action: 'budget.create',
   entityRef: 'budget:universal:acme-enterprise',
   trigger: 'manual',
+  source: 'msw',
   before: null,
   after: { amountCredits: 4000, preventFurtherUsage: true },
   justification: null,
@@ -157,6 +158,11 @@ describe('auditChainToJson round-trip', () => {
       after: e.after,
       justification: e.justification,
       dataSnapshotId: e.dataSnapshotId,
+      // Load-bearing: an offline verifier MUST carry source to pick the hash
+      // recipe (v1 for legacy/null, v2 for a source-set row) -- omitting it
+      // would recompute a post-0006 row under the wrong recipe and spuriously
+      // fail an untampered chain.
+      source: e.source,
       prevHash: e.prevHash,
       hash: e.hash,
     }));
@@ -181,6 +187,11 @@ describe('auditChainToJson round-trip', () => {
       after: e.after,
       justification: e.justification,
       dataSnapshotId: e.dataSnapshotId,
+      // Load-bearing: an offline verifier MUST carry source to pick the hash
+      // recipe (v1 for legacy/null, v2 for a source-set row) -- omitting it
+      // would recompute a post-0006 row under the wrong recipe and spuriously
+      // fail an untampered chain.
+      source: e.source,
       prevHash: e.prevHash,
       hash: e.hash,
     }));
@@ -200,7 +211,7 @@ describe('auditChainToCsv', () => {
 
     expect(lines).toHaveLength(4); // header + 3 events
     expect(lines[0]).toBe(
-      'id,ts,actor,action,entity_ref,trigger,envelope_snapshot,before,after,justification,data_snapshot_id,prev_hash,hash',
+      'id,ts,actor,action,entity_ref,trigger,envelope_snapshot,before,after,justification,data_snapshot_id,source,prev_hash,hash',
     );
 
     // Every row ends with the row's own (unquoted, since a hex digest never

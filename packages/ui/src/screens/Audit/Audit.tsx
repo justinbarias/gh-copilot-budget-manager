@@ -207,7 +207,13 @@ export function Audit() {
           >
             {verification.ok
               ? `✓ ${events.length} event${events.length === 1 ? '' : 's'}, chain intact`
-              : `✗ Chain broken at event #${verification.failedAtIndex} (${events[verification.failedAtIndex]?.action ?? 'unknown'}): ${verification.reason}`}
+              : verification.failedAtIndex >= events.length
+                ? // Per-source chains: the shown (current-mode + legacy) view is
+                  // intact, but verifyAuditChain flagged a break in ANOTHER
+                  // mode's hidden chain. failedAtIndex points past the last shown
+                  // row, so there's no on-screen event to name -- show the reason.
+                  `✗ ${verification.reason}`
+                : `✗ Chain broken at event #${verification.failedAtIndex} (${events[verification.failedAtIndex]?.action ?? 'unknown'}): ${verification.reason}`}
           </span>
         )}
         <div className="audit__export-actions">

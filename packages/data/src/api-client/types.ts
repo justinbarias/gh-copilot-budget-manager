@@ -402,11 +402,14 @@ export interface LastSyncedControls {
  * (packages/core/src/auditChain.ts's chain math; packages/data/src/audit/writer.ts's
  * storage), projected for the Audit screen + its export/verify surface.
  * Ascending-by-id is the chain's real append order (readAuditChain's own
- * contract) -- `getAuditChain()` always returns the FULL chain in that order;
- * the Audit screen re-sorts newest-first for display and derives per-row
- * "chain intact" indicators from a single `verifyAuditChain()` call's
- * failedAtIndex against this same ascending order (see the Task 8.4/8.5
- * build report for the full rationale).
+ * contract). Since migration 0006 (per-source chains), `getAuditChain()`
+ * returns the current mode's SCOPED view -- the legacy (source-null) rows plus
+ * the calling client's own source ('msw' | 'github') -- in that ascending
+ * order, which is itself one valid chain from genesis. The Audit screen
+ * re-sorts newest-first for display and derives per-row "chain intact"
+ * indicators from a single `verifyAuditChain()` call's failedAtIndex against
+ * this same ascending order (see the Task 8.4/8.5 build report for the full
+ * rationale).
  *
  * `envelopeSnapshot`/`before`/`after` are deliberately carried as the EXACT
  * strings `appendAuditEvent` originally stored -- NOT `JSON.parse`d back into
@@ -430,6 +433,15 @@ export interface AuditChainEvent {
   after: string | null;
   justification: string | null;
   dataSnapshotId: number | null;
+  /**
+   * The mode that wrote this event: 'msw' (simulation), 'github' (live), or
+   * null for a legacy pre-separation row (migration 0006). The Audit screen
+   * badges legacy (null) rows as "legacy (pre-separation)" -- they appear in
+   * BOTH modes since they predate the split. Carried in the export too, so an
+   * offline verifier can pick the right hash recipe (source-null == v1;
+   * source-set == v2, with `source` folded into the hash).
+   */
+  source: string | null;
   prevHash: string;
   hash: string;
 }
@@ -567,27 +579,33 @@ export interface ApiClient {
    */
   applyPlan(stagedPlan: Plan, desiredControls: readonly ControlState[], input: ApplyPlanInput): Promise<ApplyPlanResult>;
   /**
-   * Task 8.4: the Audit screen's sole read surface -- the FULL stored chain
-   * (readAuditChain's ascending-by-id order), never paged. Chosen over
+   * Task 8.4: the Audit screen's sole read surface. Since migration 0006
+   * (per-source chains) it returns the current mode's SCOPED view -- the
+   * legacy (source-null) rows plus the calling client's own source
+   * (readScopedAuditChain's ascending-by-id order) -- never paged. Chosen over
    * pagination because (a) `verifyAuditChain` below already has to walk the
-   * entire chain to verify it, so a paged read would let the screen show a
-   * "verified" indicator on rows it hasn't actually fetched; (b) Task 8.5's
-   * export must be a complete dump regardless, so the read and export paths
-   * would otherwise need two different fetch strategies; and (c) this is a
-   * local, single-admin desktop tool's audit log, not a multi-tenant SaaS
-   * table -- realistic chain sizes (dozens to low hundreds of events per
-   * install) never justify the complexity. Revisit if a real deployment's
-   * chain grows large enough to make a full fetch slow.
+   * chain to verify it, so a paged read would let the screen show a "verified"
+   * indicator on rows it hasn't actually fetched; (b) Task 8.5's export must be
+   * a complete dump of that view regardless, so the read and export paths would
+   * otherwise need two different fetch strategies; and (c) this is a local,
+   * single-admin desktop tool's audit log, not a multi-tenant SaaS table --
+   * realistic chain sizes (dozens to low hundreds of events per install) never
+   * justify the complexity. Revisit if a real deployment's chain grows large
+   * enough to make a full fetch slow.
    */
   getAuditChain(): Promise<AuditChainEvent[]>;
   /**
-   * Task 8.5: re-verifies the stored hash chain in the MAIN process, directly
-   * against the raw SQLite rows (packages/data/src/audit/writer.ts's
-   * `verifyStoredChain`, which reuses packages/core's `verifyAuditChain` +
-   * the real SHA-256 primitive) -- never trusts a renderer-supplied chain.
-   * `{ ok: true }`, or `{ ok: false, failedAtIndex, reason }` pinpointing the
-   * first broken/tampered row (ascending-by-id index, matching
-   * `getAuditChain()`'s order).
+   * Task 8.5 / migration 0006: re-verifies the stored hash chain in the MAIN
+   * process, directly against the raw SQLite rows
+   * (packages/data/src/audit/writer.ts's `verifyStoredChain`, which reuses
+   * packages/core's `verifyAuditChain` + the real SHA-256 primitive) -- never
+   * trusts a renderer-supplied chain. Verifies EVERY segment (legacy + each
+   * source) for compliance, but reports `failedAtIndex` in the current mode's
+   * SCOPED index space (matching `getAuditChain()`), so per-row indicators line
+   * up. `{ ok: true }` when all segments are intact; a tamper in the shown view
+   * pinpoints the row; a tamper only in the OTHER mode's hidden chain still
+   * fails overall, with a reason naming that source and `failedAtIndex` past
+   * the last shown row (so shown rows correctly read intact).
    */
   verifyAuditChain(): Promise<AuditChainVerification>;
   /**

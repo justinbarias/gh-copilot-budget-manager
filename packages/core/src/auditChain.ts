@@ -56,6 +56,19 @@ export interface AuditEventFields {
   after: string | null;
   justification: string | null;
   dataSnapshotId: number | null;
+  /**
+   * The client mode that wrote this event: `'msw'` (simulation) or `'github'`
+   * (live) for every event written on/after migration 0006's per-source-chains
+   * change, or `null`/absent for a "legacy" pre-separation row (written before
+   * that change, when sim and live shared one global chain and this column did
+   * not exist).
+   *
+   * This field participates in the hash ONLY for non-null values -- see
+   * canonicalizeAuditPayload's recipe-versioning note. Legacy rows
+   * (source == null) hash byte-identically to how they were originally
+   * written, so their pre-existing chains verify forever (CLAUDE.md §6.5).
+   */
+  source?: string | null;
 }
 
 // --- Canonicalization rule (read this before touching this function) ------
@@ -75,11 +88,30 @@ export interface AuditEventFields {
 //   verify forever" true regardless of how some future refactor constructs
 //   the objects that produced those strings.
 //
-// Never change the field order, add a field without appending it at the end,
-// or switch away from the array encoding without a migration note -- doing
-// so changes every previously-computed hash's meaning.
+// --- Recipe versioning (migration 0006 / per-source audit chains) ----------
+//
+// There are exactly TWO hash recipes, discriminated purely by whether `source`
+// is set. There is deliberately NO separate version column: the presence of a
+// non-null `source` IS the version tag.
+//
+//   v1 (legacy, `source == null`):  the ORIGINAL 10-element array below.
+//   v2 (per-source, `source` set):  the same 10 elements, then `source`
+//                                   appended as an 11th element.
+//
+// Why version by source-null vs source-set rather than re-hashing everything:
+// the maintainer's real databases already hold v1 rows whose hashes were
+// computed with no `source` element. Those rows carry a null `source` after
+// migration 0006, so this function reproduces their canonical bytes EXACTLY --
+// they still verify. Every row written from 0006 onward carries a non-null
+// `source` and so folds `source` into its hash: an attacker cannot re-label a
+// live ('github') event as simulation ('msw') -- or the reverse -- without
+// changing the canonical payload and breaking that event's stored hash.
+//
+// Never change the field order, add a field without appending it at the end of
+// the relevant recipe, or switch away from the array encoding without a
+// migration note -- doing so changes every previously-computed hash's meaning.
 export function canonicalizeAuditPayload(fields: AuditEventFields): string {
-  return JSON.stringify([
+  const base = [
     fields.ts,
     fields.actor,
     fields.action,
@@ -90,7 +122,14 @@ export function canonicalizeAuditPayload(fields: AuditEventFields): string {
     fields.after,
     fields.justification,
     fields.dataSnapshotId,
-  ]);
+  ];
+  // v1 legacy recipe: `source` absent/null -> byte-identical to the original
+  // 10-element array (== catches both `undefined` and `null`).
+  if (fields.source == null) {
+    return JSON.stringify(base);
+  }
+  // v2 per-source recipe: `source` appended as the 11th element.
+  return JSON.stringify([...base, fields.source]);
 }
 
 // The NUL character (U+0000) is used as the prevHash/payload separator
