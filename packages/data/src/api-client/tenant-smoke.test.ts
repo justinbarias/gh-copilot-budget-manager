@@ -95,11 +95,43 @@ describe('9.1/9.2 bridge methods', () => {
     it('runs the read surface in live (github) mode and returns per-endpoint results', async () => {
       // A 'github'-source client still hits MSW here (MSW intercepts
       // api.github.com), which is how we prove the runner plumbing pre-PAT.
+      // R7 (ai_credit/premium_request usage) has NO canonical MSW twin, so --
+      // exactly like the R6 path-param variants above -- its two paths are
+      // registered test-locally rather than left unhandled (onUnhandledRequest:
+      // 'error'). A minimal valid envelope makes every R7 sub-call succeed.
+      const aiCreditEnvelope = {
+        timePeriod: { year: 2026, month: 6 },
+        enterprise: ENTERPRISE_SLUG,
+        usageItems: [
+          {
+            product: 'copilot',
+            sku: 'Copilot AI Credits',
+            model: 'n/a',
+            unitType: 'Credit',
+            pricePerUnit: 0.01,
+            grossQuantity: 100,
+            grossAmount: 1,
+            discountQuantity: 0,
+            discountAmount: 0,
+            netQuantity: 100,
+            netAmount: 1,
+          },
+        ],
+      };
+      server.use(
+        http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/ai_credit/usage`, () =>
+          HttpResponse.json(aiCreditEnvelope),
+        ),
+        http.get(`${GITHUB_API_BASE}/enterprises/:enterprise/settings/billing/premium_request/usage`, () =>
+          HttpResponse.json({ ...aiCreditEnvelope, usageItems: [] }),
+        ),
+      );
+
       const client = makeClient({ source: 'github' });
       const result = await client.runLiveReadSmoke();
       expect(result.refused).toBe(false);
       if (result.refused) return; // narrow
-      expect(result.results.map((r) => r.docRef)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'R6']);
+      expect(result.results.map((r) => r.docRef)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7']);
       for (const r of result.results) {
         expect(r.status, `${r.docRef}: ${r.details}`).toBe('ok');
       }

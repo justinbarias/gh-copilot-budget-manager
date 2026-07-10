@@ -1,6 +1,6 @@
 import type { Octokit } from 'octokit';
 import { AI_CREDITS_BUDGET_SKU, isAiCreditBudget } from '../api-client/budget-scope.js';
-import { fetchUsageFanout } from '../api-client/usage-fetch.js';
+import { fetchUsageFanout, isAiCreditUsageItem } from '../api-client/usage-fetch.js';
 import { downloadReportRecords, type UsersReportEnvelope } from '../api-client/users-report.js';
 
 // Task 9.2-prep: the live read-surface smoke runner. Given a configured
@@ -472,6 +472,216 @@ async function runR6(octokit: Octokit, enterprise: string, probeDay: string): Pr
   const status: ReadSmokeStatus =
     bothReportsReachable && !downloadFailed ? 'ok' : sawEnvelopeMismatch || downloadFailed ? 'shape_mismatch' : 'http_error';
   return { endpoint: path, docRef: 'R6', status, details: parts.join('; ') };
+}
+
+// ===========================================================================
+// R7: the filterable AI-credit usage report
+// (`GET /enterprises/{enterprise}/settings/billing/ai_credit/usage`, + its
+// pre-June-billing sibling `.../premium_request/usage`) -- the candidate
+// per-user replacement for the R6 metrics-report backfill (which zero-fills
+// history past retention; see api-surface-validation.md's 2026-07-11 note).
+//
+// §6.9 OpenAPI validation (github/rest-api-description, ghec.2026-03-10.json,
+// parsed 2026-07-10) -- the endpoint is machine-verified:
+//   * BOTH paths exist. Query params (all optional): year/month/day (integer),
+//     organization/user/model/product/cost_center_id (string). No page/per_page
+//     param and NO Link/pagination header in the schema -> the response is a
+//     SINGLE object, never paginated (so there is nothing to page-cap here).
+//   * 200 envelope: { timePeriod:{year*,month,day}, enterprise*, user?,
+//     organization?, product?, model?, costCenter?:{id*,name*}, usageItems*[] }.
+//   * usageItem (all required, CONFIRMED camelCase -- the docs page's camelCase
+//     was authoritative): { product, sku, model, unitType, pricePerUnit,
+//     grossQuantity, grossAmount, discountQuantity, discountAmount, netQuantity,
+//     netAmount }.
+//   CRITICAL docs-vs-schema finding: items carry NO per-user field and NO
+//   per-item date. User granularity is available ONLY via the `user` query
+//   param (one call per user, the top-level `user` echoes the scope); date
+//   grain is the top-level `timePeriod`, not a per-item column. So this is a
+//   FILTERABLE AGGREGATE report, not a per-user-per-day itemized feed -- a
+//   single unfiltered call cannot enumerate distinct users. This probe records
+//   that mechanism rather than fabricating a distinct-user count off a field
+//   that does not exist on the wire.
+//
+// GITHUB-SOURCE-ONLY: unlike R1-R6, this endpoint has no MSW twin. runReadSmoke
+// (unit-tested against MSW) does NOT call it; runLiveReadSmoke appends the R7
+// row in its live (github) branch, and refuses whole in simulation like the
+// rest of the smoke. §6.6: this row emits only counts/dates/sums/booleans and
+// field-NAME lists -- never a user login/id, an enterprise value, or a cost
+// center value.
+// ===========================================================================
+
+/** The camelCase usage line item real GitHub returns from ai_credit/premium_request usage (all fields optional here -- this is a live probe, defensive to any wire drift). */
+export interface AiCreditUsageItem {
+  product?: string;
+  sku?: string;
+  model?: string;
+  unitType?: string;
+  pricePerUnit?: number;
+  grossQuantity?: number;
+  grossAmount?: number;
+  discountQuantity?: number;
+  discountAmount?: number;
+  netQuantity?: number;
+  netAmount?: number;
+  // Defensive: NOT in the OpenAPI schema (items carry no user attribution).
+  // Detected only so a future wire that DID add one would be surfaced, not
+  // silently missed.
+  user?: string;
+  user_login?: string;
+  userLogin?: string;
+}
+
+/** The report envelope. */
+export interface AiCreditUsageEnvelope {
+  timePeriod?: { year?: number; month?: number; day?: number };
+  enterprise?: string;
+  user?: string;
+  organization?: string;
+  product?: string;
+  model?: string;
+  costCenter?: { id?: string; name?: string };
+  usageItems?: AiCreditUsageItem[];
+}
+
+const PER_ITEM_USER_KEYS = ['user', 'user_login', 'userLogin'] as const;
+
+/**
+ * Per-item user attribution detector. On the machine-verified wire this returns
+ * { hasField: false, distinct: 0 } (items are aggregated by sku/model, with no
+ * user column). Retained defensively: if a live response ever carried a
+ * per-item user field, this counts its distinct values so the divergence
+ * surfaces. Counts only -- the login values themselves are NEVER emitted (§6.6).
+ */
+export function countPerItemUsers(items: readonly AiCreditUsageItem[]): { hasField: boolean; distinct: number } {
+  const values = new Set<string>();
+  let hasField = false;
+  for (const item of items) {
+    for (const key of PER_ITEM_USER_KEYS) {
+      const v = item[key];
+      if (typeof v === 'string' && v.length > 0) {
+        hasField = true;
+        values.add(v);
+      }
+    }
+  }
+  return { hasField, distinct: values.size };
+}
+
+/** How user granularity manifests on this response -- the answer to probe #1's core question, as a §6.6-safe phrase (no values). */
+function describeUserGranularity(env: AiCreditUsageEnvelope, items: readonly AiCreditUsageItem[]): string {
+  const perItem = countPerItemUsers(items);
+  if (perItem.hasField) return `per-item user field present (distinct=${perItem.distinct})`;
+  const envelopeUserPresent = 'user' in env;
+  return `no per-item user field${envelopeUserPresent ? '' : '; no top-level user key'} -- per-user granularity requires the ?user= param (one call per user)`;
+}
+
+/**
+ * Probe #1 shape record: the envelope key list, the first usageItem key list,
+ * the item count, and how user granularity manifests. Keys (field names) are
+ * safe to print; values are not, so none are emitted.
+ */
+export function summarizeAiCreditShape(env: AiCreditUsageEnvelope): string {
+  const items = env.usageItems ?? [];
+  const envelopeKeys = Object.keys(env);
+  const firstItemKeys = items.length > 0 && typeof items[0] === 'object' && items[0] !== null ? Object.keys(items[0]) : [];
+  const itemKeysPart = items.length > 0 ? `first-item keys=[${firstItemKeys.join(', ')}]` : 'no usageItems to key-dump';
+  return `envelope keys=[${envelopeKeys.join(', ')}]; usageItems=${items.length}; ${itemKeysPart}; ${describeUserGranularity(env, items)}`;
+}
+
+/**
+ * Probe #2/#3/#4 rollup: total item count, AI-credit-SKU item count + summed
+ * netQuantity + nonzero (netQuantity>0) count, and the user-attribution
+ * mechanism. "AI-credit SKU" reuses the live-pinned filter (product 'copilot',
+ * sku 'Copilot AI Credits'); a non-AI item on this endpoint would be surfaced
+ * by the (total vs AI-credit) count split. Sums/counts only (§6.6).
+ */
+export function summarizeAiCreditRollup(env: AiCreditUsageEnvelope): string {
+  const items = env.usageItems ?? [];
+  const aiItems = items.filter((i) => isAiCreditUsageItem({ product: i.product ?? '', sku: i.sku ?? '' }));
+  const netQuantityTotal = aiItems.reduce((sum, i) => sum + (i.netQuantity ?? 0), 0);
+  const nonzero = aiItems.filter((i) => (i.netQuantity ?? 0) > 0).length;
+  const perItem = countPerItemUsers(items);
+  const userPart = perItem.hasField ? `distinct users=${perItem.distinct}` : 'distinct users=n/a (no per-item user field)';
+  return `items=${items.length}; ai-credit items=${aiItems.length}; Σ netQuantity(ai-credit)=${netQuantityTotal}; nonzero(netQuantity>0)=${nonzero}; ${userPart}`;
+}
+
+// One R7 sub-call: a labeled octokit.request against the given usage path with
+// the given query window. Each is independently error-reported (like every
+// existing probe) and never throws out of the row.
+interface AiCreditProbeCall {
+  label: string;
+  path: 'ai_credit' | 'premium_request';
+  params: Record<string, string | number>;
+  summarize: (env: AiCreditUsageEnvelope) => string;
+}
+
+const AI_CREDIT_PATH = 'GET /enterprises/{enterprise}/settings/billing/ai_credit/usage';
+const PREMIUM_REQUEST_PATH = 'GET /enterprises/{enterprise}/settings/billing/premium_request/usage';
+
+/**
+ * R7 runner. `currentMonth` (year+month from the caller's clock seam, never
+ * wall-clock) drives call #1's "current month" window; calls #2/#3 pin
+ * JUNE 2026 (the usage-based-billing transition month -- the "is per-user
+ * history really there" check) and call #4 pins APRIL 2026 on the
+ * premium_request sibling (the pre-June billing era). Returns ONE row whose
+ * details carry the four labeled sub-reports.
+ */
+export async function runR7(
+  octokit: Octokit,
+  enterprise: string,
+  currentMonth: { year: number; month: number },
+): Promise<ReadSmokeEndpointResult> {
+  const endpoint = `${AI_CREDIT_PATH} (+ premium_request/usage)`;
+  const calls: AiCreditProbeCall[] = [
+    {
+      label: `current[${currentMonth.year}-${String(currentMonth.month).padStart(2, '0')}] shape`,
+      path: 'ai_credit',
+      params: { year: currentMonth.year, month: currentMonth.month },
+      summarize: summarizeAiCreditShape,
+    },
+    {
+      label: 'ai_credit June-2026 rollup',
+      path: 'ai_credit',
+      params: { year: 2026, month: 6 },
+      summarize: summarizeAiCreditRollup,
+    },
+    {
+      label: 'ai_credit 2026-06-24 day',
+      path: 'ai_credit',
+      params: { year: 2026, month: 6, day: 24 },
+      summarize: summarizeAiCreditRollup,
+    },
+    {
+      label: 'premium_request April-2026 rollup',
+      path: 'premium_request',
+      params: { year: 2026, month: 4 },
+      summarize: summarizeAiCreditRollup,
+    },
+  ];
+
+  const parts: string[] = [];
+  let sawHttpError = false;
+  let sawShapeIssue = false;
+
+  for (const call of calls) {
+    const route = call.path === 'ai_credit' ? AI_CREDIT_PATH : PREMIUM_REQUEST_PATH;
+    try {
+      const response = await octokit.request(route, { enterprise, ...call.params });
+      const env = (response as { data?: unknown }).data as AiCreditUsageEnvelope;
+      if (env === null || typeof env !== 'object' || !('usageItems' in env)) {
+        sawShapeIssue = true;
+        parts.push(`${call.label}=SHAPE_MISMATCH (no usageItems in envelope)`);
+        continue;
+      }
+      parts.push(`${call.label}: ${call.summarize(env)}`);
+    } catch (err) {
+      sawHttpError = true;
+      parts.push(`${call.label}=${httpErrorDetails(err)}`);
+    }
+  }
+
+  const status: ReadSmokeStatus = sawHttpError ? 'http_error' : sawShapeIssue ? 'shape_mismatch' : 'ok';
+  return { endpoint, docRef: 'R7', status, details: parts.join('; ') };
 }
 
 // `probeDay` (YYYY-MM-DD) is the day the R6 variant probes exercise -- an

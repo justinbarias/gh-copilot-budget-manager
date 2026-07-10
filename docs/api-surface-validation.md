@@ -116,7 +116,7 @@ and therefore none are exempt).
 
 | # | Method + path | Doc source | Verdict | Note |
 |---|---|---|---|---|
-| N1 | `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` (+ siblings `…/premium_request/usage`, `…/usage/summary`) | Billing usage REST `2026-03-10` (docs, 2026-07-08) | `docs-confirmed, unadopted` | **Resolves old checklist item #7 — the PRD §2.3 paths are real.** Per-call filters: `user`, `organization`, `model`, `product`, `cost_center_id`. Response: `{timePeriod, enterprise, user, organization, product, model, costCenter, usageItems[]}` with items `{product, sku, model, unitType, pricePerUnit, grossQuantity, grossAmount, discountQuantity, discountAmount, netQuantity, netAmount}` — note **no per-item date**; the top-level `timePeriod` carries year/month/day. Deliberately NOT integrated in the R5 reconciliation; recorded so Phase 4+ can reach for the `user`/`model` filters when per-user/per-model drill-down is needed — in particular the `user` filter is the **recovery path for the per-user pool-vs-metered split limitation** (see "Live-wire limitations" below). |
+| N1 | `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` (+ siblings `…/premium_request/usage`, `…/usage/summary`) | Billing usage REST `2026-03-10` (docs, 2026-07-08); **OpenAPI `ghec.2026-03-10.json` (parsed 2026-07-10)** | **`machine-verified (OpenAPI)`** — **now SMOKE-PROBED as the live-read smoke's R7 row** (see the dedicated R7 section below) | **Resolves old checklist item #7 — the PRD §2.3 paths are real.** Machine-verified query params (all optional): `year`/`month`/`day` (**integer**), `organization`/`user`/`model`/`product`/`cost_center_id` (**string**). Response envelope `{timePeriod:{year*,month?,day?}, enterprise*, user?, organization?, product?, model?, costCenter?:{id*,name*}, usageItems*[]}` with items `{product*, sku*, model*, unitType*, pricePerUnit*, grossQuantity*, grossAmount*, discountQuantity*, discountAmount*, netQuantity*, netAmount*}` (**all required; camelCase CONFIRMED against the OpenAPI — the docs page's camelCase was authoritative, no discrepancy**) — note **no per-item date and no per-item user field**; the top-level `timePeriod` carries the date grain and the top-level `user` echoes the `?user=` filter scope. **No pagination** (no `page`/`per_page` param, no Link header in the schema — a single-object response). **Per-user granularity therefore requires a per-user fan-out** (`?user=<login>`, one call each), NOT a single itemized call — the `user` filter is the **recovery path for the per-user pool-vs-metered split limitation** (see "Live-wire limitations"). `premium_request/usage` has the byte-identical param + response schema (the pre-June billing meter). |
 | N2 | `GET /enterprises/{enterprise}/settings/billing/budgets/{budget_id}/user-states` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | **Per-user budget state for a given budget** — a machine-verified endpoint we had no inventory row for. **Candidate recovery path for per-user visibility** (blocked-user detection, per-user headroom), possibly BETTER than N1's `user` filter: it reads a budget's own user-state list directly instead of re-aggregating usage. Evaluate N1-vs-N2 when the per-user metered-split/block-status work is scheduled. |
 | N3 | `GET /enterprises/{enterprise}/settings/billing/reports` + `…/reports/{report_id}` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | Enterprise billing report generation/retrieval — likely the bulk/export sibling of the usage endpoints. Relevant to Phase 8 (chargeback + audit export); recorded for that round. |
 | N4 | `GET /enterprises/{enterprise}/copilot/metrics/reports/enterprise-1-day` + `…/enterprise-28-day/latest` | OpenAPI `ghec.2026-03-10.json` (2026-07-09 research pass) | `machine-verified, unadopted` | Enterprise-AGGREGATE siblings of the per-user R6 reports (same envelope pattern). A cheap cross-check for the enterprise burn series without the per-user fan-out; unadopted while R5 (billing usage) serves that role. |
@@ -173,7 +173,93 @@ refused in simulation mode at the `ApiClient.runLiveReadSmoke()` bridge (never
 contacts GitHub); its per-endpoint `{status, details}` report is the concrete
 Task 9.2 work order. The endpoint list lives in one place
 (`INDEPENDENT_ENDPOINTS` + the dependent reads) with the `docRef` on each row
-pointing back at this table.
+pointing back at this table. **The bridge additionally appends the R7 row**
+(next section) in its live (github) branch — R7 has no MSW twin, so it is NOT
+part of `runReadSmoke`'s MSW-tested inventory (`SMOKE_ENDPOINT_DOC_REFS` stays
+R1–R6); it is a live-only exploration wired in at `runLiveReadSmoke`.
+
+### Live-read smoke R7 — filterable AI-credit usage report (2026-07-10, §6.9 machine-verified)
+
+> **Naming note (disambiguation):** the smoke's **R7 row** (this section:
+> `ai_credit/usage`) is a *distinct index* from the Reads-table **R7** at the
+> top (`GET <download_links[0]>`, the users-report download follow, which is a
+> sub-call folded into the smoke's R6 row). The two share the number "R7" by
+> coincidence of when each was added; they are unrelated endpoints.
+
+**§6.9 OpenAPI validation (this round's mandated first step).** Fetched
+`github/rest-api-description` `descriptions/ghec/ghec.2026-03-10.json`
+(raw.githubusercontent.com, ~13.5 MB, HTTP 200; the go-to §6.9 source per the
+2026-07-08 pass). Both
+`GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` and its sibling
+`GET /enterprises/{enterprise}/settings/billing/premium_request/usage`
+**exist in the description** (operationIds `billing/get-github-billing-ai-credit-usage-report-ghe`
+and `billing/get-github-billing-premium-request-usage-report-ghe`). Pinned
+verbatim from the schema:
+
+- **Query params (both endpoints, all `in=query`, all optional):**
+  `year` (integer), `month` (integer), `day` (integer), `organization`
+  (string), `user` (string), `model` (string), `product` (string),
+  `cost_center_id` (string). Path param `enterprise` (string, required).
+- **Response 200 envelope:** `timePeriod{ year* (int), month? (int), day? (int) }`,
+  `enterprise*` (string), `user?` (string), `organization?` (string),
+  `product?` (string), `model?` (string), `costCenter?{ id* (string), name* (string) }`,
+  `usageItems*` (array).
+- **usageItem (all 11 fields REQUIRED, camelCase):** `product`, `sku`, `model`,
+  `unitType`, `pricePerUnit` (number), `grossQuantity` (number), `grossAmount`
+  (number), `discountQuantity` (number), `discountAmount` (number),
+  `netQuantity` (number), `netAmount` (number).
+- **Pagination:** NONE. No `page`/`per_page` param and **no response headers at
+  all** (`headers: []` — no Link header) in the schema. The response is a single
+  object, not a paged list, so the brief's "cap pagination at 10 pages" is
+  **N/A** and no page-cap/truncation code (or test) was written — recorded as a
+  brief-vs-OpenAPI finding.
+- **API-version header:** these are `2026-03-10`-dated endpoints in the
+  calendar-versioned file; Octokit sends the client-default
+  `X-GitHub-Api-Version: 2026-03-10` (unchanged from the rest of the surface).
+
+**docs-vs-OpenAPI reconciliation (OpenAPI wins, per the brief):**
+- The docs-page camelCase field names the brief quoted (`netQuantity`, etc.)
+  are **CONFIRMED by the OpenAPI** — no discrepancy; camelCase is the wire.
+- **CRITICAL divergence from the brief's "PER-USER, PER-DAY … per-user history"
+  framing:** the schema has **no per-item `user` field and no per-item date**.
+  User granularity manifests **only** via the `?user=` query param (one call per
+  user; the top-level `user` echoes the scope); date grain is the top-level
+  `timePeriod` (you request a `year`/`month`/`day` window and receive SKU/model
+  aggregates for it). So a single unfiltered call **cannot enumerate distinct
+  users** — this endpoint is a *filterable aggregate report*, not a
+  per-user-per-day itemized feed. The R7 probe records this mechanism (via
+  `countPerItemUsers` + `describeUserGranularity`) instead of fabricating a
+  distinct-user count off a field that does not exist. **Consequence for the
+  candidate replacement:** recovering per-user history to replace the
+  zero-filling R6 backfill requires a **per-user × per-day (or per-month) fan-out**
+  (`?user=<login>&year=…&month=…`), bounded by the docs' *"only data from the
+  past 24 months is accessible"* window — not one bulk read.
+
+**The R7 smoke probe** (`packages/data/src/smoke/read-smoke.ts`,
+`runR7` + summarizers; github-source-only, appended by `runLiveReadSmoke`;
+refused whole in sim; §6.6 output = counts/dates/sums/field-name-lists only,
+never a login/id/enterprise/cost-center value). One row, four independently
+error-reported sub-calls:
+1. **current month** (`year`+`month` from the clock seam) on `ai_credit/usage` —
+   `summarizeAiCreditShape`: envelope key list, first-usageItem key list, item
+   count, and the user-granularity mechanism.
+2. **June 2026** (`year=2026&month=6`) — `summarizeAiCreditRollup`: total items,
+   AI-credit-SKU item count, Σ `netQuantity` over AI-credit items, count with
+   `netQuantity>0`, distinct-user note. *(Is June per-user history really there.)*
+3. **2026-06-24** (`year=2026&month=6&day=24`) — same rollup, per-day grain.
+4. **premium_request/usage April 2026** (`year=2026&month=4`) — same rollup, the
+   pre-June billing era.
+
+Status: `http_error` if any sub-call throws (reported per-call like every
+existing probe), `shape_mismatch` if a 200 lacks `usageItems`, else `ok`. **No
+MSW twin and no canonical-handler change** — `runReadSmoke` omits R7 entirely;
+the only MSW-backed test that reaches it (`tenant-smoke.test.ts` github path)
+registers the two paths **test-locally** via `server.use` (the same pattern the
+R6 path-param 404 variants use), so there is zero unhandled-request noise. The
+R7 unit tests (`smoke/r7-ai-credit-usage.test.ts`) drive `runR7` + the
+summarizers against a **stub Octokit** with hand-built OpenAPI-shaped envelopes
+(no MSW server involved). **Live values remain unpinned** — this probe is the
+instrument the maintainer runs to pin them on the next authed smoke.
 
 **First live-contact finding (2026-07-08 smoke, unauthenticated).** The
 maintainer's first real live read smoke returned **`401 "Requires

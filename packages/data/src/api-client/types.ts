@@ -121,7 +121,8 @@ export interface PatValidation {
  * Task 9.2-prep: the live read-surface smoke report. In simulation mode the
  * bridge REFUSES (never contacts GitHub) -> `{ refused: true, reason }`; in
  * live mode it runs and returns the per-endpoint reconciliation `results`
- * (docs/api-surface-validation.md rows R1-R6). `ranAt` is an ISO timestamp.
+ * (docs/api-surface-validation.md rows R1-R6, plus the github-only R7
+ * ai_credit/premium_request usage exploration). `ranAt` is an ISO timestamp.
  */
 export type ReadSmokeResult =
   | { refused: true; reason: string }

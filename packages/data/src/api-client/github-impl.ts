@@ -41,7 +41,7 @@ import { getAppModeSetting as readAppModeSetting, setAppModeSetting as writeAppM
 import { isWriteArmed, setWriteArmed } from '../write/arming.js';
 import { assembleUsageState, fetchLiveControls } from '../write/live-state.js';
 import { METERED_SCENARIO_INPUTS, POOL_SCENARIO_INPUTS } from '../msw/fixtures/scenarios.js';
-import { runReadSmoke } from '../smoke/read-smoke.js';
+import { runReadSmoke, runR7 } from '../smoke/read-smoke.js';
 import {
   formatLocalCreditsCoverage,
   formatWireR6Historical,
@@ -1835,6 +1835,15 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // days). Derived from the clock seam, never bare wall-clock.
     const probeDay = new Date(currentDateObj().getTime() - DAY_MS).toISOString().slice(0, 10);
     const results = await runReadSmoke(octokit, enterprise, probeDay);
+
+    // R7: the filterable ai_credit/premium_request usage report -- a GITHUB-ONLY
+    // live exploration (no MSW twin; runReadSmoke, which is MSW-tested, omits
+    // it). Appended here in the live branch so it renders as a per-endpoint row
+    // in the same smoke card + copy text as R1-R6. `currentMonth` comes from the
+    // clock seam (never wall-clock). §6.9-validated against ghec.2026-03-10.json
+    // (see runR7's doc comment + api-surface-validation.md's R7 entry).
+    const nowObj = currentDateObj();
+    results.push(await runR7(octokit, enterprise, { year: nowObj.getUTCFullYear(), month: nowObj.getUTCMonth() + 1 }));
 
     // Live per-month all-zero diagnostics (2026-07-10). Section 1: what got
     // PERSISTED (source-scoped DB coverage). Section 2: what the R6 historical
