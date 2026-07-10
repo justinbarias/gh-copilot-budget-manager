@@ -964,6 +964,39 @@ shown), and no reproducible console error (a one-off Electron-internal
 `sandbox_bundle` prewarm artifact did not recur across four clean runs of the
 same flow).
 
+## Live wire behavior — users-1-day ZERO-FILLS history beyond retention (2026-07-10)
+
+**Live-observed fact (maintainer's tenant, 2026-07-10 authed smoke), recorded
+for future work.** The R6 users-1-day per-user metrics report **zero-fills**
+history older than its retention window (roughly the current cycle): a
+users-1-day fan-out over April/May/June 2026 came back as a **full roster with
+real `user_login`s but every `ai_credits_used = 0`**, while July 1–8 carried
+real nonzero values — even though R5 SKU-level billing shows those earlier
+months DID consume AI credits. So the report does **not** omit past days; it
+returns present-but-zero rows for them. This is a **wire-shape behavior**, not
+an error (envelope + JSONL record keys `[user_id, user_login, ai_credits_used]`
+are exactly as R6/R7 pin; the values are simply 0), so it is §6.9-relevant as a
+recorded observation but touches no request/response schema.
+
+**Consequence + local handling (no wire change).** Persisted zero rows are real
+`credits_used_fact` rows, so deriving the distribution's coverage bounds from
+*all* persisted dates made a zero-filled month count as a "complete" covered
+month — the live per-month view rendered ~100 truthful-but-useless zero
+observations for June. Fixed **entirely local** in `readDistributionFactBaseFor`
+(`api-client/github-impl.ts`): the coverage bounds (`earliestDate`/`toDate`) now
+derive from **winning rows with `creditsUsed > 0` only**; winning-row selection,
+the per-user SUMS, and the persisted rows themselves are untouched (zero rows
+still flow into `factRows`/`winnerSnapshotByDate`, so `computeLocalCreditsCoverage`
+keeps showing the raw persisted truth for diagnostics). Both distribution
+readers inherit the rule: the live repro (zero-filled Apr–Jun + real Jul 1–8)
+anchors the "Totals" window at toDate 07-08 (truncated to earliest 07-01) and
+yields NO complete calendar month → the "Per month" empty state. An interior
+genuinely-zero month (nonzero months on both sides) still counts as complete and
+yields all-zero observations — accepted (edge-based bounds, not a per-month
+filter). **§6.9:** local-only change; no `octokit.request`/`fetch`/hand-wrapped
+path added or modified — this section is the recorded wire-behavior fact, not a
+new call to validate.
+
 ## Sources consulted (2026-07-05, updated 2026-07-08)
 
 - **`github/rest-api-description`, `descriptions/ghec/ghec.2026-03-10.json`**

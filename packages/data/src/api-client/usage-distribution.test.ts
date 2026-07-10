@@ -337,4 +337,80 @@ describe('getUsageDistribution', () => {
     await expect(client.getUsageDistribution({ months: 2 as never })).rejects.toThrow('months must be 1, 3, or 9');
     await expect(client.getUsageDistribution({ months: '3' as never })).rejects.toThrow('months must be 1, 3, or 9');
   });
+
+  // Zero-filled-history fix (2026-07-10): GitHub zero-fills per-user history
+  // beyond retention (full roster + logins, but ai_credits_used = 0). Coverage
+  // bounds (earliest/toDate) must derive from NONZERO winning rows only so the
+  // window never anchors to a zero-filled month. The bounds rule is
+  // source-independent, so these seed one msw snapshot (the default client).
+  describe('nonzero coverage bounds (zero-filled-history fix)', () => {
+    it('live repro (zero-filled Apr-Jun + real July 1-8): months=1 window anchors at toDate 07-08, truncated to earliest 07-01', async () => {
+      db.insert(schema.license)
+        .values([
+          { userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null },
+          { userId: '1002', userLogin: 'bob', costCenterId: null, assignedAt: null },
+        ])
+        .run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        // Zero-filled leading months (real logins, zero credits) -- these must
+        // NOT define coverage. Earliest all-date is 2026-04-01.
+        { date: '2026-04-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+        { date: '2026-04-01', userId: '1002', userLogin: 'bob', creditsUsed: 0 },
+        { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+        { date: '2026-05-01', userId: '1002', userLogin: 'bob', creditsUsed: 0 },
+        { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+        { date: '2026-06-01', userId: '1002', userLogin: 'bob', creditsUsed: 0 },
+        // Real current cycle.
+        { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+        { date: '2026-07-08', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
+        { date: '2026-07-03', userId: '1002', userLogin: 'bob', creditsUsed: 40 },
+      ]);
+
+      const result = await client.getUsageDistribution({ months: 1 });
+      // Nonzero bounds: earliest 2026-07-01, toDate 2026-07-08 (the zero-filled
+      // Apr-Jun rows are ignored). months=1 requested from = 07-08 minus 1 month
+      // (06-08) + 1 day = 2026-06-09; earliest 07-01 > 06-09 -> truncated, fromDate
+      // clamps to 07-01. Window [07-01, 07-08]: alice 100+50 = 150; bob 40.
+      expect(result.toDate).toBe('2026-07-08');
+      expect(result.fromDate).toBe('2026-07-01');
+      expect(result.truncated).toBe(true);
+      expect(result.users).toEqual([
+        { userLogin: 'alice', costCenterName: null, creditsUsed: 150 },
+        { userLogin: 'bob', costCenterName: null, creditsUsed: 40 },
+      ]);
+    });
+
+    it('trailing zero-fill (real May then a zero-filled newest June): toDate anchors at the last NONZERO date 2026-05-20', async () => {
+      db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+        { date: '2026-05-20', userId: '1001', userLogin: 'alice', creditsUsed: 50 }, // last NONZERO date
+        { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // trailing zero-fill (newest all-date)
+        { date: '2026-06-10', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+      ]);
+
+      const result = await client.getUsageDistribution({ months: 1 });
+      // toDate is 2026-05-20, NOT the zero-filled 2026-06-10. months=1 requested
+      // from = 04-20 + 1 day = 2026-04-21; earliest 05-01 > 04-21 -> truncated,
+      // fromDate clamps to 05-01. Window [05-01, 05-20]: alice 100+50 = 150.
+      expect(result.toDate).toBe('2026-05-20');
+      expect(result.fromDate).toBe('2026-05-01');
+      expect(result.truncated).toBe(true);
+      expect(result.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 150 }]);
+    });
+
+    it('all-zero everything: rows exist but no nonzero coverage -> the sentinel', async () => {
+      db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+        { date: '2026-06-10', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+      ]);
+      // Per-user rows exist (base is non-null) but the whole timeline is
+      // zero-fill (base.toDate === '') -> no window to anchor -> sentinel.
+      expect(await client.getUsageDistribution({ months: 1 })).toEqual({ fromDate: '', toDate: '', truncated: false, users: [] });
+    });
+  });
 });

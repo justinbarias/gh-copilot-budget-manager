@@ -125,6 +125,34 @@ describe('computeLocalCreditsCoverage', () => {
     const cov = computeLocalCreditsCoverage(db, 'github');
     expect(cov).toEqual({ source: 'github', hasData: false, snapshots: [], months: [] });
   });
+
+  it('still surfaces the raw truth when the whole source is zero-fill (the distribution readers sentinel, but the diagnostic must NOT)', () => {
+    // Zero-filled-history fix (2026-07-10): the distribution readers now derive
+    // coverage bounds from NONZERO rows only, so a fully zero-filled source
+    // sentinels there. computeLocalCreditsCoverage must be UNCHANGED -- its whole
+    // purpose is to SHOW the persisted zero rows, so hasData stays true and the
+    // all-zero month still appears (readDistributionFactBaseFor returns null only
+    // for zero ROWS, not zero credits).
+    const s1 = addSnapshot('github', '2026-07-10T10:00:00.000Z');
+    addFacts(s1, [
+      { date: '2026-06-01', userId: '100', userLogin: 'alice', creditsUsed: 0 },
+      { date: '2026-06-10', userId: '101', userLogin: 'bob', creditsUsed: 0 },
+    ]);
+    const cov = computeLocalCreditsCoverage(db, 'github');
+    expect(cov.hasData).toBe(true);
+    expect(cov.snapshots).toEqual([
+      {
+        snapshotId: s1,
+        capturedAt: '2026-07-10T10:00:00.000Z',
+        rowCount: 2,
+        distinctUserIds: 2,
+        minDate: '2026-06-01',
+        maxDate: '2026-06-10',
+        nullLoginCount: 0,
+      },
+    ]);
+    expect(cov.months).toEqual([{ month: '2026-06', totalCredits: 0, distinctUsers: 2, usersWithNonzero: 0 }]);
+  });
 });
 
 describe('formatLocalCreditsCoverage', () => {

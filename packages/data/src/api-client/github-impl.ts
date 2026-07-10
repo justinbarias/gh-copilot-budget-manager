@@ -486,9 +486,15 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
 // own sentinel shape.
 export interface DistributionFactBase {
   factRows: Array<{ date: string; userId: string; userLogin: string | null; creditsUsed: number; snapshotId: number }>;
-  /** Per date, the highest snapshotId containing it -- that day's winning generation. */
+  /** Per date, the highest snapshotId containing it -- that day's winning generation (over ALL rows, zero-credit included). */
   winnerSnapshotByDate: Map<string, number>;
-  /** Min/max winning date (YYYY-MM-DD). */
+  /**
+   * Min/max NONZERO winning date (YYYY-MM-DD) -- the coverage bounds derive
+   * from winning rows with creditsUsed > 0 only (zero-filled-history fix, see
+   * readDistributionFactBaseFor). BOTH are '' when the source has rows but the
+   * whole covered timeline is zero-fill (no nonzero coverage to anchor); each
+   * distribution reader treats that as its sentinel.
+   */
   earliestDate: string;
   toDate: string;
 }
@@ -545,18 +551,52 @@ export function readDistributionFactBaseFor(db: Db, source: string): Distributio
       : sourceRows;
 
   // Union/latest-wins: per date, the highest snapshotId containing that
-  // date is the winning generation; its rows are that day's truth.
+  // date is the winning generation; its rows are that day's truth. Built over
+  // ALL winning rows (zero-credit rows included) so both the winning-row SUMS
+  // the readers compute AND the raw truth computeLocalCreditsCoverage shows are
+  // untouched -- only the coverage BOUNDS below change.
   const winnerSnapshotByDate = new Map<string, number>();
   for (const row of factRows) {
     const winner = winnerSnapshotByDate.get(row.date);
     if (winner === undefined || row.snapshotId > winner) winnerSnapshotByDate.set(row.date, row.snapshotId);
   }
 
+  // COVERAGE BOUNDS FROM NONZERO WINNING ROWS ONLY (zero-filled-history fix,
+  // 2026-07-10; live-verified in the maintainer's tenant). GitHub's users-1-day
+  // per-user metrics report ZERO-FILLS history beyond its retention (~the
+  // current cycle): earlier months (e.g. Apr/May/Jun) come back as a full
+  // roster with real logins but every ai_credits_used = 0 -- even though R5
+  // SKU-level billing shows those months DID consume AI credits. Those persisted
+  // zero rows are real DB rows, so deriving earliest/toDate from ALL winning
+  // dates made a zero-filled month count as "covered" and anchored the window /
+  // completeness to truthful-but-useless zeros (the reported "100 zero
+  // observations for a complete June" symptom). The bounds therefore key off
+  // winning rows with creditsUsed > 0 only:
+  //   earliest = min date over nonzero winning rows
+  //   toDate   = max date over nonzero winning rows
+  // Winning-row SELECTION and the SUMS the readers fold are DELIBERATELY
+  // untouched -- zero rows still flow into factRows / winnerSnapshotByDate (they
+  // add nothing to any sum), so computeLocalCreditsCoverage keeps surfacing the
+  // raw persisted truth for its diagnostics. Only the edge bounds move.
+  //   - Trailing zero-fill (real months then a zero-filled newest month, which
+  //     can occur transiently mid-cycle): toDate anchors at the last NONZERO
+  //     date, not the zero-filled newest one.
+  //   - A genuinely-zero INTERIOR month (nonzero months on both sides): it still
+  //     sits inside [earliest, toDate] and counts as complete, yielding all-zero
+  //     observations -- accepted and documented; the bounds are edge-based, not
+  //     a per-month filter.
+  //   - No nonzero winning row AT ALL: both bounds stay '' (the source has rows
+  //     but its whole timeline is zero-fill). The per-user history still exists,
+  //     so computeLocalCreditsCoverage reports hasData/raw rows; but there is no
+  //     useful window to anchor, so both distribution readers return their
+  //     existing sentinel (guarding on the empty toDate).
   let toDate = '';
   let earliestDate = '';
-  for (const date of winnerSnapshotByDate.keys()) {
-    if (toDate === '' || date > toDate) toDate = date;
-    if (earliestDate === '' || date < earliestDate) earliestDate = date;
+  for (const row of factRows) {
+    if (row.creditsUsed <= 0) continue;
+    if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
+    if (toDate === '' || row.date > toDate) toDate = row.date;
+    if (earliestDate === '' || row.date < earliestDate) earliestDate = row.date;
   }
 
   return { factRows, winnerSnapshotByDate, earliestDate, toDate };
@@ -1165,6 +1205,19 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return { licenseRows, costCenterNameById, licenseByUserId };
   }
 
+  // Distribution "Totals" lens: per-user credit sums over a rolling window
+  // anchored at the latest NONZERO covered day (toDate), reaching back `months`
+  // calendar months. Pure local-SQLite read over the shared union/latest-wins
+  // base; §6.9-exempt (no GitHub HTTP), source-scoped (§6.8). See types.ts's
+  // UsageDistributionWindow for the full semantics.
+  //
+  // Zero-filled-history fix (2026-07-10): the window anchors on the NONZERO
+  // coverage bounds (readDistributionFactBaseFor). GitHub zero-fills per-user
+  // history beyond retention, so anchoring toDate on a zero-filled newest month
+  // would point the window at all-zero rows. In the live repro (zero-filled
+  // Apr-Jun + real July 1-8) toDate is 07-08, months=1 requests 06-09..07-08,
+  // and earliest 07-01 > 06-09 -> truncated=true, fromDate clamps to 07-01. A
+  // fully zero-filled source (base.toDate === '') hits the sentinel guard below.
   async function getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow> {
     const months = input.months;
     // Runtime guard: the preload/IPC boundary is untyped at runtime, so the
@@ -1176,9 +1229,12 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     }
 
     const base = readDistributionFactBase();
-    // SENTINEL (types.ts): no per-user history for this source at all --
-    // fresh DB / never synced in this mode. Nothing to anchor a window to.
-    if (base === null) {
+    // SENTINEL (types.ts): no per-user history for this source at all (fresh DB
+    // / never synced in this mode), OR the whole covered timeline is zero-fill
+    // (base.toDate === '' -- zero-filled-history fix: earlier months GitHub
+    // zero-filled carry no nonzero coverage bound). Either way there is no
+    // window to anchor.
+    if (base === null || base.toDate === '') {
       return { fromDate: '', toDate: '', truncated: false, users: [] };
     }
     const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;
@@ -1260,6 +1316,17 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // month (monthEnd > toDate) is ALWAYS excluded. See types.ts's
   // UserMonthObservationsResult for the full semantics. §6.9-exempt (no GitHub
   // HTTP), source-scoped (§6.8).
+  //
+  // Zero-filled-history fix (2026-07-10): `earliestDate`/`toDate` are the NONZERO
+  // coverage bounds (readDistributionFactBaseFor) -- GitHub zero-fills per-user
+  // history beyond retention, so anchoring completeness on zero-filled months
+  // would report a "complete" month of 100 all-zero observations. With the
+  // nonzero bounds, the live repro (zero-filled Apr-Jun + real July 1-8) has
+  // toDate 07-08, so July's month-end 07-31 > toDate -> NO complete month ->
+  // sentinel. A genuinely-zero INTERIOR month (nonzero months on both sides)
+  // still counts as complete and yields all-zero observations (edge-based
+  // bounds, not a per-month filter). A fully zero-filled source (base.toDate
+  // === '') hits the sentinel guard below.
   async function getUserMonthObservations(input: UsageDistributionWindowInput): Promise<UserMonthObservationsResult> {
     const months = input.months;
     // Same untyped-boundary guard as getUsageDistribution.
@@ -1268,8 +1335,11 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     }
 
     const base = readDistributionFactBase();
-    // SENTINEL (types.ts): no per-user history for this source at all.
-    if (base === null) {
+    // SENTINEL (types.ts): no per-user history for this source at all, OR the
+    // whole covered timeline is zero-fill (base.toDate === '' -- zero-filled-
+    // history fix: a fully zero-filled source has no nonzero coverage bound, so
+    // no complete month to report either).
+    if (base === null || base.toDate === '') {
       return { months: [], truncated: false, observations: [] };
     }
     const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;

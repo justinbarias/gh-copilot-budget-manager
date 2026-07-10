@@ -287,4 +287,61 @@ describe('getUserMonthObservations', () => {
     await expect(client.getUserMonthObservations({ months: 2 as never })).rejects.toThrow('months must be 1, 3, or 9');
     await expect(client.getUserMonthObservations({ months: '3' as never })).rejects.toThrow('months must be 1, 3, or 9');
   });
+
+  // Zero-filled-history fix (2026-07-10): completeness anchors on the NONZERO
+  // coverage bounds so a zero-filled month (GitHub zero-fills history beyond
+  // retention) never masquerades as a complete month of all-zero observations.
+  describe('nonzero coverage bounds (zero-filled-history fix)', () => {
+    it('live repro (zero-filled Apr-Jun + real July 1-8): NO complete calendar month -> sentinel', async () => {
+      db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        { date: '2026-04-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // zero-fill
+        { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // zero-fill
+        { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // zero-fill
+        { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+        { date: '2026-07-08', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
+      ]);
+      // Nonzero bounds: earliest 07-01, toDate 07-08. July's month-end 07-31 >
+      // toDate 07-08 -> July is the partial current month, excluded. No other
+      // month is covered (Apr-Jun are zero-fill, outside the nonzero bounds) ->
+      // no complete calendar month -> sentinel.
+      expect(await client.getUserMonthObservations({ months: 1 })).toEqual({ months: [], truncated: false, observations: [] });
+    });
+
+    it('interior all-zero month (nonzero March + May, zero-filled April): April still counts as complete, yielding all-zero observations', async () => {
+      db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        { date: '2026-03-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+        { date: '2026-03-31', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
+        { date: '2026-04-10', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // interior zero
+        { date: '2026-04-20', userId: '1001', userLogin: 'alice', creditsUsed: 0 }, // interior zero
+        { date: '2026-05-01', userId: '1001', userLogin: 'alice', creditsUsed: 30 },
+        { date: '2026-05-31', userId: '1001', userLogin: 'alice', creditsUsed: 20 },
+      ]);
+      // Nonzero bounds: earliest 03-01, toDate 05-31. Complete months Mar/Apr/May
+      // (April sits INSIDE [earliest, toDate], so it is complete despite being
+      // all-zero -- bounds are edge-based, not a per-month filter).
+      const result = await client.getUserMonthObservations({ months: 3 });
+      expect(result.months).toEqual(['2026-03', '2026-04', '2026-05']);
+      expect(result.truncated).toBe(false);
+      expect(result.observations).toEqual([
+        { userLogin: 'alice', costCenterName: null, month: '2026-03', creditsUsed: 150 },
+        { userLogin: 'alice', costCenterName: null, month: '2026-04', creditsUsed: 0 }, // all-zero, still emitted
+        { userLogin: 'alice', costCenterName: null, month: '2026-05', creditsUsed: 50 },
+      ]);
+    });
+
+    it('all-zero everything: rows exist but no nonzero coverage -> the sentinel', async () => {
+      db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+      const s1 = addSnapshot();
+      addFacts(s1, [
+        { date: '2026-06-01', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+        { date: '2026-06-30', userId: '1001', userLogin: 'alice', creditsUsed: 0 },
+      ]);
+      // Base non-null (rows exist) but base.toDate === '' -> sentinel.
+      expect(await client.getUserMonthObservations({ months: 3 })).toEqual({ months: [], truncated: false, observations: [] });
+    });
+  });
 });
