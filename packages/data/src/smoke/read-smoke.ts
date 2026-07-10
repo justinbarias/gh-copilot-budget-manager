@@ -1,6 +1,6 @@
 import type { Octokit } from 'octokit';
 import { AI_CREDITS_BUDGET_SKU, isAiCreditBudget } from '../api-client/budget-scope.js';
-import { fetchUsageFanout, isAiCreditUsageItem } from '../api-client/usage-fetch.js';
+import { fetchUsageFanout } from '../api-client/usage-fetch.js';
 import { downloadReportRecords, type UsersReportEnvelope } from '../api-client/users-report.js';
 
 // Task 9.2-prep: the live read-surface smoke runner. Given a configured
@@ -588,21 +588,99 @@ export function summarizeAiCreditShape(env: AiCreditUsageEnvelope): string {
   return `envelope keys=[${envelopeKeys.join(', ')}]; usageItems=${items.length}; ${itemKeysPart}; ${describeUserGranularity(env, items)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Per-(product, sku) breakdown (2026-07-10 addendum -- the live-probe finding
+// that motivated this file). The rollup used to filter items through
+// isAiCreditUsageItem -- a predicate borrowed from the R5 billing-usage SKU
+// convention (product 'copilot', sku literally 'Copilot AI Credits'). On the
+// maintainer's tenant this DEDICATED ai_credit/premium_request endpoint
+// returned items (June rollup: 24; day 2026-06-24: 15; premium_request April:
+// 15) but the filter matched ZERO of them -- these are the endpoint's OWN
+// product/sku/model labels, which the R5 convention was never proven to
+// share (R5 reads a DIFFERENT, general billing/usage endpoint). Filtering hid
+// the quantities entirely instead of surfacing what the labels actually are.
+// On a report DEDICATED to AI-credit usage, every returned item is relevant
+// by construction -- there is nothing to filter. The fix: group by (product,
+// sku) and print the labels + per-group sums so the real values are visible
+// on the next live run, rather than guessing a filter and re-hiding them.
+//
+// §6.6 note: product/sku/model strings are GitHub's OWN product labels (e.g.
+// "copilot" / "Copilot AI Credits" / "gpt-4.1") -- not tenant data. Printing
+// their VALUES is permitted, unlike a user login/id/enterprise/cost-center
+// slug (never printed anywhere in this file). Only counts/sums/booleans and
+// these product-label values are emitted below.
+// ---------------------------------------------------------------------------
+
+interface SkuGroupAgg {
+  n: number;
+  models: Set<string>;
+  netQuantitySum: number;
+  netAmountSum: number;
+}
+
+function groupBySkuPair(items: readonly AiCreditUsageItem[]): Map<string, SkuGroupAgg> {
+  const byPair = new Map<string, SkuGroupAgg>();
+  for (const item of items) {
+    const key = `${item.product ?? '<no-product>'}/${item.sku ?? '<no-sku>'}`;
+    const acc = byPair.get(key) ?? { n: 0, models: new Set<string>(), netQuantitySum: 0, netAmountSum: 0 };
+    acc.n += 1;
+    if (typeof item.model === 'string' && item.model.length > 0) acc.models.add(item.model);
+    acc.netQuantitySum += item.netQuantity ?? 0;
+    acc.netAmountSum += item.netAmount ?? 0;
+    byPair.set(key, acc);
+  }
+  return byPair;
+}
+
+const SKU_GROUP_CAP = 8;
+
 /**
- * Probe #2/#3/#4 rollup: total item count, AI-credit-SKU item count + summed
- * netQuantity + nonzero (netQuantity>0) count, and the user-attribution
- * mechanism. "AI-credit SKU" reuses the live-pinned filter (product 'copilot',
- * sku 'Copilot AI Credits'); a non-AI item on this endpoint would be surfaced
- * by the (total vs AI-credit) count split. Sums/counts only (§6.6).
+ * Per-(product, sku) breakdown, name-sorted for determinism, capped at
+ * `SKU_GROUP_CAP` groups with a trailing "…N more" note when the tenant
+ * carries more distinct pairs than that. One line per group:
+ * `product/sku: n=<count> model=<distinct model count> Σnet=<netQuantity sum> Σamt=<netAmount sum>`.
+ */
+export function summarizePerSkuBreakdown(items: readonly AiCreditUsageItem[]): string {
+  if (items.length === 0) return '(no usage items)';
+  const byPair = groupBySkuPair(items);
+  const sortedKeys = [...byPair.keys()].sort();
+  const shown = sortedKeys.slice(0, SKU_GROUP_CAP);
+  const lines = shown.map((key) => {
+    const g = byPair.get(key)!;
+    return `${key}: n=${g.n} model=${g.models.size} Σnet=${g.netQuantitySum} Σamt=${g.netAmountSum.toFixed(2)}`;
+  });
+  const remaining = sortedKeys.length - shown.length;
+  if (remaining > 0) lines.push(`…${remaining} more`);
+  return lines.join('; ');
+}
+
+/** Total line over ALL returned items (no filter -- every item on this dedicated endpoint is relevant): `items=<n> ΣnetQuantity=<sum> nonzero=<count>`. */
+export function summarizeTotalLine(items: readonly AiCreditUsageItem[]): string {
+  const netQuantityTotal = items.reduce((sum, i) => sum + (i.netQuantity ?? 0), 0);
+  const nonzero = items.filter((i) => (i.netQuantity ?? 0) > 0).length;
+  return `items=${items.length} ΣnetQuantity=${netQuantityTotal} nonzero=${nonzero}`;
+}
+
+/**
+ * Probe #2/#3/#4 rollup: the per-SKU breakdown (see above) plus the overall
+ * total line. Replaces the old ai-credit-filtered sum -- see the block
+ * comment above for why the filter was wrong on this endpoint.
  */
 export function summarizeAiCreditRollup(env: AiCreditUsageEnvelope): string {
   const items = env.usageItems ?? [];
-  const aiItems = items.filter((i) => isAiCreditUsageItem({ product: i.product ?? '', sku: i.sku ?? '' }));
-  const netQuantityTotal = aiItems.reduce((sum, i) => sum + (i.netQuantity ?? 0), 0);
-  const nonzero = aiItems.filter((i) => (i.netQuantity ?? 0) > 0).length;
-  const perItem = countPerItemUsers(items);
-  const userPart = perItem.hasField ? `distinct users=${perItem.distinct}` : 'distinct users=n/a (no per-item user field)';
-  return `items=${items.length}; ai-credit items=${aiItems.length}; Σ netQuantity(ai-credit)=${netQuantityTotal}; nonzero(netQuantity>0)=${nonzero}; ${userPart}`;
+  return `${summarizePerSkuBreakdown(items)}; ${summarizeTotalLine(items)}`;
+}
+
+/**
+ * Probe #5: the user-scoped fan-out mechanism check. Same per-SKU breakdown +
+ * total, plus whether the envelope echoes a top-level `user` key -- but NEVER
+ * the login value itself (§6.6; the login that produced this response is not
+ * repeated anywhere in the output).
+ */
+export function summarizeUserScopedProbe(env: AiCreditUsageEnvelope): string {
+  const items = env.usageItems ?? [];
+  const envelopeUserKeyPresent = 'user' in env;
+  return `items=${items.length}, ${summarizePerSkuBreakdown(items)}, envelope user key present=${envelopeUserKeyPresent}`;
 }
 
 // One R7 sub-call: a labeled octokit.request against the given usage path with
@@ -617,14 +695,52 @@ interface AiCreditProbeCall {
 
 const AI_CREDIT_PATH = 'GET /enterprises/{enterprise}/settings/billing/ai_credit/usage';
 const PREMIUM_REQUEST_PATH = 'GET /enterprises/{enterprise}/settings/billing/premium_request/usage';
+const SEATS_PATH = '/enterprises/{enterprise}/copilot/billing/seats';
+
+/**
+ * Probe #5's dependency: the FIRST seat's login, fetched with `per_page: 1`
+ * (the same already-validated `seats` path R1 reads, standard Octokit-typed
+ * pagination param -- no new endpoint or query shape; §6.9-exempt as a
+ * reuse of an already-machine-verified surface). Returns `null` if the
+ * tenant has no seats to sample. The login is returned to the CALLER only so
+ * it can be passed back into the ?user= query param -- it is never rendered
+ * into any smoke output (§6.6; see summarizeUserScopedProbe).
+ */
+async function fetchFirstSeatLogin(octokit: Octokit, enterprise: string): Promise<string | null> {
+  const response = await octokit.request(`GET ${SEATS_PATH}`, { enterprise, per_page: 1 });
+  const seats = (response.data as { seats?: Array<{ assignee?: { login?: string } }> }).seats ?? [];
+  const login = seats[0]?.assignee?.login;
+  return typeof login === 'string' && login.length > 0 ? login : null;
+}
+
+/**
+ * §6.6 defense-in-depth scrub for the user-scoped probe's ERROR path. Success
+ * paths emit only booleans/counts/product-labels (never the login), but
+ * `httpErrorDetails` echoes an error's `message` verbatim -- and a failing
+ * `?user=<login>` request's error text can carry that login (a GitHub
+ * validation echo of the query, a network `cause` string embedding the request
+ * URL, or any non-Octokit throw). Octokit's own RequestError redacts secrets in
+ * `err.request.url` but NOT `err.message`, and we render `err.message`. This
+ * removes every occurrence of the sampled login so no error path can leak it.
+ * No-op when no login was sampled (seat-fetch failure -- no login was ever
+ * sent, so there is nothing tenant-identifying to scrub).
+ */
+function redactLogin(detail: string, login: string | null): string {
+  return login !== null && login.length > 0 ? detail.split(login).join('<redacted-user>') : detail;
+}
 
 /**
  * R7 runner. `currentMonth` (year+month from the caller's clock seam, never
  * wall-clock) drives call #1's "current month" window; calls #2/#3 pin
  * JUNE 2026 (the usage-based-billing transition month -- the "is per-user
  * history really there" check) and call #4 pins APRIL 2026 on the
- * premium_request sibling (the pre-June billing era). Returns ONE row whose
- * details carry the four labeled sub-reports.
+ * premium_request sibling (the pre-June billing era). Call #5 fetches the
+ * FIRST seat's login (internally -- see fetchFirstSeatLogin; plumbing the R1
+ * seats fetch's result out of runReadSmoke's {status, details} row shape
+ * would be more awkward than one extra per_page=1 call) and probes the
+ * `?user=` fan-out mechanism against June 2026 -- proving that path end to
+ * end before the backfill rewire that depends on it. Returns ONE row whose
+ * details carry all five labeled sub-reports.
  */
 export async function runR7(
   octokit: Octokit,
@@ -678,6 +794,30 @@ export async function runR7(
       sawHttpError = true;
       parts.push(`${call.label}=${httpErrorDetails(err)}`);
     }
+  }
+
+  // Call #5: the user-scoped fan-out probe (§6.6 -- no login is ever
+  // rendered; see fetchFirstSeatLogin + summarizeUserScopedProbe).
+  const userScopedLabel = 'user-scoped June probe (first seat)';
+  // Hoisted so the catch can scrub it from any error detail (§6.6, redactLogin).
+  let sampledLogin: string | null = null;
+  try {
+    sampledLogin = await fetchFirstSeatLogin(octokit, enterprise);
+    if (sampledLogin === null) {
+      parts.push(`${userScopedLabel}: skipped (no seat available to sample)`);
+    } else {
+      const response = await octokit.request(AI_CREDIT_PATH, { enterprise, user: sampledLogin, year: 2026, month: 6 });
+      const env = (response as { data?: unknown }).data as AiCreditUsageEnvelope;
+      if (env === null || typeof env !== 'object' || !('usageItems' in env)) {
+        sawShapeIssue = true;
+        parts.push(`${userScopedLabel}=SHAPE_MISMATCH (no usageItems in envelope)`);
+      } else {
+        parts.push(`${userScopedLabel}: ${summarizeUserScopedProbe(env)}`);
+      }
+    }
+  } catch (err) {
+    sawHttpError = true;
+    parts.push(`${userScopedLabel}=${redactLogin(httpErrorDetails(err), sampledLogin)}`);
   }
 
   const status: ReadSmokeStatus = sawHttpError ? 'http_error' : sawShapeIssue ? 'shape_mismatch' : 'ok';

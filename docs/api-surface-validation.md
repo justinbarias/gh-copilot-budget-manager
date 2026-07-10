@@ -237,29 +237,42 @@ verbatim from the schema:
 
 **The R7 smoke probe** (`packages/data/src/smoke/read-smoke.ts`,
 `runR7` + summarizers; github-source-only, appended by `runLiveReadSmoke`;
-refused whole in sim; §6.6 output = counts/dates/sums/field-name-lists only,
-never a login/id/enterprise/cost-center value). One row, four independently
-error-reported sub-calls:
+refused whole in sim; §6.6 output = counts/dates/sums/field-name-lists/
+product-label-VALUES only, never a login/id/enterprise/cost-center value —
+see the 2026-07-10 addendum below for why product/sku/model values are safe
+to print). One row, **five** independently error-reported sub-calls (revised
+2026-07-10 — was four; see the addendum for why the rollup format changed):
 1. **current month** (`year`+`month` from the clock seam) on `ai_credit/usage` —
    `summarizeAiCreditShape`: envelope key list, first-usageItem key list, item
    count, and the user-granularity mechanism.
-2. **June 2026** (`year=2026&month=6`) — `summarizeAiCreditRollup`: total items,
-   AI-credit-SKU item count, Σ `netQuantity` over AI-credit items, count with
-   `netQuantity>0`, distinct-user note. *(Is June per-user history really there.)*
+2. **June 2026** (`year=2026&month=6`) — `summarizeAiCreditRollup`: an
+   **unfiltered** per-`(product, sku)` breakdown (n / distinct-model count /
+   Σ`netQuantity` / Σ`netAmount` per group, capped at 8 with an "…N more"
+   note) plus a total line (items / Σ`netQuantity` / nonzero count). *(Is
+   June per-user history really there, and what do the real labels say.)*
 3. **2026-06-24** (`year=2026&month=6&day=24`) — same rollup, per-day grain.
 4. **premium_request/usage April 2026** (`year=2026&month=4`) — same rollup, the
    pre-June billing era.
+5. **user-scoped June probe** (added 2026-07-10) — fetches the first seat's
+   login internally (`per_page: 1` against the already-validated `seats`
+   path, R1) and calls `ai_credit/usage?user=<login>&year=2026&month=6`,
+   proving the `?user=` fan-out mechanism end to end; renders item count, the
+   per-SKU breakdown, and whether the envelope echoes a top-level `user` key —
+   never the login itself (§6.6).
 
 Status: `http_error` if any sub-call throws (reported per-call like every
 existing probe), `shape_mismatch` if a 200 lacks `usageItems`, else `ok`. **No
 MSW twin and no canonical-handler change** — `runReadSmoke` omits R7 entirely;
 the only MSW-backed test that reaches it (`tenant-smoke.test.ts` github path)
 registers the two paths **test-locally** via `server.use` (the same pattern the
-R6 path-param 404 variants use), so there is zero unhandled-request noise. The
-R7 unit tests (`smoke/r7-ai-credit-usage.test.ts`) drive `runR7` + the
-summarizers against a **stub Octokit** with hand-built OpenAPI-shaped envelopes
-(no MSW server involved). **Live values remain unpinned** — this probe is the
-instrument the maintainer runs to pin them on the next authed smoke.
+R6 path-param 404 variants use), so there is zero unhandled-request noise (the
+seat fetch and the user-scoped call both hit the canonical MSW seats/ai_credit
+handlers, so no extra registration was needed for probe #5). The R7 unit
+tests (`smoke/r7-ai-credit-usage.test.ts`) drive `runR7` + the summarizers
+against a **stub Octokit** with hand-built OpenAPI-shaped envelopes (no MSW
+server involved). **Live values for the real product/sku/model label space
+remain unpinned** — this probe is the instrument the maintainer runs to pin
+them on the next authed smoke.
 
 **First live-contact finding (2026-07-08 smoke, unauthenticated).** The
 maintainer's first real live read smoke returned **`401 "Requires
@@ -319,6 +332,41 @@ download *filenames* still end `.json` while carrying JSONL — intentional,
 the impl sniffs content, never the filename or Content-Type); (c) a Sync run
 before GitHub generates the current day's report must not hard-fail — see
 the trailing-gap tolerance below.
+
+**2026-07-10 live probe addendum — the filter-vs-breakdown fix.** The
+maintainer's tenant returned items at BOTH month and day grain for June (and
+for `premium_request` April) — history at this endpoint is genuinely present
+(June `ai_credit` rollup: 24 items; 2026-06-24 day: 15 items; `premium_request`
+April: 15 items). But the R7 rollup's `summarizeAiCreditRollup` had filtered
+those items through `isAiCreditUsageItem` — the R5 billing-usage predicate
+(product `'copilot'`, sku literally `'Copilot AI Credits'`) — and matched
+**ZERO** of them. That filter was never validated against THIS endpoint's own
+label space; R5 reads a different, general billing-usage endpoint, and
+nothing pins the two endpoints' `sku` strings to the same values. Filtering
+hid the quantities entirely rather than revealing what the real labels are.
+Since `ai_credit/usage` and `premium_request/usage` are DEDICATED AI-credit
+reports, every item they return is relevant by construction — there is
+nothing to filter. **Fix:** the rollup is now an unfiltered per-`(product,
+sku)` breakdown (`summarizePerSkuBreakdown` — count, distinct-model count,
+Σ`netQuantity`, Σ`netAmount` per group, capped at 8 groups with an "…N more"
+note) plus an unfiltered total line (`summarizeTotalLine` — total items, Σ
+`netQuantity`, nonzero count). `product`/`sku`/`model` are GitHub's own
+product labels, not tenant data, so printing their VALUES is permitted under
+§6.6 (unlike a login/id/enterprise/cost-center slug, still never printed
+anywhere in this file). **Live values for the real label space remain
+unpinned** — this breakdown is the instrument the maintainer runs next to
+pin them.
+
+**Probe #5 added — the `?user=` fan-out mechanism, exercised end to end.**
+Before any backfill rewire is designed on top of the per-user `?user=` query
+param (the only per-user recovery path this endpoint offers — see the
+docs-vs-OpenAPI reconciliation above), the smoke now proves the mechanism
+itself works: it fetches the FIRST seat's login (an internal `per_page: 1`
+call against the already-validated `seats` path, R1 — no new endpoint) and
+calls `ai_credit/usage?user=<login>&year=2026&month=6`, rendering
+`user-scoped June probe (first seat): items=…, <breakdown>, envelope user
+key present=<bool>`. The login itself is fetched and used but NEVER rendered
+(§6.6) — only counts, the per-SKU breakdown, and the boolean.
 
 ### Live-wire limitations (documented, not deferred)
 
