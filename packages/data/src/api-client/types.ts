@@ -276,41 +276,70 @@ export interface UsageDistributionUser {
 }
 
 /**
- * Distribution D2: per-user credit totals over a rolling window of synced
- * history, read ENTIRELY from the local SQLite mirror (credits_used_fact +
- * license + cost_center) -- no GitHub request, identical logic in both modes,
+ * Distribution D2: per-user credit totals over a CALENDAR-ANCHORED window of
+ * synced history, read ENTIRELY from the local SQLite mirror (credits_used_fact
+ * + credits_used_monthly_fact + license + cost_center) -- no GitHub request,
  * source-scoped to this client's mode (CLAUDE.md §6.8).
  *
- * Coverage semantics (maintainer-approved union, 2026-07-10): the covered
- * date range is the UNION of fact dates across ALL of this source's
- * snapshots; for each date, the rows from the LATEST snapshot containing
- * that date win (report data settles, so the newest ingestion of a day is
- * the truth for that day; a day only present in an older snapshot still
- * contributes). toDate = the max such date; the requested fromDate =
- * toDate minus `months` calendar months plus one day (inclusive both ends;
- * day-of-month clamped to the target month's length, so e.g. Jul 31 minus 1
- * month + 1 day = Jul 1). When the requested start predates the earliest
- * covered date, fromDate clamps to it and `truncated` is true.
+ * WINDOW SEMANTICS (calendar-anchored, maintainer-approved 2026-07-10): the
+ * window is the CURRENT calendar month to date + the (months-1) prior calendar
+ * months, aligned to billing cycles rather than a rolling day range. "Current"
+ * is the calendar month of `toDate` (the latest NONZERO covered day, from the
+ * union/latest-wins + nonzero-winner base). The requested month LIST is fixed
+ * by the calendar; per month:
+ *   - CURRENT month: per-user sums from DAILY facts up to `toDate` (same winner
+ *     rule + nonzero coverage bounds as elsewhere). Always contributes.
+ *   - a PRIOR month M: if a MONTHLY fact exists for M (billing ai_credit/usage
+ *     backfill; migration 0007) it WINS over daily (billing is the money source
+ *     of truth) and its attributed per-user rows feed the totals; else if daily
+ *     coverage has a nonzero row in M, per-user daily sums over M; else M
+ *     contributes nothing.
+ * A user's window total = Σ over contributing months (ROSTER RULE below). The
+ * NULL-user monthly-fact remainder is EXCLUDED from per-user totals and surfaced
+ * as `unattributedCredits`.
+ *
+ * toDate = the latest nonzero covered day (current month). fromDate = the FIRST
+ * DAY of the OLDEST contributing month. `monthsIncluded` = the count of
+ * contributing months; `truncated` is true when it is fewer than the requested
+ * `months` (a requested month with no data simply contributes nothing).
  *
  * ROSTER RULE: `users` includes EVERY licensed user (license table), with
  * creditsUsed 0 for those without usage in the window -- plus, defensively,
  * any user with fact rows but no license row.
  *
- * SENTINEL: a DB with no synced per-user history at all for this source
- * (fresh install, never synced) returns
- * `{ fromDate: '', toDate: '', truncated: false, users: [] }` -- the UI
- * renders an empty state. Empty-string dates never appear otherwise; all
- * dates are YYYY-MM-DD UTC.
+ * SENTINEL: a DB with no synced per-user history at all for this source (fresh
+ * install / never synced), OR whose whole daily timeline is zero-fill (no
+ * nonzero covered day to anchor the current month), returns
+ * `{ fromDate: '', toDate: '', truncated: false, users: [] }` -- the UI renders
+ * an empty state. Empty-string dates never appear otherwise; all dates are
+ * YYYY-MM-DD UTC.
  */
 export interface UsageDistributionWindow {
-  /** YYYY-MM-DD, actual coverage start (post-clamp); '' only in the sentinel. */
+  /** YYYY-MM-DD, first day of the oldest contributing month; '' only in the sentinel. */
   fromDate: string;
-  /** YYYY-MM-DD, latest day with synced data; '' only in the sentinel. */
+  /** YYYY-MM-DD, latest nonzero day with synced data (current month); '' only in the sentinel. */
   toDate: string;
-  /** True when available history is shorter than the requested months. */
+  /** True when the number of contributing months is fewer than the requested months. */
   truncated: boolean;
   /** Deterministically ordered: creditsUsed descending, then userLogin ascending. */
   users: UsageDistributionUser[];
+  /**
+   * The count of CONTRIBUTING calendar months (current + each prior month that
+   * carried monthly-fact or daily data). Drives the UI's ULB overlay scaling
+   * (the universal ULB is a monthly cap, shown ×monthsIncluded). Present on
+   * every non-sentinel window; absent in the sentinel.
+   */
+  monthsIncluded?: number;
+  /**
+   * Monthly-backfill only (migration 0007): the WINDOW-TOTAL unattributed
+   * remainder in credits (Σ over contributing prior months of monthAggregate −
+   * Σ attributed) -- credits drawn by users no longer on the seat roster, which
+   * therefore have no `users` entry. Integer credits, positive-only. ADDITIVE +
+   * OPTIONAL: present ONLY when a contributing monthly-fact month carries a
+   * nonzero remainder; ABSENT otherwise -- so simulation (no monthly facts) and
+   * every daily-only window keep the exact original 4-key shape.
+   */
+  unattributedCredits?: number;
 }
 
 /**

@@ -128,7 +128,7 @@ interface Marker {
 
 export interface DistributionChartProps {
   distribution: UsageDistribution;
-  /** Universal ULB amount already multiplied by the window's month count (monthly cap × months); null when no universal ULB is set. */
+  /** Universal ULB amount already multiplied by the window's CONTRIBUTING month count (monthly cap × monthsIncluded); null when no universal ULB is set. */
   ulbValue: number | null;
   /** core's countAbove(users, ulbValue) over the RAW observation list -- the exact number of observations strictly above the ULB. null iff ulbValue is null. */
   ulbUsersAbove: number | null;

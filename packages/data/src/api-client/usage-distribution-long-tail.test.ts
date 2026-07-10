@@ -78,54 +78,51 @@ describe('long-tail scenario: Users -> Distribution', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // -- "Totals" lens (trailing-month), months=1 --------------------------------
+  // -- "Totals" lens (calendar-anchored), months=1 ----------------------------
   //
-  //   toDate = MAX fact date = 2026-06-12 (June weekdays); earliest = 2026-03-01
-  //   (the backfill) -> window [2026-05-13, 2026-06-12] (06-12 minus 1 month + 1
-  //   day), fully covered -> truncated=false. n = 81.
+  //   Calendar-anchored: toDate = MAX NONZERO fact date = 2026-06-12 -> the
+  //   current month is JUNE, and months=1 is June-to-date ONLY (no May tail).
+  //   fromDate = first day of the (only) contributing month = 2026-06-01;
+  //   monthsIncluded=1 -> not truncated. n = 81.
   //
-  //   Each seat's window value = its June cycle draw (all June rows fall in the
-  //   window) PLUS its May 13-31 history (the backfill's partial-May tail). Over
-  //   the 81-value multiset (7 idle seats -> 0), nearest-rank percentiles:
-  //     P30 = 25th value -> 1,126
-  //     P50 = 41st value -> 1,965
-  //     P95 = 77th value -> 7,436
-  //   total 225,590 -> mean 2,785.06 (> median 1,965: right skew visible);
-  //   usersAboveP95 = 3; user-window-values strictly above the 4,600 universal
-  //   ULB = 19 (heavy seats governed by a higher ULB, plus every seat whose
-  //   June draw + May tail crosses 4,600).
-  it('Totals months=1: a real syncNow -> getUsageDistribution reproduces the pinned trailing-month distribution', async () => {
+  //   Each seat's window value = its June cycle draw (rows dated 2026-06-*, <=
+  //   06-12). Over the 81-value multiset, nearest-rank percentiles:
+  //     P30 = 25th value -> 649
+  //     P50 = 41st value -> 1,100
+  //     P95 = 77th value -> 4,600
+  //   total 127,398 -> mean 1,572.81 (> median 1,100: right skew visible);
+  //   usersAboveP95 = 3; user-window-values strictly above the ×1 = 4,600
+  //   universal ULB = 3.
+  it('Totals months=1: a real syncNow -> getUsageDistribution reproduces the pinned June-to-date distribution', async () => {
     await client.setScenario('long-tail'); // re-seeds MSW + runs the app's syncNow
     const window = await client.getUsageDistribution({ months: 1 });
 
-    expect(window.fromDate).toBe('2026-05-13');
+    expect(window.fromDate).toBe('2026-06-01');
     expect(window.toDate).toBe('2026-06-12');
     expect(window.truncated).toBe(false);
+    expect(window.monthsIncluded).toBe(1);
     expect(window.users.length).toBe(81);
 
-    // The impl's per-seat window multiset equals the independent derivation.
+    // The impl's per-seat window multiset equals the independent derivation
+    // (June rows only, through toDate 06-12).
     const implVals = window.users.map((u) => u.creditsUsed).sort((a, b) => a - b);
-    const derivedVals = deriveMultiset((d) => d >= '2026-05-13' && d <= '2026-06-12').sort((a, b) => a - b);
+    const derivedVals = deriveMultiset((d) => d >= '2026-06-01' && d <= '2026-06-12').sort((a, b) => a - b);
     expect(implVals).toEqual(derivedVals);
 
     const dist = computeUsageDistribution(window.users.map((u) => ({ userId: u.userLogin, creditsUsed: u.creditsUsed })));
     expect(dist.n).toBe(81);
-    expect(dist.total).toBe(225_590);
-    expect(dist.mean).toBeCloseTo(225_590 / 81, 6);
+    expect(dist.total).toBe(127_398);
+    expect(dist.mean).toBeCloseTo(127_398 / 81, 6);
     expect(dist.mean).toBeGreaterThan(dist.p50); // right skew
 
-    expect(dist.p30).toBe(1_126);
-    expect(dist.p50).toBe(1_965);
-    expect(dist.p95).toBe(7_436);
-    expect(dist.spread).toBeCloseTo(7_436 / 1_965, 6);
+    expect(dist.p30).toBe(649);
+    expect(dist.p50).toBe(1_100);
+    expect(dist.p95).toBe(4_600);
+    expect(dist.spread).toBeCloseTo(4_600 / 1_100, 6);
 
     expect(dist.usersAboveP95).toBe(3);
     const above4600 = window.users.filter((u) => u.creditsUsed > 4_600).length;
-    expect(above4600).toBe(19);
-
-    // ~8% idle: the 6 lowest roster ranks + ext-dmorrow's $0-ULB clamp, idle in
-    // June AND every backfill month.
-    expect(window.users.filter((u) => u.creditsUsed === 0).length).toBe(7);
+    expect(above4600).toBe(3);
 
     // P30/P50 non-zero (the whole point) -- 'healthy' reads P30=P50=0 here.
     expect(dist.p30).toBeGreaterThan(0);

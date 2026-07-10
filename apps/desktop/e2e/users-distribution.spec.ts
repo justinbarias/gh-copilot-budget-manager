@@ -49,20 +49,24 @@ async function assertNoPillOverlap(window: Page, windowLabel: string): Promise<v
 // the D2 backfill persistence semantics + D1 math (computeUsageDistribution),
 // via a throwaway harness that ran the real sim syncNow -> getUsageDistribution
 // -> computeUsageDistribution and cross-checked against three orchestrator-
-// supplied independent facts (81-user roster, toDate 2026-06-12, emily-zhao
-// months=1 total 11,284 -- all confirmed). The DEWR sim world's licensed roster
+// supplied independent facts (81-user roster, toDate 2026-06-12; under the new
+// calendar-anchored June-to-date months=1 window emily-zhao totals 5,480, the
+// window max -- re-confirmed). The DEWR sim world's licensed roster
 // is 81 seats, ~44 of them zero-usage this window, so the median and 30th
 // percentile are BOTH 0 credits (a real property of this fixture world), and
-// core's spread is 0 (p50 === 0 -> guarded ratio):
+// core's spread is 0 (p50 === 0 -> guarded ratio). CALENDAR-ANCHORED windows:
+// months=N = the current calendar month (June, to 06-12) + the (N-1) prior
+// calendar months that carry data.
 //
-//   months=1  window 2026-05-13 .. 2026-06-12 (not truncated)
-//     n=81  p30=0  p50=0  p95=5,210 ($52.10)  mean=1,710  spread=0.00x
-//     usersAboveP95=4  tailShare=28.2%
-//     universal ULB = 4,600 cr/mo ($46) -> ×1 = 4,600 cr, 8 users above
-//   months=9  window 2026-03-01 .. 2026-06-12 (TRUNCATED)
+//   months=1  June-to-date only (2026-06-01 .. 2026-06-12), monthsIncluded=1,
+//     not truncated
+//     n=81  p30=0  p50=0  p95=4,760 ($47.60)  spread=0.00x  usersAboveP95=4
+//     universal ULB = 4,600 cr/mo ($46) -> ×1 = 4,600 cr, 6 users above
+//   months=9  Mar-Jun contribute (2026-03-01 .. 2026-06-12), monthsIncluded=4
+//     (TRUNCATED: 4 of 9 requested months have data)
 //     p95=17,890 ($179)
-//     universal ULB ×9 = 41,400 cr -> beyond xMax (33,078) -> clamped label
-//     "Universal ULB · 41,400 cr →", "0 users above" (provably 0 when clamped)
+//     universal ULB ×4 = 18,400 cr ($184) -> within xMax (33,078), NOT clamped
+//     -> label "Universal ULB · 18,400 cr · $184", 4 users above
 test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-sync distribution view across windows', async () => {
   const appDir = path.join(__dirname, '..');
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-users-dist-'));
@@ -113,23 +117,23 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
     const dist = window.locator('[data-testid="distribution"]');
     await expect(dist).toBeVisible();
 
-    // months=1 (default window): date caption + tiles + chart + markers.
-    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('13 May – 12 Jun 2026');
+    // months=1 (default window): calendar-anchored caption + tiles + chart + markers.
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('Jun (to 12 Jun) 2026');
     await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('0 cr');
     await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('0 cr');
-    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('5,210 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('4,760 cr');
     await expect(window.locator('[data-testid="distribution-tile-spread-value"]')).toHaveText('0.00×');
 
     // Chart present: the SVG, 28 histogram bins, and the percentile/ULB marker pills.
     await expect(window.locator('.distribution__svg')).toHaveCount(1);
     await expect(window.locator('[data-testid="distribution-bar"]')).toHaveCount(28);
     await expect(
-      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'P95 · 5,210 cr · $52.10' }),
+      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'P95 · 4,760 cr · $47.60' }),
     ).toBeVisible();
     await expect(
       window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 4,600 cr · $46.00' }),
     ).toBeVisible();
-    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('8 users above');
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('6 users above');
 
     // Insight strip: live-computed template copy (median 0, well under the $46 ULB).
     await expect(window.locator('[data-testid="distribution-insight"]')).toContainText('well under the $46.00 universal ULB');
@@ -144,23 +148,24 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
     await expect(window.locator('.distribution__svg')).toHaveCount(1);
     await assertNoPillOverlap(window, '3 months');
 
-    // --- Switch to 9 months: truncation caption, coverage range, changed tiles,
-    // and the clamped ULB overlay (×9 exceeds the chart's xMax). ---
+    // --- Switch to 9 months: truncation caption, month-aware range, changed
+    // tiles, and the ×4 ULB overlay (only Mar-Jun of the 9 requested months have
+    // data; ×4 = 18,400 cr stays within xMax, so NOT clamped). ---
     await window.getByRole('tab', { name: '9 months' }).click();
     await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText(
-      '1 Mar – 12 Jun 2026 · truncated to available history',
+      'Mar – Jun (to 12 Jun) 2026 · truncated to available history',
     );
     await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('17,890 cr');
     await expect(window.locator('[data-testid="distribution-ulb-note"]')).toHaveText(
-      'ULB line shown ×9 for multi-month windows (the ULB is a monthly cap).',
+      'ULB line shown ×4 — 4 of 9 requested months have data (the ULB is a monthly cap).',
     );
     await expect(
-      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 41,400 cr →' }),
+      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 18,400 cr · $184' }),
     ).toBeVisible();
-    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('0 users above');
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('4 users above');
 
-    // Regression guard (9 month window): P95 (17,890 cr) and the clamped ULB
-    // marker (pinned at plotRight) are the closest pair here.
+    // Regression guard (9 month window): the marker pills still never overlap
+    // (P95 17,890 cr and the ULB at 18,400 cr are the closest pair here).
     await assertNoPillOverlap(window, '9 months');
 
     // --- Back to Table: the regression guard that the toggle still swaps views. ---
@@ -285,13 +290,13 @@ test('Distribution "Per month" lens (healthy): toggle switches to per-user-month
 // selector re-seeds MSW AND re-runs the app's syncNow (setScenario, App.tsx),
 // so the Distribution view (a pure local-SQLite read) renders the new world on
 // the remount. Every pin is the SAME distribution proven by the data package's
-// usage-distribution-long-tail.test.ts (independent derivation). With the
-// full-roster Mar/Apr/May backfill, all 81 seats carry monthly history:
-//   Totals months=1  window 2026-05-13 .. 2026-06-12 (June cycle + May 13-31)
-//     P30 1,126 · P50 1,965 · P95 7,436 cr · 19 users above the 4,600 ULB
-//   Per month months=1  [2026-05] 81 user-months
+// usage-distribution-long-tail.test.ts (independent derivation). Totals is now
+// CALENDAR-ANCHORED (current month June-to-date + prior contributing months):
+//   Totals months=1  June-to-date (2026-06-01 .. 2026-06-12)
+//     P30 649 · P50 1,100 · P95 4,600 cr · 3 users above the 4,600 ULB
+//   Per month months=1  [2026-05] 81 user-months  (per-month lens UNCHANGED)
 //     P30 697 · P50 1,172 · P95 6,699 cr · 8 user-months above the 4,600 ULB
-//   Per month months=3  [Mar,Apr,May] 243 user-months
+//   Per month months=3  [Mar,Apr,May] 243 user-months  (UNCHANGED)
 //     P50 1,207 · P95 6,000 cr · 25 user-months above the 4,600 ULB
 test('Long tail scenario: the Distribution view shows a non-zero P50 and a non-zero "N users above ULB" pill', async () => {
   const appDir = path.join(__dirname, '..');
@@ -323,16 +328,16 @@ test('Long tail scenario: the Distribution view shows a non-zero P50 and a non-z
     const dist = window.locator('[data-testid="distribution"]');
     await expect(dist).toBeVisible();
 
-    // Same trailing-month window as 'healthy', but a real distribution now.
-    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('13 May – 12 Jun 2026');
+    // Same June-to-date window as 'healthy', but a real distribution now.
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText('Jun (to 12 Jun) 2026');
     // The headline: a NON-ZERO median (the whole reason this scenario exists).
-    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('1,126 cr');
-    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,965 cr');
-    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('7,436 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('649 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('1,100 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('4,600 cr');
 
-    // The ULB overlay pill: a NON-ZERO "N users above" (19 seats above the
-    // 4,600 universal ULB once the June cycle + May tail are summed).
-    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('19 users above');
+    // The ULB overlay pill: a NON-ZERO "N users above" (3 seats above the ×1 =
+    // 4,600 universal ULB from the June-to-date draw alone).
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('3 users above');
 
     // --- Per month lens: the full-roster backfill makes this a non-zero-median
     // bell curve too (the point of the backfill; 'healthy' reads P30=P50=0). ---

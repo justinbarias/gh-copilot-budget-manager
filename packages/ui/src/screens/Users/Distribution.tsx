@@ -19,21 +19,39 @@ const WINDOWS: ReadonlyArray<{ months: Months; button: string; label: string; ph
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
-// "13 May – 12 Jun 2026" (year once when both ends share a year, else on both);
+// Calendar-anchored Totals caption (maintainer-approved 2026-07-10): the window
+// is the current calendar month to date + the prior contributing months, so the
+// caption names MONTHS, not a rolling day range. `fromDate` is the first day of
+// the oldest contributing month; `toDate` is the latest nonzero day (current
+// month, "to <day>"). By calendar span between them:
+//   1 month  -> "Jun (to 12 Jun) 2026"
+//   2 months -> "Jun + Jul (to 9 Jul) 2026"
+//   >=3      -> "Apr – Jun (to 12 Jun) 2026"
+// Year is shown once at the end when both ends share a year, else on the older
+// boundary too. Truncation is appended visibly (brief), never a tooltip.
 // UTC-fixed, no leading zero -- same date discipline as UsersTable's
-// BLOCK_DATE_FORMATTER. Truncation is appended visibly (brief), never a tooltip.
-function formatDateRange(fromDate: string, toDate: string, truncated: boolean): string {
+// BLOCK_DATE_FORMATTER.
+function formatWindowCaption(fromDate: string, toDate: string, truncated: boolean): string {
   if (!fromDate || !toDate) return '';
   const parse = (iso: string) => {
     const d = new Date(`${iso}T00:00:00.000Z`);
-    return { day: d.getUTCDate(), mon: MONTH_NAMES[d.getUTCMonth()], year: d.getUTCFullYear() };
+    return { day: d.getUTCDate(), monIdx: d.getUTCMonth(), mon: MONTH_NAMES[d.getUTCMonth()], year: d.getUTCFullYear() };
   };
-  const a = parse(fromDate);
-  const b = parse(toDate);
-  const left = a.year === b.year ? `${a.day} ${a.mon}` : `${a.day} ${a.mon} ${a.year}`;
-  const right = `${b.day} ${b.mon} ${b.year}`;
-  const base = `${left} – ${right}`;
-  return truncated ? `${base} · truncated to available history` : base;
+  const a = parse(fromDate); // oldest contributing month (its 1st)
+  const b = parse(toDate); // current month, to this day
+  const spanMonths = (b.year - a.year) * 12 + (b.monIdx - a.monIdx) + 1;
+  const sameYear = a.year === b.year;
+  const toAnn = `(to ${b.day} ${b.mon})`;
+  const olderLabel = sameYear ? a.mon : `${a.mon} ${a.year}`;
+  let phrase: string;
+  if (spanMonths <= 1) {
+    phrase = `${b.mon} ${toAnn} ${b.year}`;
+  } else if (spanMonths === 2) {
+    phrase = `${olderLabel} + ${b.mon} ${toAnn} ${b.year}`;
+  } else {
+    phrase = `${olderLabel} – ${b.mon} ${toAnn} ${b.year}`;
+  }
+  return truncated ? `${phrase} · truncated to available history` : phrase;
 }
 
 // Per-month caption: "Mar–May 2026 · 243 user-months · current month excluded
@@ -73,6 +91,16 @@ function formatUnattributedNote(unattributed: Record<string, number> | undefined
       return ` · + ${n.toLocaleString()} unattributed credits in ${MONTH_NAMES[m - 1]} ${y} (departed users)`;
     })
     .join('');
+}
+
+// Totals lens (monthly-backfill only): appends "+ N unattributed credits
+// (departed users)" when the window carries a nonzero window-total remainder
+// (getUsageDistribution's unattributedCredits; live-github only, absent in sim).
+// The Totals figure is a single window total (not per-month like the per-month
+// lens), so no month is named. Empty string when there is nothing to surface.
+function formatTotalsUnattributedNote(unattributed: number | undefined): string {
+  if (!unattributed || unattributed <= 0) return '';
+  return ` · + ${unattributed.toLocaleString()} unattributed credits (departed users)`;
 }
 
 // The universal ULB's monthly credit cap, resolved from getControls() the same
@@ -224,9 +252,12 @@ export function Distribution() {
   const n = rawUsers.length;
   const { p30, p50, p95, mean, spread, usersAboveP95, tailSharePct } = distribution;
 
-  // ULB overlay: totals scales the monthly cap by the window's month count;
-  // per-month reads the plain monthly amount directly (its whole point).
-  const ulbValue = monthlyUlb === null ? null : mode === 'permonth' ? monthlyUlb : monthlyUlb * months;
+  // ULB overlay: totals scales the monthly cap by the number of CONTRIBUTING
+  // months (monthsIncluded, NOT the requested N -- a requested month with no
+  // data contributes nothing, so the ULB line reflects the months actually
+  // summed); per-month reads the plain monthly amount directly (its whole point).
+  const totalsMonthsIncluded = totalsData?.monthsIncluded ?? months;
+  const ulbValue = monthlyUlb === null ? null : mode === 'permonth' ? monthlyUlb : monthlyUlb * totalsMonthsIncluded;
   const ulbUsersAbove = ulbValue !== null ? countAbove(rawUsers, ulbValue) : null;
 
   const dateCaption =
@@ -234,7 +265,8 @@ export function Distribution() {
       ? formatMonthCaption(obsData.months, obsData.observations.length, obsData.truncated) +
         formatUnattributedNote(obsData.unattributedCredits)
       : totalsData
-        ? formatDateRange(totalsData.fromDate, totalsData.toDate, totalsData.truncated)
+        ? formatWindowCaption(totalsData.fromDate, totalsData.toDate, totalsData.truncated) +
+          formatTotalsUnattributedNote(totalsData.unattributedCredits)
         : '';
 
   const noun = mode === 'permonth' ? 'user-month' : 'user';
@@ -257,8 +289,8 @@ export function Distribution() {
       return `${head}; no universal ULB is set. ${tail}`;
     }
     const ulbPhrase =
-      months > 1
-        ? `${fmtDollars(ulbValue)} universal ULB (×${months} the ${fmtDollars(monthlyUlb)} monthly cap)`
+      totalsMonthsIncluded > 1
+        ? `${fmtDollars(ulbValue)} universal ULB (×${totalsMonthsIncluded} the ${fmtDollars(monthlyUlb)} monthly cap)`
         : `${fmtDollars(monthlyUlb)} universal ULB`;
     const relation = p50 < ulbValue ? 'well under' : 'above';
     return `${head} — ${relation} the ${ulbPhrase}. ${tail}`;
@@ -298,9 +330,11 @@ export function Distribution() {
             <span className="distribution__footer-note mono" data-testid="distribution-ulb-note">
               No universal ULB set — no per-user ceiling to overlay.
             </span>
-          ) : mode === 'totals' && months > 1 ? (
+          ) : mode === 'totals' && totalsMonthsIncluded > 1 ? (
             <span className="distribution__footer-note mono" data-testid="distribution-ulb-note">
-              ULB line shown ×{months} for multi-month windows (the ULB is a monthly cap).
+              {totalsData?.truncated
+                ? `ULB line shown ×${totalsMonthsIncluded} — ${totalsMonthsIncluded} of ${months} requested months have data (the ULB is a monthly cap).`
+                : `ULB line shown ×${totalsMonthsIncluded} for multi-month windows (the ULB is a monthly cap).`}
             </span>
           ) : null}
         </div>

@@ -86,71 +86,78 @@ function seedMainWorld(): void {
 }
 
 describe('getUsageDistribution', () => {
-  it('months=1: window [2026-05-15, 2026-06-14] (toDate minus 1 month plus 1 day), boundary days inclusive, not truncated', async () => {
+  it('months=1: the CURRENT calendar month (June, to 06-14) only, sums bounded by toDate, not truncated', async () => {
     seedMainWorld();
     const result = await client.getUsageDistribution({ months: 1 });
 
-    // toDate = MAX(date) = 2026-06-14; requested from = 06-14 minus 1 month
-    // (2026-05-14) + 1 day = 2026-05-15; earliest (2026-03-01) is older, so
-    // no truncation.
+    // Calendar-anchored: toDate = MAX NONZERO date = 2026-06-14, so the current
+    // month is JUNE and months=1 is June-to-date only. fromDate = first day of
+    // the oldest (only) contributing month = 2026-06-01. monthsIncluded=1 == N,
+    // so not truncated.
     expect(result.toDate).toBe('2026-06-14');
-    expect(result.fromDate).toBe('2026-05-15');
+    expect(result.fromDate).toBe('2026-06-01');
     expect(result.truncated).toBe(false);
+    expect(result.monthsIncluded).toBe(1);
+    expect(result.unattributedCredits).toBeUndefined();
 
-    // Hand-computed sums over [05-15, 06-14]:
-    //   alice: 70 (ON fromDate, included) + 30 (ON toDate, included) = 100;
-    //          her 05-14 row is ONE DAY BEFORE fromDate -> excluded.
-    //   eve:   40 (fact-only, no license -> null cost center)
-    //   bob:   25.4 -> Math.round -> 25
-    //   carol: 0 (licensed roster inclusion; her rows are all pre-window)
+    // Hand-computed June sums (rows dated 2026-06-*, <= toDate 06-14):
+    //   eve:   40 (06-10; fact-only, no license -> null cost center)
+    //   alice: 30 (06-14); her 05-14/05-15 rows are in MAY -> excluded now
+    //   bob:   25.4 (06-01) -> Math.round -> 25
+    //   carol: 0 (roster inclusion; her rows are all in March)
     //   dave:  0 (licensed, zero usage anywhere)
     // Order: creditsUsed desc, then login asc.
     expect(result.users).toEqual([
-      { userLogin: 'alice', costCenterName: 'Alpha', creditsUsed: 100 },
       { userLogin: 'eve', costCenterName: null, creditsUsed: 40 },
+      { userLogin: 'alice', costCenterName: 'Alpha', creditsUsed: 30 },
       { userLogin: 'bob', costCenterName: null, creditsUsed: 25 },
       { userLogin: 'carol', costCenterName: 'Beta', creditsUsed: 0 },
       { userLogin: 'dave', costCenterName: 'Alpha', creditsUsed: 0 },
     ]);
   });
 
-  it('months=3: window [2026-03-15, 2026-06-14]; a fact ON fromDate counts, the day before does not', async () => {
+  it('months=3: current month June + the two prior calendar months (Apr, May), all daily; not truncated', async () => {
     seedMainWorld();
     const result = await client.getUsageDistribution({ months: 3 });
 
-    // Requested from = 06-14 minus 3 months (2026-03-14) + 1 day = 2026-03-15
-    // >= earliest 2026-03-01 -> not truncated.
+    // Requested calendar months = [Jun (current), May, Apr]; all three carry
+    // nonzero daily data (no monthly facts in sim), so monthsIncluded=3 == N ->
+    // not truncated. fromDate = first day of the oldest contributing month
+    // (April) = 2026-04-01. MARCH is NOT in the window.
     expect(result.toDate).toBe('2026-06-14');
-    expect(result.fromDate).toBe('2026-03-15');
+    expect(result.fromDate).toBe('2026-04-01');
     expect(result.truncated).toBe(false);
+    expect(result.monthsIncluded).toBe(3);
 
-    // Hand-computed sums over [03-15, 06-14]:
-    //   bob:   200 + 25.4 = 225.4 -> 225
-    //   alice: 50 + 70 + 30 = 150 (03-01 excluded)
-    //   eve:   40
-    //   carol: 10 (03-15 ON fromDate included; 03-14 one day before, excluded)
+    // Hand-computed sums over Apr+May+Jun:
+    //   bob:   200 (04-01) + 25.4 (06-01) = 225.4 -> 225
+    //   alice: 50 (05-14) + 70 (05-15) + 30 (06-14) = 150
+    //   eve:   40 (06-10)
+    //   carol: 0 (her only rows are in MARCH -> outside the 3-month window)
     //   dave:  0
     expect(result.users).toEqual([
       { userLogin: 'bob', costCenterName: null, creditsUsed: 225 },
       { userLogin: 'alice', costCenterName: 'Alpha', creditsUsed: 150 },
       { userLogin: 'eve', costCenterName: null, creditsUsed: 40 },
-      { userLogin: 'carol', costCenterName: 'Beta', creditsUsed: 10 },
+      { userLogin: 'carol', costCenterName: 'Beta', creditsUsed: 0 },
       { userLogin: 'dave', costCenterName: 'Alpha', creditsUsed: 0 },
     ]);
   });
 
-  it('months=9 over ~3.5 months of history: fromDate clamps to the earliest covered day and truncated=true', async () => {
+  it('months=9 over ~4 calendar months of data: only Mar-Jun contribute, fromDate = 1st of the oldest, truncated=true', async () => {
     seedMainWorld();
     const result = await client.getUsageDistribution({ months: 9 });
 
-    // Requested from = 2026-06-14 minus 9 months (2025-09-14) + 1 day =
-    // 2025-09-15 < earliest 2026-03-01 -> clamp + truncate.
+    // Requested calendar months = [Jun..Oct-2025]; only Jun (current), May, Apr,
+    // Mar carry data -> monthsIncluded=4 < 9 -> truncated. fromDate = first day
+    // of the oldest contributing month (March) = 2026-03-01.
     expect(result.toDate).toBe('2026-06-14');
     expect(result.fromDate).toBe('2026-03-01');
     expect(result.truncated).toBe(true);
+    expect(result.monthsIncluded).toBe(4);
 
-    // Full-coverage sums: alice 100+50+70+30 = 250; bob 225.4 -> 225;
-    // eve 40; carol 5+10 = 15; dave 0.
+    // Full-coverage sums: alice 100(Mar)+50+70(May)+30(Jun) = 250; bob 200(Apr)+
+    // 25.4(Jun) -> 225; eve 40; carol 5+10 (Mar) = 15; dave 0.
     expect(result.users).toEqual([
       { userLogin: 'alice', costCenterName: 'Alpha', creditsUsed: 250 },
       { userLogin: 'bob', costCenterName: null, creditsUsed: 225 },
@@ -160,21 +167,22 @@ describe('getUsageDistribution', () => {
     ]);
   });
 
-  it('clamps the day-of-month across a short target month: toDate 2026-07-31, months=1 -> fromDate 2026-07-01 (exactly the month of July)', async () => {
-    // 07-31 minus 1 month = "June 31", clamped to June 30, + 1 day = July 1.
+  it('current month is the calendar month of toDate: toDate 2026-07-31, months=1 -> the whole month of July', async () => {
+    // Calendar-anchored: the current month is JULY (toDate 07-31); June rows are
+    // a prior month, absent from the 1-month window. fromDate = 2026-07-01.
     const s1 = addSnapshot();
     addFacts(s1, [
-      { date: '2026-06-30', userId: '3001', userLogin: 'zed', creditsUsed: 11 }, // day before fromDate -> excluded
-      { date: '2026-07-01', userId: '3001', userLogin: 'zed', creditsUsed: 7 }, // ON fromDate -> included
-      { date: '2026-07-31', userId: '3001', userLogin: 'zed', creditsUsed: 3 }, // ON toDate -> included
+      { date: '2026-06-30', userId: '3001', userLogin: 'zed', creditsUsed: 11 }, // JUNE -> prior month, excluded at N=1
+      { date: '2026-07-01', userId: '3001', userLogin: 'zed', creditsUsed: 7 }, // July
+      { date: '2026-07-31', userId: '3001', userLogin: 'zed', creditsUsed: 3 }, // July (toDate)
     ]);
 
     const result = await client.getUsageDistribution({ months: 1 });
     expect(result.toDate).toBe('2026-07-31');
     expect(result.fromDate).toBe('2026-07-01');
-    // Earliest covered day (2026-06-30) is OLDER than the requested start, so
-    // the window is fully covered -> not truncated.
     expect(result.truncated).toBe(false);
+    expect(result.monthsIncluded).toBe(1);
+    // July only: 7 + 3 = 10 (the June 30 row is a prior month, not in N=1).
     expect(result.users).toEqual([{ userLogin: 'zed', costCenterName: null, creditsUsed: 10 }]);
   });
 
@@ -197,11 +205,13 @@ describe('getUsageDistribution', () => {
     addFacts(s2, [{ date: '2026-06-10', userId: '1001', userLogin: 'alice', creditsUsed: 60 }]);
 
     const result = await liveClient.getUsageDistribution({ months: 1 });
-    // Coverage union = {06-01, 06-10}: toDate 2026-06-10; requested from =
-    // 05-10 + 1 day = 2026-05-11 < earliest 2026-06-01 -> clamp + truncate.
+    // Coverage union = {06-01, 06-10}: toDate 2026-06-10 -> current month June.
+    // months=1 is June-to-date; fromDate = 2026-06-01; monthsIncluded=1 == N ->
+    // not truncated.
     expect(result.toDate).toBe('2026-06-10');
     expect(result.fromDate).toBe('2026-06-01');
-    expect(result.truncated).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(result.monthsIncluded).toBe(1);
     // 10 (S1-only date) + 60 (S2 wins over S1's 100) = 70 -- NOT 110, NOT 170.
     expect(result.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 70 }]);
   });
@@ -219,10 +229,11 @@ describe('getUsageDistribution', () => {
       { date: '2026-06-05', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
       { date: '2026-06-12', userId: '1001', userLogin: 'alice', creditsUsed: 80 },
     ]);
-    // A alone: toDate 2026-06-12, months=1 window [2026-05-13, 2026-06-12],
-    // earliest 2026-06-05 -> clamp+truncate; alice 100+80 = 180.
+    // A alone: toDate 2026-06-12 -> current month June; months=1 is June-to-date;
+    // both A rows are in June, so alice 100+80 = 180.
     const afterA = await client.getUsageDistribution({ months: 1 });
     expect(afterA.toDate).toBe('2026-06-12');
+    expect(afterA.fromDate).toBe('2026-06-01');
     expect(afterA.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 180 }]);
 
     // Snapshot B -- a LATER world (the metered cliff, Aug/Sep). Under the old
@@ -232,14 +243,15 @@ describe('getUsageDistribution', () => {
       { date: '2026-08-02', userId: '1001', userLogin: 'alice', creditsUsed: 200 },
       { date: '2026-09-01', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
     ]);
-    // Now ONLY B is read: toDate 2026-09-01, window [2026-08-02, 2026-09-01],
-    // earliest 2026-08-02 == requestedFrom -> not truncated; A's June dates are
-    // absent entirely; alice 200+50 = 250.
+    // Now ONLY B is read: toDate 2026-09-01 -> current month SEPTEMBER; months=1
+    // is Sept-to-date only, so the 08-02 (August) row is a PRIOR month and drops
+    // out. fromDate 2026-09-01; monthsIncluded=1 -> not truncated; alice = 50.
     const afterB = await client.getUsageDistribution({ months: 1 });
     expect(afterB.toDate).toBe('2026-09-01');
-    expect(afterB.fromDate).toBe('2026-08-02');
+    expect(afterB.fromDate).toBe('2026-09-01');
     expect(afterB.truncated).toBe(false);
-    expect(afterB.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 250 }]);
+    expect(afterB.monthsIncluded).toBe(1);
+    expect(afterB.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 50 }]);
 
     // Snapshot C -- back to a June world. Only C is read; B's Aug/Sep dates gone.
     const sC = addSnapshot();
@@ -248,11 +260,11 @@ describe('getUsageDistribution', () => {
       { date: '2026-06-03', userId: '1001', userLogin: 'alice', creditsUsed: 30 },
       { date: '2026-06-20', userId: '1001', userLogin: 'alice', creditsUsed: 40 },
     ]);
-    // toDate 2026-06-20, window [2026-05-21, 2026-06-20], earliest 2026-06-03
-    // -> clamp+truncate; alice 30+40 = 70.
+    // toDate 2026-06-20 -> current month June; months=1 is June-to-date; both C
+    // rows are in June; fromDate 2026-06-01; alice 30+40 = 70.
     const afterC = await client.getUsageDistribution({ months: 1 });
     expect(afterC.toDate).toBe('2026-06-20');
-    expect(afterC.fromDate).toBe('2026-06-03');
+    expect(afterC.fromDate).toBe('2026-06-01');
     expect(afterC.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 70 }]);
   });
 
@@ -368,13 +380,13 @@ describe('getUsageDistribution', () => {
       ]);
 
       const result = await client.getUsageDistribution({ months: 1 });
-      // Nonzero bounds: earliest 2026-07-01, toDate 2026-07-08 (the zero-filled
-      // Apr-Jun rows are ignored). months=1 requested from = 07-08 minus 1 month
-      // (06-08) + 1 day = 2026-06-09; earliest 07-01 > 06-09 -> truncated, fromDate
-      // clamps to 07-01. Window [07-01, 07-08]: alice 100+50 = 150; bob 40.
+      // Nonzero toDate 2026-07-08 (the zero-filled Apr-Jun rows are ignored) ->
+      // current month JULY; months=1 is July-to-date. fromDate 2026-07-01;
+      // monthsIncluded=1 -> not truncated. July: alice 100+50 = 150; bob 40.
       expect(result.toDate).toBe('2026-07-08');
       expect(result.fromDate).toBe('2026-07-01');
-      expect(result.truncated).toBe(true);
+      expect(result.truncated).toBe(false);
+      expect(result.monthsIncluded).toBe(1);
       expect(result.users).toEqual([
         { userLogin: 'alice', costCenterName: null, creditsUsed: 150 },
         { userLogin: 'bob', costCenterName: null, creditsUsed: 40 },
@@ -392,12 +404,14 @@ describe('getUsageDistribution', () => {
       ]);
 
       const result = await client.getUsageDistribution({ months: 1 });
-      // toDate is 2026-05-20, NOT the zero-filled 2026-06-10. months=1 requested
-      // from = 04-20 + 1 day = 2026-04-21; earliest 05-01 > 04-21 -> truncated,
-      // fromDate clamps to 05-01. Window [05-01, 05-20]: alice 100+50 = 150.
+      // toDate is 2026-05-20 (NOT the zero-filled 06-10) -> current month MAY;
+      // months=1 is May-to-date; fromDate 2026-05-01; monthsIncluded=1 -> not
+      // truncated. May: alice 100+50 = 150 (the zero-filled June rows add nothing
+      // and June is not even in the 1-month window).
       expect(result.toDate).toBe('2026-05-20');
       expect(result.fromDate).toBe('2026-05-01');
-      expect(result.truncated).toBe(true);
+      expect(result.truncated).toBe(false);
+      expect(result.monthsIncluded).toBe(1);
       expect(result.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 150 }]);
     });
 
@@ -471,12 +485,13 @@ describe('getUsageDistribution -- zero-erosion winner rule', () => {
 
     const result = await liveClient().getUsageDistribution({ months: 1 });
     // Winners: 07-01 -> A (B is all-zero there); 07-02 -> B (corrected, both
-    // nonzero, higher id); 07-05,07-09 -> B only. Nonzero coverage 07-01..07-09.
-    // months=1 requested from = 07-09 minus 1 month (06-09) + 1 day = 06-10;
-    // earliest 07-01 > 06-10 -> truncated, fromDate clamps to 07-01.
+    // nonzero, higher id); 07-05,07-09 -> B only. Nonzero toDate 2026-07-09 ->
+    // current month JULY; months=1 is July-to-date (all winning rows are in
+    // July); fromDate 2026-07-01; monthsIncluded=1 -> not truncated.
     expect(result.toDate).toBe('2026-07-09');
     expect(result.fromDate).toBe('2026-07-01');
-    expect(result.truncated).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(result.monthsIncluded).toBe(1);
     // alice = 100 (A 07-01) + 35 (B 07-02) + 10 (B 07-05) + 7 (B 07-09) = 152.
     //   (Buggy latest-wins would take B's zero for 07-01 -> 52. The fix -> 152.)
     // bob   = 50 (A 07-01) + 25 (B 07-02) + 5 (B 07-05)             = 80.
@@ -503,9 +518,10 @@ describe('getUsageDistribution -- zero-erosion winner rule', () => {
     addGithubFacts(sB, [{ date: '2026-07-02', userId: '1001', userLogin: 'alice', creditsUsed: 60 }]);
 
     const result = await liveClient().getUsageDistribution({ months: 1 });
-    // Single covered date 07-02: toDate 07-02, window clamps to [07-02, 07-02].
+    // Single covered date 07-02: toDate 07-02 -> current month July; months=1 is
+    // July-to-date; fromDate = first day of the current month = 2026-07-01.
     expect(result.toDate).toBe('2026-07-02');
-    expect(result.fromDate).toBe('2026-07-02');
+    expect(result.fromDate).toBe('2026-07-01');
     expect(result.users).toEqual([
       { userLogin: 'alice', costCenterName: null, creditsUsed: 60 }, // B wins, NOT A's 100
       { userLogin: 'bob', costCenterName: null, creditsUsed: 0 }, // roster zero -- absent from the winning snap B
@@ -523,12 +539,139 @@ describe('getUsageDistribution -- zero-erosion winner rule', () => {
     ]);
     const result = await liveClient().getUsageDistribution({ months: 1 });
     expect(result.toDate).toBe('2026-07-03');
-    expect(result.fromDate).toBe('2026-07-01'); // earliest, truncated
-    expect(result.truncated).toBe(true);
+    expect(result.fromDate).toBe('2026-07-01'); // first day of the current month (July)
+    expect(result.truncated).toBe(false); // monthsIncluded=1 == N
+    expect(result.monthsIncluded).toBe(1);
     // alice 40 + 60 = 100 across the two real days; the idle 07-02 adds nothing.
     expect(result.users).toEqual([
       { userLogin: 'alice', costCenterName: null, creditsUsed: 100 },
       { userLogin: 'bob', costCenterName: null, creditsUsed: 0 },
     ]);
+  });
+});
+
+// Calendar-anchored windows joining the MONTHLY per-user backfill (migration
+// 0007). A PRIOR calendar month uses its monthly fact when one exists (MONTHLY
+// WINS over daily -- billing is the money source of truth), else nonzero daily
+// coverage, else contributes nothing. Monthly facts are github-source only, so
+// these run on a 'github' client. Every value is hand-computed from the seeded
+// rows.
+describe('getUsageDistribution -- calendar-anchored windows with monthly-fact backfill', () => {
+  function liveClient(): ApiClient {
+    return createGitHubApiClient({ enterprise: 'test-ent', db, source: 'github' });
+  }
+  function addGithubSnapshot(): number {
+    return db.insert(schema.snapshot).values({ capturedAt: new Date('2026-07-11T00:00:00Z'), source: 'github' }).returning().get().id;
+  }
+  function addGithubFacts(snapshotId: number, rows: SeedFact[]): void {
+    db.insert(schema.creditsUsedFact)
+      .values(rows.map((r) => ({ snapshotId, date: r.date, userId: r.userId, userLogin: r.userLogin ?? null, creditsUsed: r.creditsUsed })))
+      .run();
+  }
+  interface MonthlyRow {
+    month: string;
+    userId: string | null;
+    userLogin: string | null;
+    creditsUsed: number;
+  }
+  function addMonthlyFacts(snapshotId: number, rows: MonthlyRow[]): void {
+    db.insert(schema.creditsUsedMonthlyFact)
+      .values(rows.map((r) => ({ snapshotId, month: r.month, userId: r.userId, userLogin: r.userLogin, creditsUsed: r.creditsUsed })))
+      .run();
+  }
+  function seedTwoUserLicenses(): void {
+    db.insert(schema.license)
+      .values([
+        { userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null },
+        { userId: '1002', userLogin: 'bob', costCenterId: null, assignedAt: null },
+      ])
+      .run();
+  }
+
+  it('live-shaped: daily July 1-9 + monthly-fact June (+ NULL remainder); N=1 -> July only, N=3 -> June+July truncated with unattributed', async () => {
+    seedTwoUserLicenses();
+    const s = addGithubSnapshot();
+    addGithubFacts(s, [
+      { date: '2026-07-01', userId: '1001', userLogin: 'alice', creditsUsed: 100 },
+      { date: '2026-07-09', userId: '1001', userLogin: 'alice', creditsUsed: 50 },
+      { date: '2026-07-03', userId: '1002', userLogin: 'bob', creditsUsed: 40 },
+    ]);
+    // Closed-month billing backfill for June: alice 5000, bob 3000, remainder 700.
+    addMonthlyFacts(s, [
+      { month: '2026-06', userId: '1001', userLogin: 'alice', creditsUsed: 5000 },
+      { month: '2026-06', userId: '1002', userLogin: 'bob', creditsUsed: 3000 },
+      { month: '2026-06', userId: null, userLogin: null, creditsUsed: 700 },
+    ]);
+
+    // N=1: current month JULY only (June is a prior month, out of a 1-month
+    // window). No monthly fact enters -> no unattributed remainder surfaced.
+    const m1 = await liveClient().getUsageDistribution({ months: 1 });
+    expect(m1.toDate).toBe('2026-07-09');
+    expect(m1.fromDate).toBe('2026-07-01');
+    expect(m1.truncated).toBe(false);
+    expect(m1.monthsIncluded).toBe(1);
+    expect(m1.unattributedCredits).toBeUndefined();
+    expect(m1.users).toEqual([
+      { userLogin: 'alice', costCenterName: null, creditsUsed: 150 }, // 100 + 50
+      { userLogin: 'bob', costCenterName: null, creditsUsed: 40 },
+    ]);
+
+    // N=3: requested [Jul, Jun, May]. July daily + June monthly fact; May has no
+    // data -> monthsIncluded=2 < 3 -> truncated. fromDate = 1st of oldest
+    // contributing month (June). alice 150 + 5000 = 5150; bob 40 + 3000 = 3040.
+    // The NULL-user June remainder (700) is EXCLUDED from per-user totals and
+    // surfaced as the window-total unattributedCredits.
+    const m3 = await liveClient().getUsageDistribution({ months: 3 });
+    expect(m3.toDate).toBe('2026-07-09');
+    expect(m3.fromDate).toBe('2026-06-01');
+    expect(m3.truncated).toBe(true);
+    expect(m3.monthsIncluded).toBe(2);
+    expect(m3.unattributedCredits).toBe(700);
+    expect(m3.users).toEqual([
+      { userLogin: 'alice', costCenterName: null, creditsUsed: 5150 },
+      { userLogin: 'bob', costCenterName: null, creditsUsed: 3040 },
+    ]);
+  });
+
+  it('monthly wins: a month with BOTH daily coverage and a monthly fact uses the MONTHLY values for that month', async () => {
+    db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+    const s = addGithubSnapshot();
+    addGithubFacts(s, [
+      { date: '2026-05-10', userId: '1001', userLogin: 'alice', creditsUsed: 999 }, // daily MAY -- must be OVERRIDDEN by the monthly fact
+      { date: '2026-06-05', userId: '1001', userLogin: 'alice', creditsUsed: 100 }, // current month June (toDate)
+    ]);
+    addMonthlyFacts(s, [{ month: '2026-05', userId: '1001', userLogin: 'alice', creditsUsed: 4000 }]);
+
+    // N=3: [Jun, May, Apr]. June daily (100) + May MONTHLY (4000, NOT the daily
+    // 999) + April nothing -> monthsIncluded=2, truncated. alice 100 + 4000 = 4100.
+    const m3 = await liveClient().getUsageDistribution({ months: 3 });
+    expect(m3.toDate).toBe('2026-06-05');
+    expect(m3.fromDate).toBe('2026-05-01');
+    expect(m3.truncated).toBe(true);
+    expect(m3.monthsIncluded).toBe(2);
+    expect(m3.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 4100 }]);
+  });
+
+  it('gap month: daily Mar, nothing Apr, monthly May, daily current Jun -> contributing Mar/May/Jun, truncated at N=9, fromDate = Mar 1', async () => {
+    db.insert(schema.license).values({ userId: '1001', userLogin: 'alice', costCenterId: null, assignedAt: null }).run();
+    const s = addGithubSnapshot();
+    addGithubFacts(s, [
+      { date: '2026-03-15', userId: '1001', userLogin: 'alice', creditsUsed: 300 }, // daily March
+      { date: '2026-06-10', userId: '1001', userLogin: 'alice', creditsUsed: 200 }, // current month June (toDate)
+      // April: nothing at all.
+    ]);
+    addMonthlyFacts(s, [{ month: '2026-05', userId: '1001', userLogin: 'alice', creditsUsed: 1000 }]); // monthly May
+
+    // N=9: requested [Jun..Oct-2025]. Jun (current, 200) + May (monthly, 1000) +
+    // Mar (daily, 300) contribute; Apr and everything older contribute nothing
+    // -> monthsIncluded=3 < 9 -> truncated. fromDate = 1st of the oldest
+    // contributing month (March) = 2026-03-01. alice 200 + 1000 + 300 = 1500.
+    const m9 = await liveClient().getUsageDistribution({ months: 9 });
+    expect(m9.toDate).toBe('2026-06-10');
+    expect(m9.fromDate).toBe('2026-03-01');
+    expect(m9.truncated).toBe(true);
+    expect(m9.monthsIncluded).toBe(3);
+    expect(m9.unattributedCredits).toBeUndefined();
+    expect(m9.users).toEqual([{ userLogin: 'alice', costCenterName: null, creditsUsed: 1500 }]);
   });
 });

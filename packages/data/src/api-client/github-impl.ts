@@ -249,22 +249,6 @@ function poolCreditsForItem(item: Pick<UsageItem, 'discountAmount'>): number {
   return Math.round(item.discountAmount * 100);
 }
 
-// Distribution D2: the rolling window's requested start -- `toDate` minus
-// `months` calendar months, plus one day (inclusive both ends; the brief's
-// example: toDate 2026-06-14, months 1 -> 2026-05-15). The day-of-month is
-// clamped to the target month's length BEFORE the +1 day, so month-end
-// anchors stay calendar-true instead of JS-rolling into the next month
-// (2026-07-31 minus 1 month would otherwise be "June 31" -> Jul 1 -> +1 =
-// Jul 2; clamped it is Jun 30 -> +1 = Jul 1, i.e. exactly the month of July).
-// Pure (no I/O, no wall clock); all dates YYYY-MM-DD UTC.
-function distributionWindowStart(toDate: string, months: 1 | 3 | 9): string {
-  const [y, m, d] = toDate.split('-').map(Number) as [number, number, number];
-  const targetMonthIndex = m - 1 - months; // Date.UTC normalizes negative month indices
-  const lastDayOfTargetMonth = new Date(Date.UTC(y, targetMonthIndex + 1, 0)).getUTCDate();
-  const anchor = Date.UTC(y, targetMonthIndex, Math.min(d, lastDayOfTargetMonth));
-  return new Date(anchor + DAY_MS).toISOString().slice(0, 10);
-}
-
 // budget_amount is USD (PRD §2.3); ULBs cap a person's *credit* consumption
 // (CLAUDE.md §5), so the effective-ULB value the Users screen displays needs
 // the same $0.01/credit conversion poolCreditsForItem applies above.
@@ -1451,19 +1435,23 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return { licenseRows, costCenterNameById, licenseByUserId };
   }
 
-  // Distribution "Totals" lens: per-user credit sums over a rolling window
-  // anchored at the latest NONZERO covered day (toDate), reaching back `months`
-  // calendar months. Pure local-SQLite read over the shared union/latest-wins
-  // base; §6.9-exempt (no GitHub HTTP), source-scoped (§6.8). See types.ts's
+  // Distribution "Totals" lens: per-user credit sums over a CALENDAR-ANCHORED
+  // window -- the current calendar month (of toDate) to date + the (months-1)
+  // prior calendar months, aligned to billing cycles. Pure local-SQLite read
+  // over the shared union/latest-wins base + the monthly-fact backfill;
+  // §6.9-exempt (no GitHub HTTP), source-scoped (§6.8). See types.ts's
   // UsageDistributionWindow for the full semantics.
   //
-  // Zero-filled-history fix (2026-07-10): the window anchors on the NONZERO
-  // coverage bounds (readDistributionFactBaseFor). GitHub zero-fills per-user
-  // history beyond retention, so anchoring toDate on a zero-filled newest month
-  // would point the window at all-zero rows. In the live repro (zero-filled
-  // Apr-Jun + real July 1-8) toDate is 07-08, months=1 requests 06-09..07-08,
-  // and earliest 07-01 > 06-09 -> truncated=true, fromDate clamps to 07-01. A
-  // fully zero-filled source (base.toDate === '') hits the sentinel guard below.
+  // Calendar-anchored windows (maintainer-approved 2026-07-10): the CURRENT
+  // month sums daily facts up to toDate (unchanged winner rule + nonzero
+  // bounds); each PRIOR month uses its MONTHLY fact when one exists (billing
+  // wins over daily, same rule + rationale as the per-month lens), else daily
+  // sums when the month has nonzero daily coverage, else contributes nothing.
+  // A requested month with no data simply drops out, driving truncation.
+  //
+  // Zero-filled-history fix (2026-07-10): toDate is the latest NONZERO covered
+  // day, so a zero-filled newest month never anchors the current month. A fully
+  // zero-filled source (base.toDate === '') hits the sentinel guard below.
   async function getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow> {
     const months = input.months;
     // Runtime guard: the preload/IPC boundary is untyped at runtime, so the
@@ -1479,39 +1467,107 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // / never synced in this mode), OR the whole covered timeline is zero-fill
     // (base.toDate === '' -- zero-filled-history fix: earlier months GitHub
     // zero-filled carry no nonzero coverage bound). Either way there is no
-    // window to anchor.
+    // current month to anchor.
     if (base === null || base.toDate === '') {
       return { fromDate: '', toDate: '', truncated: false, users: [] };
     }
-    const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;
+    const { factRows, winnerSnapshotByDate, toDate } = base;
 
-    const requestedFrom = distributionWindowStart(toDate, months);
-    const truncated = requestedFrom < earliestDate;
-    const fromDate = truncated ? earliestDate : requestedFrom;
+    // MONTHLY facts (per-user-per-MONTH billing backfill; migration 0007).
+    // github-source only -- empty in sim, so the sim path is pure daily-sum.
+    const monthlyFacts = readMonthlyCreditsFactsFor(config.db, config.source);
 
-    // Per-user window sums over the winning rows only, [fromDate, toDate]
-    // inclusive; the login candidate is the latest-dated non-null user_login
-    // among the user's winning in-window rows (rung 1 of the ladder).
+    // Winning daily rows only, bucketed by calendar month (YYYY-MM). Zero rows
+    // are retained (they add nothing to any sum) but never make a prior month
+    // "contribute" -- the nonzero-coverage rule from readDistributionFactBaseFor.
+    const dailyByMonth = new Map<string, DistributionFactBase['factRows']>();
+    for (const row of factRows) {
+      if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
+      const m = row.date.slice(0, 7);
+      let arr = dailyByMonth.get(m);
+      if (!arr) {
+        arr = [];
+        dailyByMonth.set(m, arr);
+      }
+      arr.push(row);
+    }
+    const monthHasNonzeroDaily = (m: string): boolean => (dailyByMonth.get(m) ?? []).some((r) => r.creditsUsed > 0);
+
+    // Per-user window sums; the login candidate is the latest-dated non-null
+    // user_login among the user's contributing rows (rung 1 of the ladder).
     interface DistAccumulator {
       sum: number;
       loginDate: string;
       login: string | null;
     }
     const accByUserId = new Map<string, DistAccumulator>();
-    for (const row of factRows) {
-      if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
-      if (row.date < fromDate || row.date > toDate) continue;
-      let acc = accByUserId.get(row.userId);
+    const getAcc = (userId: string): DistAccumulator => {
+      let acc = accByUserId.get(userId);
       if (!acc) {
         acc = { sum: 0, loginDate: '', login: null };
-        accByUserId.set(row.userId, acc);
+        accByUserId.set(userId, acc);
       }
-      acc.sum += row.creditsUsed;
-      if (row.userLogin !== null && row.date >= acc.loginDate) {
-        acc.loginDate = row.date;
-        acc.login = row.userLogin;
+      return acc;
+    };
+    const noteLogin = (acc: DistAccumulator, login: string | null, dateKey: string): void => {
+      if (login !== null && dateKey >= acc.loginDate) {
+        acc.loginDate = dateKey;
+        acc.login = login;
       }
+    };
+
+    // Walk the requested calendar months newest-first: current month + (N-1)
+    // prior. Track which ones actually contribute (for truncation + fromDate)
+    // and accumulate the window-total unattributed remainder.
+    const currentMonth = toDate.slice(0, 7);
+    const contributingMonths: string[] = []; // newest-first; [current, ...]
+    let unattributedTotal = 0;
+
+    let month = currentMonth;
+    for (let i = 0; i < months; i++, month = previousMonth(month)) {
+      if (month === currentMonth) {
+        // CURRENT month: per-user DAILY sums up to toDate. Always contributes --
+        // toDate is a nonzero day inside it (guaranteed by base.toDate !== '').
+        for (const row of dailyByMonth.get(month) ?? []) {
+          if (row.date > toDate) continue; // "to date" end = the landed nonzero toDate
+          const acc = getAcc(row.userId);
+          acc.sum += row.creditsUsed;
+          noteLogin(acc, row.userLogin, row.date);
+        }
+        contributingMonths.push(month);
+      } else if (monthlyFacts.has(month)) {
+        // PRIOR month with a monthly fact: MONTHLY WINS over daily. Attributed
+        // rows are the per-user whole-month sums; the NULL-user remainder is
+        // EXCLUDED from per-user totals and surfaced as unattributedCredits.
+        // Pseudo-date `${month}-31` for the login priority so a later real daily
+        // login can still supersede it (parity with the per-month lens).
+        const facts = monthlyFacts.get(month)!;
+        for (const [userId, rec] of facts.attributed) {
+          const acc = getAcc(userId);
+          acc.sum += rec.credits;
+          noteLogin(acc, rec.login, `${month}-31`);
+        }
+        unattributedTotal += facts.remainder;
+        contributingMonths.push(month);
+      } else if (monthHasNonzeroDaily(month)) {
+        // PRIOR month, no monthly fact but nonzero daily coverage: daily sums.
+        for (const row of dailyByMonth.get(month)!) {
+          const acc = getAcc(row.userId);
+          acc.sum += row.creditsUsed;
+          noteLogin(acc, row.userLogin, row.date);
+        }
+        contributingMonths.push(month);
+      }
+      // else: month contributes nothing (no monthly fact, no daily coverage).
     }
+
+    const monthsIncluded = contributingMonths.length;
+    const truncated = monthsIncluded < months;
+    // fromDate = first day of the OLDEST contributing month (last in the
+    // newest-first list -- current month is always element 0 and never oldest
+    // unless it's the only one); toDate = the landed nonzero daily toDate.
+    const oldestMonth = contributingMonths[contributingMonths.length - 1] ?? currentMonth;
+    const fromDate = `${oldestMonth}-01`;
 
     // ROSTER RULE: every licensed user appears, zero-usage included; users
     // with facts but no license row (shouldn't exist; defensive) follow.
@@ -1550,7 +1606,13 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // Deterministic order (types.ts): creditsUsed desc, then login asc.
     users.sort((a, b) => b.creditsUsed - a.creditsUsed || a.userLogin.localeCompare(b.userLogin));
 
-    return { fromDate, toDate, truncated, users };
+    const result: UsageDistributionWindow = { fromDate, toDate, truncated, users, monthsIncluded };
+    // ADDITIVE: the window-total departed-user remainder, rounded once, positive
+    // -only. Absent (not 0) when there is none, so the daily-only / sim path
+    // keeps the original 4-key shape.
+    const roundedUnattributed = Math.round(unattributedTotal);
+    if (roundedUnattributed > 0) result.unattributedCredits = roundedUnattributed;
+    return result;
   }
 
   // Distribution "Per month" lens: per (user, complete-calendar-month) credit
