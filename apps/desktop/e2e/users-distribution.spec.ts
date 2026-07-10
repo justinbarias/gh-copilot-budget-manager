@@ -173,6 +173,112 @@ test('Users screen: Table|Distribution toggle, pre-sync sentinel, and the post-s
   }
 });
 
+// Distribution "Per month" lens (DEFAULT healthy scenario): the "Totals | Per
+// month" segmented toggle switches the histogram from per-user WINDOW TOTALS to
+// per (user, complete-calendar-month) observations, read directly against the
+// MONTHLY universal ULB (plain, never ×months). Coverage 2026-03-01..2026-06-12
+// -> complete months Mar/Apr/May 2026 (the partial June is excluded), so
+// months=1 -> [2026-05] (81 user-months), months=3 -> [Mar,Apr,May] (243
+// user-months). Only the five history-carrying personas have Mar/Apr/May data
+// in 'healthy', so most user-months are 0 -> P30=P50=0 (a real property of this
+// world; the long-tail scenario is where per-month P50 is non-zero).
+//
+// EVERY pin below was derived INDEPENDENTLY from the MSW fixtures via a
+// throwaway harness that ran the real sim syncNow, read the raw
+// credits_used_fact rows (NOT getUserMonthObservations), bucketed them by whole
+// calendar month with the same union/latest-wins winning-rows rule + roster
+// rule, and fed the per-user-month multiset through core's
+// computeUsageDistribution / countAbove:
+//   months=1  [2026-05]  81 user-months
+//     p30=0  p50=0  p95=6,699 cr ($66.99)  usersAboveP95=4
+//     plain 4,600-cr ($46.00) monthly ULB -> 5 user-months above
+//   months=3  [Mar,Apr,May]  243 user-months
+//     p30=0  p50=0  p95=5,800 cr ($58.00)  15 user-months above the ULB
+test('Distribution "Per month" lens (healthy): toggle switches to per-user-month observations against the monthly ULB', async () => {
+  const appDir = path.join(__dirname, '..');
+  const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-permonth-'));
+  const app = await electron.launch({
+    args: [appDir],
+    cwd: appDir,
+    env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
+  });
+
+  try {
+    const window = await app.firstWindow();
+
+    // Sync first (getUserMonthObservations is a pure DB read -- empty until a
+    // sync backfills per-user history).
+    interface WindowWithApi {
+      api: { syncNow(): Promise<{ lastSyncedAt: string | null }> };
+    }
+    const status = await window.evaluate(() => (window as unknown as WindowWithApi).api.syncNow());
+    expect(status.lastSyncedAt).not.toBeNull();
+
+    await window.locator('.nav').getByRole('button', { name: 'Users' }).click();
+    const usersScreen = window.locator('.users-screen');
+    await expect(usersScreen).toBeVisible();
+    await usersScreen.locator('.users-screen__toggle').getByRole('tab', { name: 'Distribution' }).click();
+
+    const dist = window.locator('[data-testid="distribution"]');
+    await expect(dist).toBeVisible();
+
+    // Toggle from Totals (default) to Per month.
+    await window.getByRole('tab', { name: 'Per month' }).click();
+
+    // months=1 (default window): caption names the single complete month + the
+    // observation count + the partial-month exclusion.
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText(
+      'May 2026 · 81 user-months · current month excluded (partial)',
+    );
+    // P50/P95 tiles (independent derivation above). P30/P50 read 0 in 'healthy'.
+    await expect(window.locator('[data-testid="distribution-tile-p30-value"]')).toHaveText('0 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p50-value"]')).toHaveText('0 cr');
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('6,699 cr');
+    await expect(window.locator('[data-testid="distribution-tile-spread-value"]')).toHaveText('0.00×');
+
+    // x-axis title switches to the per-user-month wording.
+    await expect(window.getByText('credits per user-month (1 cr = $0.01)')).toBeVisible();
+
+    // The ULB overlay is the PLAIN monthly amount (no ×months scaling), and the
+    // sub-pill counts USER-MONTHS above it.
+    await expect(
+      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 4,600 cr · $46.00' }),
+    ).toBeVisible();
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('5 user-months above');
+    await expect(window.locator('[data-testid="distribution-marker-label"]', { hasText: 'P95 · 6,699 cr · $66.99' })).toBeVisible();
+    // Per-month insight: P95 user-month named directly against the monthly ULB.
+    await expect(window.locator('[data-testid="distribution-insight"]')).toContainText('against the $46.00 monthly ULB');
+
+    // No multi-month ×-scaling footer note in per-month mode.
+    await expect(window.locator('[data-testid="distribution-ulb-note"]')).toHaveCount(0);
+
+    // The pill no-overlap regression guard must still hold in per-month mode.
+    await assertNoPillOverlap(window, 'per-month 1 month');
+
+    // --- Switch to 3 months (still Per month): 243 user-months, changed tiles. ---
+    await window.getByRole('tab', { name: '3 months' }).click();
+    await expect(window.locator('[data-testid="distribution-date-caption"]')).toHaveText(
+      'Mar–May 2026 · 243 user-months · current month excluded (partial)',
+    );
+    await expect(window.locator('[data-testid="distribution-tile-p95-value"]')).toHaveText('5,800 cr');
+    // Still the PLAIN monthly ULB (not ×3) -- the whole point of the per-month lens.
+    await expect(
+      window.locator('[data-testid="distribution-marker-label"]', { hasText: 'Universal ULB · 4,600 cr · $46.00' }),
+    ).toBeVisible();
+    await expect(window.locator('[data-testid="distribution-ulb-sublabel"]')).toHaveText('15 user-months above');
+    await assertNoPillOverlap(window, 'per-month 3 months');
+
+    // --- Back to Totals: the toggle restores the window-totals lens (×3 ULB). ---
+    await window.getByRole('tab', { name: 'Totals' }).click();
+    await expect(window.locator('[data-testid="distribution-ulb-note"]')).toHaveText(
+      'ULB line shown ×3 for multi-month windows (the ULB is a monthly cap).',
+    );
+  } finally {
+    await app.close();
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+});
+
 // The 'long-tail' scenario exists specifically so the Distribution view demos
 // well: 'healthy' reads P30=P50=0 (~44 idle seats), whereas long-tail has a
 // rich right-skewed per-user spread. Switching to it via the sim scenario

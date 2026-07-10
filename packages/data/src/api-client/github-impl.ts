@@ -91,6 +91,8 @@ import type {
   UsageDistributionUser,
   UsageDistributionWindow,
   UsageDistributionWindowInput,
+  UserMonthObservation,
+  UserMonthObservationsResult,
   UsageSummary,
   UsageSummaryParams,
   WriteArmingRequest,
@@ -955,16 +957,22 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
   // login-space CC join has no DB equivalent. The DB-native join is simpler:
   // license.costCenterId -> cost_center.name (null when unassigned or when a
   // fact-only user has no license row).
-  async function getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow> {
-    const months = input.months;
-    // Runtime guard: the preload/IPC boundary is untyped at runtime, so the
-    // 1|3|9 literal type alone protects nothing (same rationale as
-    // setScenario's isScenarioId check; thrown rather than refused-shaped
-    // because an out-of-range months is a caller bug, not a mode condition).
-    if (months !== 1 && months !== 3 && months !== 9) {
-      throw new Error(`getUsageDistribution: months must be 1, 3, or 9 (got ${String(months)}).`);
-    }
-
+  // Distribution: the SHARED base both distribution reads (getUsageDistribution
+  // and getUserMonthObservations) start from -- the source-scoped per-user fact
+  // rows plus the union/latest-wins winning-generation map and the covered date
+  // bounds. Extracted (rather than duplicated per read) so the coverage
+  // semantics are defined in exactly one place. Returns null for the SENTINEL
+  // case (no per-user history for this source at all -- fresh DB / never synced
+  // in this mode); every caller maps null to its own sentinel shape.
+  interface DistributionFactBase {
+    factRows: Array<{ date: string; userId: string; userLogin: string | null; creditsUsed: number; snapshotId: number }>;
+    /** Per date, the highest snapshotId containing it -- that day's winning generation. */
+    winnerSnapshotByDate: Map<string, number>;
+    /** Min/max winning date (YYYY-MM-DD). */
+    earliestDate: string;
+    toDate: string;
+  }
+  function readDistributionFactBase(): DistributionFactBase | null {
     const factRows = config.db
       .select({
         date: schema.creditsUsedFact.date,
@@ -978,11 +986,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       .where(eq(schema.snapshot.source, config.source))
       .all();
 
-    // SENTINEL (types.ts): no per-user history for this source at all --
-    // fresh DB / never synced in this mode. Nothing to anchor a window to.
-    if (factRows.length === 0) {
-      return { fromDate: '', toDate: '', truncated: false, users: [] };
-    }
+    if (factRows.length === 0) return null;
 
     // Union/latest-wins: per date, the highest snapshotId containing that
     // date is the winning generation; its rows are that day's truth.
@@ -998,6 +1002,48 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       if (toDate === '' || date > toDate) toDate = date;
       if (earliestDate === '' || date < earliestDate) earliestDate = date;
     }
+
+    return { factRows, winnerSnapshotByDate, earliestDate, toDate };
+  }
+
+  // Distribution: the SHARED roster/name lookups both reads apply after
+  // bucketing -- the licensed roster (ROSTER RULE), the userId->license map
+  // (login fallback + cost-center id), and the cost-center id->name map.
+  interface DistributionRosterLookups {
+    licenseRows: Array<typeof schema.license.$inferSelect>;
+    costCenterNameById: Map<string, string>;
+    licenseByUserId: Map<string, typeof schema.license.$inferSelect>;
+  }
+  function readDistributionRosterLookups(): DistributionRosterLookups {
+    const licenseRows = config.db.select().from(schema.license).all();
+    const costCenterNameById = new Map(
+      config.db
+        .select({ id: schema.costCenter.id, name: schema.costCenter.name })
+        .from(schema.costCenter)
+        .all()
+        .map((cc) => [cc.id, cc.name] as const),
+    );
+    const licenseByUserId = new Map(licenseRows.map((lic) => [lic.userId, lic] as const));
+    return { licenseRows, costCenterNameById, licenseByUserId };
+  }
+
+  async function getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow> {
+    const months = input.months;
+    // Runtime guard: the preload/IPC boundary is untyped at runtime, so the
+    // 1|3|9 literal type alone protects nothing (same rationale as
+    // setScenario's isScenarioId check; thrown rather than refused-shaped
+    // because an out-of-range months is a caller bug, not a mode condition).
+    if (months !== 1 && months !== 3 && months !== 9) {
+      throw new Error(`getUsageDistribution: months must be 1, 3, or 9 (got ${String(months)}).`);
+    }
+
+    const base = readDistributionFactBase();
+    // SENTINEL (types.ts): no per-user history for this source at all --
+    // fresh DB / never synced in this mode. Nothing to anchor a window to.
+    if (base === null) {
+      return { fromDate: '', toDate: '', truncated: false, users: [] };
+    }
+    const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;
 
     const requestedFrom = distributionWindowStart(toDate, months);
     const truncated = requestedFrom < earliestDate;
@@ -1029,15 +1075,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
 
     // ROSTER RULE: every licensed user appears, zero-usage included; users
     // with facts but no license row (shouldn't exist; defensive) follow.
-    const licenseRows = config.db.select().from(schema.license).all();
-    const costCenterNameById = new Map(
-      config.db
-        .select({ id: schema.costCenter.id, name: schema.costCenter.name })
-        .from(schema.costCenter)
-        .all()
-        .map((cc) => [cc.id, cc.name] as const),
-    );
-    const licenseByUserId = new Map(licenseRows.map((lic) => [lic.userId, lic] as const));
+    const { licenseRows, costCenterNameById, licenseByUserId } = readDistributionRosterLookups();
 
     // Login fallback ladder (types.ts's UsageDistributionUser doc): winning
     // fact login -> license login (migration 0005; the seats listing always
@@ -1073,6 +1111,131 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     users.sort((a, b) => b.creditsUsed - a.creditsUsed || a.userLogin.localeCompare(b.userLogin));
 
     return { fromDate, toDate, truncated, users };
+  }
+
+  // Distribution "Per month" lens: per (user, complete-calendar-month) credit
+  // observations over the last N complete months of SYNCED history. Same pure
+  // local-SQLite read + union/latest-wins coverage base as getUsageDistribution
+  // (readDistributionFactBase / readDistributionRosterLookups), re-bucketed by
+  // whole calendar month. A "complete calendar month" is one whose monthStart
+  // >= the earliest covered day AND monthEnd <= toDate; the in-progress partial
+  // month (monthEnd > toDate) is ALWAYS excluded. See types.ts's
+  // UserMonthObservationsResult for the full semantics. §6.9-exempt (no GitHub
+  // HTTP), source-scoped (§6.8).
+  async function getUserMonthObservations(input: UsageDistributionWindowInput): Promise<UserMonthObservationsResult> {
+    const months = input.months;
+    // Same untyped-boundary guard as getUsageDistribution.
+    if (months !== 1 && months !== 3 && months !== 9) {
+      throw new Error(`getUserMonthObservations: months must be 1, 3, or 9 (got ${String(months)}).`);
+    }
+
+    const base = readDistributionFactBase();
+    // SENTINEL (types.ts): no per-user history for this source at all.
+    if (base === null) {
+      return { months: [], truncated: false, observations: [] };
+    }
+    const { factRows, winnerSnapshotByDate, earliestDate, toDate } = base;
+
+    // Enumerate every calendar month from the earliest covered month through
+    // the toDate month; keep the COMPLETE ones (monthStart >= earliestDate AND
+    // monthEnd <= toDate). String comparison is valid on YYYY-MM-DD. Naturally
+    // ascending.
+    const completeMonths: string[] = [];
+    const startY = Number(earliestDate.slice(0, 4));
+    const startM = Number(earliestDate.slice(5, 7));
+    const endY = Number(toDate.slice(0, 4));
+    const endM = Number(toDate.slice(5, 7));
+    for (let y = startY, m = startM; y < endY || (y === endY && m <= endM); ) {
+      const mm = String(m).padStart(2, '0');
+      const monthStart = `${y}-${mm}-01`;
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month = last day of this month
+      const monthEnd = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`;
+      if (monthStart >= earliestDate && monthEnd <= toDate) completeMonths.push(`${y}-${mm}`);
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+
+    // No complete calendar month at all -> sentinel (types.ts): the UI renders
+    // "sync again after month end".
+    if (completeMonths.length === 0) {
+      return { months: [], truncated: false, observations: [] };
+    }
+
+    // "Last N complete months ending at the most recent complete month";
+    // truncated when fewer than N complete months exist.
+    const truncated = completeMonths.length < months;
+    const includedMonths = completeMonths.slice(-months);
+    const includedSet = new Set(includedMonths);
+
+    // Per (userId, month) sums over the WINNING rows only, restricted to the
+    // included months; the login candidate is the latest-dated non-null
+    // user_login among the user's winning in-window rows (rung 1 of the D2
+    // ladder), shared across all of that user's month observations.
+    interface UmAccumulator {
+      byMonth: Map<string, number>;
+      loginDate: string;
+      login: string | null;
+    }
+    const accByUserId = new Map<string, UmAccumulator>();
+    for (const row of factRows) {
+      if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
+      const month = row.date.slice(0, 7);
+      if (!includedSet.has(month)) continue;
+      let acc = accByUserId.get(row.userId);
+      if (!acc) {
+        acc = { byMonth: new Map(), loginDate: '', login: null };
+        accByUserId.set(row.userId, acc);
+      }
+      acc.byMonth.set(month, (acc.byMonth.get(month) ?? 0) + row.creditsUsed);
+      if (row.userLogin !== null && row.date >= acc.loginDate) {
+        acc.loginDate = row.date;
+        acc.login = row.userLogin;
+      }
+    }
+
+    const { licenseRows, costCenterNameById, licenseByUserId } = readDistributionRosterLookups();
+
+    // ROSTER RULE: every licensed user contributes ONE observation per included
+    // month (0 when idle that month); fact-only users (no license row;
+    // defensive) follow. Login fallback ladder identical to getUsageDistribution
+    // (winning fact login -> license login -> String(userId)).
+    const observations: UserMonthObservation[] = [];
+    const emit = (userId: string): void => {
+      const acc = accByUserId.get(userId);
+      const lic = licenseByUserId.get(userId);
+      const ccId = lic?.costCenterId ?? null;
+      const userLogin = acc?.login ?? lic?.userLogin ?? userId;
+      const costCenterName = ccId === null ? null : (costCenterNameById.get(ccId) ?? null);
+      for (const month of includedMonths) {
+        observations.push({
+          userLogin,
+          costCenterName,
+          month,
+          // Rounded ONCE at the end per whole-month sum (facts are REAL).
+          creditsUsed: Math.round(acc?.byMonth.get(month) ?? 0),
+        });
+      }
+    };
+    const seenUserIds = new Set<string>();
+    for (const lic of licenseRows) {
+      if (seenUserIds.has(lic.userId)) continue;
+      seenUserIds.add(lic.userId);
+      emit(lic.userId);
+    }
+    for (const userId of accByUserId.keys()) {
+      if (seenUserIds.has(userId)) continue;
+      seenUserIds.add(userId);
+      emit(userId);
+    }
+
+    // Deterministic order (userLogin asc, then month asc) -- the histogram math
+    // is order-invariant, but a stable order keeps the surface testable.
+    observations.sort((a, b) => a.userLogin.localeCompare(b.userLogin) || a.month.localeCompare(b.month));
+
+    return { months: includedMonths, truncated, observations };
   }
 
   async function listAlerts(): Promise<Alert[]> {
@@ -1635,6 +1798,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     setWriteArming,
     listHeavyUsers,
     getUsageDistribution,
+    getUserMonthObservations,
     listAlerts,
     getSyncStatus,
     syncNow,

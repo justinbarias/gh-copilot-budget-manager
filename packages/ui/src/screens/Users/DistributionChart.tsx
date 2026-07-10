@@ -130,11 +130,21 @@ export interface DistributionChartProps {
   distribution: UsageDistribution;
   /** Universal ULB amount already multiplied by the window's month count (monthly cap × months); null when no universal ULB is set. */
   ulbValue: number | null;
-  /** core's countAbove(users, ulbValue) over the RAW user list -- the exact number of users strictly above the (multiplied) ULB. null iff ulbValue is null. */
+  /** core's countAbove(users, ulbValue) over the RAW observation list -- the exact number of observations strictly above the ULB. null iff ulbValue is null. */
   ulbUsersAbove: number | null;
+  /** x-axis title; the per-month lens overrides it ("credits per user-month …"). Defaults to the window-totals wording. */
+  xAxisTitle?: string;
+  /** The noun the ULB "N above" sub-pill counts: "user" (window totals) or "user-month" (per-month lens). */
+  aboveNoun?: string;
 }
 
-export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: DistributionChartProps) {
+export function DistributionChart({
+  distribution,
+  ulbValue,
+  ulbUsersAbove,
+  xAxisTitle = 'total credits per user (1 cr = $0.01)',
+  aboveNoun = 'user',
+}: DistributionChartProps) {
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
   const [hoverBin, setHoverBin] = useState<number | null>(null);
 
@@ -175,7 +185,7 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
       color: COLOR.ulb,
       dashed: true,
       label: ulbClamped ? `Universal ULB · ${fmtCredits(ulbValue)} cr →` : `Universal ULB · ${fmtCredits(ulbValue)} cr · ${fmtDollars(ulbValue)}`,
-      sublabel: ulbClamped ? '0 users above' : `${usersAboveUlb} user${usersAboveUlb === 1 ? '' : 's'} above`,
+      sublabel: ulbClamped ? `0 ${aboveNoun}s above` : `${usersAboveUlb} ${aboveNoun}${usersAboveUlb === 1 ? '' : 's'} above`,
       isUlb: true,
       lane: 0,
       textW: 0,
@@ -240,7 +250,7 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
             );
           })}
           <text x={plotLeft - 40} y={plotTop - 12} fontSize={10} fill={COLOR.axisText} className="mono">
-            users
+            {aboveNoun}s
           </text>
         </g>
 
@@ -253,7 +263,7 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
             const barW = Math.max(0, x2 - x1 - 2);
             const barY = yScale(bin.count);
             const barH = Math.max(0, plotBottom - barY);
-            const label = `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} credits: ${bin.count} users`;
+            const label = `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} credits: ${bin.count} ${aboveNoun}s`;
             return (
               <rect
                 key={`bar-${i}`}
@@ -271,12 +281,12 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
                 style={{ cursor: 'default' }}
                 onMouseEnter={() => {
                   setHoverBin(i);
-                  setTooltip((t) => ({ x: t?.x ?? barX, y: t?.y ?? barY, text: `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} cr · ${bin.count} users` }));
+                  setTooltip((t) => ({ x: t?.x ?? barX, y: t?.y ?? barY, text: `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} cr · ${bin.count} ${aboveNoun}s` }));
                 }}
                 onMouseMove={(ev) => {
                   const wrap = (ev.currentTarget.ownerSVGElement?.parentElement as HTMLElement | null)?.getBoundingClientRect();
                   if (!wrap) return;
-                  setTooltip({ x: ev.clientX - wrap.left, y: ev.clientY - wrap.top, text: `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} cr · ${bin.count} users` });
+                  setTooltip({ x: ev.clientX - wrap.left, y: ev.clientY - wrap.top, text: `${fmtCredits(bin.start)}–${fmtCredits(bin.end)} cr · ${bin.count} ${aboveNoun}s` });
                 }}
                 onMouseLeave={() => {
                   setHoverBin(null);
@@ -304,7 +314,7 @@ export function DistributionChart({ distribution, ulbValue, ulbUsersAbove }: Dis
             );
           })}
           <text x={(plotLeft + plotRight) / 2} y={plotBottom + 40} textAnchor="middle" fontSize={10.5} fill={COLOR.axisText}>
-            total credits per user (1 cr = $0.01)
+            {xAxisTitle}
           </text>
         </g>
 

@@ -47,7 +47,18 @@
   color: var(--text-neutral);
 }
 
-/* ---- window segmented control (matches the app's pill switch) ---- */
+/* Lens toggle + window control share a row; wrap gracefully at narrow widths. */
+.distribution__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- lens ("Totals | Per month") + window segmented controls (matches the
+   app's pill switch; the lens reuses the window-btn styling) ---- */
+.distribution__mode,
 .distribution__window {
   display: inline-flex;
   background: var(--surface);

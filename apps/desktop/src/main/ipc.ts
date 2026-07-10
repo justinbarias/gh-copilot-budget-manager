@@ -141,6 +141,11 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   ipcMain.handle('apiClient:getUsageDistribution', (_event, input: UsageDistributionWindowInput) =>
     client.getUsageDistribution(input),
   );
+  // Distribution "Per month" lens: same pure local-SQLite read (no GitHub
+  // request, both modes), same per-method channel pattern.
+  ipcMain.handle('apiClient:getUserMonthObservations', (_event, input: UsageDistributionWindowInput) =>
+    client.getUserMonthObservations(input),
+  );
   ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());
   ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());
   ipcMain.handle('apiClient:syncNow', () => client.syncNow());

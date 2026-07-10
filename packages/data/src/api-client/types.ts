@@ -299,6 +299,49 @@ export interface UsageDistributionWindow {
   users: UsageDistributionUser[];
 }
 
+/**
+ * Distribution "Per month" lens: one (user, complete-calendar-month)
+ * observation -- the summed credits a single user drew in a single whole
+ * month. This is the unit the universal ULB is actually written against (a
+ * monthly cap), so a histogram of these observations reads directly against
+ * that ceiling. `creditsUsed` is an integer whole-month sum; 0 for an inactive
+ * user-month (the ROSTER RULE below makes those real observations, since an
+ * idle user-month is a legitimate data point for ULB sizing).
+ */
+export interface UserMonthObservation {
+  userLogin: string;
+  /** Via the license row's costCenterId -> cost_center.name join; null when unassigned. */
+  costCenterName: string | null;
+  /** 'YYYY-MM'. */
+  month: string;
+  /** Integer whole-month credit sum; 0 for an inactive user-month. */
+  creditsUsed: number;
+}
+
+/**
+ * Distribution "Per month" lens result. A "complete calendar month" is one
+ * whose monthStart >= the earliest covered day AND monthEnd <= toDate (the
+ * same union/latest-wins coverage set UsageDistributionWindow defines) -- the
+ * in-progress partial month is ALWAYS excluded. The window selector
+ * reinterprets as "last N complete months ending at the most recent complete
+ * month": months=1 -> [most recent complete month]; 3 -> last 3; 9 -> last 9.
+ * `truncated` is true when fewer than N complete months exist. Every licensed
+ * user (plus, defensively, any fact-only user) contributes ONE observation per
+ * included month (0 when idle that month).
+ *
+ * SENTINEL: no complete calendar month in synced history at all returns
+ * `{ months: [], truncated: false, observations: [] }` -- the UI renders an
+ * explanatory empty state.
+ */
+export interface UserMonthObservationsResult {
+  /** The included complete months, ascending 'YYYY-MM'. */
+  months: string[];
+  /** True when available complete months are fewer than the requested N. */
+  truncated: boolean;
+  /** One entry per (included user, included month); see the ROSTER RULE above. */
+  observations: UserMonthObservation[];
+}
+
 export interface Alert {
   id: string;
   severity: 'info' | 'warning' | 'critical';
@@ -466,6 +509,17 @@ export interface ApiClient {
    * value outside 1|3|9 (the IPC boundary is untyped at runtime).
    */
   getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow>;
+  /**
+   * Distribution "Per month" lens: per (user, complete-calendar-month) credit
+   * observations over the last N complete months (N = 1|3|9) of SYNCED history
+   * -- the same pure local-SQLite read (no GitHub request, both modes
+   * identical, source-scoped) and union/latest-wins coverage base as
+   * getUsageDistribution, re-bucketed by whole calendar month. See
+   * UserMonthObservationsResult's doc for the complete-month, window-selection,
+   * roster, and sentinel semantics. Throws on a months value outside 1|3|9
+   * (the IPC boundary is untyped at runtime).
+   */
+  getUserMonthObservations(input: UsageDistributionWindowInput): Promise<UserMonthObservationsResult>;
   listAlerts(): Promise<Alert[]>;
   getSyncStatus(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
