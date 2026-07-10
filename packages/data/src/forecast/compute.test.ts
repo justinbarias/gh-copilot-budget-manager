@@ -3,11 +3,13 @@ import { fixedAllowanceLine } from '@copilot-budget/core';
 import {
   DEFAULT_FORECAST_HORIZON_DAYS,
   assembleCostCenterSeries,
+  assembleDailyBurnByScope,
   assembleEnterpriseSeries,
   assembleUserSeries,
   computeScopeForecast,
   expandMonthlyAggregates,
   toDailyBurn,
+  type DailyCreditsFactInput,
 } from './compute.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -219,5 +221,114 @@ describe('expandMonthlyAggregates', () => {
     );
     expect(series).toHaveLength(39); // 30 June days + 9 elapsed July days
     expect(series.every((d) => Math.abs(d.credits - 10_000) < 1e-6)).toBe(true);
+  });
+});
+
+describe('assembleDailyBurnByScope (item 25 daily billing facts)', () => {
+  const asOf = new Date('2026-06-14T00:00:00.000Z');
+
+  it('splits enterprise (null costCenterId) from per-CC series; enterprise is the null rows ONLY, never Σ CC rows', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-01', costCenterId: null, creditsUsed: 100 }, // tenant total
+      { date: '2026-06-01', costCenterId: 'cc-a', creditsUsed: 60 },
+      { date: '2026-06-01', costCenterId: 'cc-b', creditsUsed: 30 },
+      { date: '2026-06-02', costCenterId: null, creditsUsed: 120 },
+      { date: '2026-06-02', costCenterId: 'cc-a', creditsUsed: 70 },
+    ];
+    const { enterprise, costCenter } = assembleDailyBurnByScope(rows, asOf);
+    // Enterprise = the tenant-total rows (100, 120) -- NOT 60+30=90 / 70.
+    expect(enterprise).toEqual([
+      { date: '2026-06-01', credits: 100 },
+      { date: '2026-06-02', credits: 120 },
+    ]);
+    expect(costCenter.get('cc-a')).toEqual([
+      { date: '2026-06-01', credits: 60 },
+      { date: '2026-06-02', credits: 70 },
+    ]);
+    expect(costCenter.get('cc-b')).toEqual([{ date: '2026-06-01', credits: 30 }]);
+  });
+
+  it('sums same (date, scope) rows, sorts ascending, and drops rows strictly after asOfDate', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-02', costCenterId: null, creditsUsed: 10 },
+      { date: '2026-06-01', costCenterId: null, creditsUsed: 5 },
+      { date: '2026-06-01', costCenterId: null, creditsUsed: 3 }, // same (date, scope) -> summed
+      { date: '2026-06-30', costCenterId: null, creditsUsed: 999 }, // strictly after asOf -> dropped
+    ];
+    expect(assembleDailyBurnByScope(rows, asOf).enterprise).toEqual([
+      { date: '2026-06-01', credits: 8 },
+      { date: '2026-06-02', credits: 10 },
+    ]);
+  });
+});
+
+describe('daily-fact forecast: materially wide variance band (item 25)', () => {
+  // The fix's crux: a REAL per-day series carries day-to-day variance the core
+  // variance model surfaces as a wide P90 band; the old month-lump flat-spread
+  // produced a CONSTANT daily series whose measured variance is 0 (a degenerate
+  // band). Both cases run the SAME full pipeline (assemble -> computeScopeForecast
+  // -> core forecast()).
+  //
+  // The varied series is a flat-weekday-index construction so every number below
+  // is hand-derivable: 35 consecutive days (2026-05-01 .. 2026-06-04), value by
+  // 7-day block = [90, 110, 80, 120, 100]. Any 7 consecutive days cover each
+  // weekday once, so every weekday sees {90,110,80,120,100} -> weekday mean 100 =
+  // overall mean -> ALL weekday indices == 1 (no seasonality to deseasonalize).
+  // forecast() drops the last settling day (settlingWindowDays default 1), so
+  //   nEstim = 34; estimation values = [90x7, 110x7, 80x7, 120x7, 100x6], mean 100.
+  //   SS = 7*10^2 + 7*10^2 + 7*20^2 + 7*20^2 + 0 = 700+700+2800+2800 = 7000
+  //   dailyVariance (sample, /(n-1)) = 7000/33 = 212.121212...
+  //   floor faded (nEstim 34 >= floorFadeDays 14) -> effectiveVariance = dailyVariance
+  //   first projected day (k=1): std = sqrt(effVar + effVar/nEstim)
+  //                                   = sqrt(212.1212 + 212.1212/34) = 14.77701
+  //   band gap (p90 - p50) = zP90(1.2816) * std = 18.938 credits
+  const BLOCK_VALUES = [90, 110, 80, 120, 100];
+  const START_MS = Date.parse('2026-05-01T00:00:00.000Z');
+  const variedFacts: DailyCreditsFactInput[] = Array.from({ length: 35 }, (_, i) => ({
+    date: new Date(START_MS + i * DAY_MS).toISOString().slice(0, 10),
+    costCenterId: null,
+    creditsUsed: BLOCK_VALUES[Math.floor(i / 7)]!,
+  }));
+  const asOfDate = new Date('2026-06-04T00:00:00.000Z');
+
+  it('varied daily facts -> nEstim/dailyVariance/effectiveVariance and the k=1 band gap match the hand-derived model values', () => {
+    const history = assembleDailyBurnByScope(variedFacts, asOfDate).enterprise;
+    expect(history).toHaveLength(35);
+
+    const { result } = computeScopeForecast({
+      history,
+      asOfDate,
+      allowance: fixedAllowanceLine(1_000_000_000), // huge -> never exhausts; band gap is allowance-independent
+      paidUsageEnabled: false,
+    });
+
+    expect(result.basis.nEstim).toBe(34);
+    expect(result.basis.dailyVariance).toBeCloseTo(7000 / 33, 6); // 212.121212...
+    expect(result.basis.effectiveVariance).toBeCloseTo(7000 / 33, 6); // floor faded -> equals measured
+
+    // First projected day: hand-derived gap from nEstim / effectiveVariance / SE.
+    const firstProjected = result.dailySeries.find((d) => d.actualCumulative === undefined);
+    expect(firstProjected).toBeDefined();
+    const effVar = 7000 / 33;
+    const expectedStd = Math.sqrt(effVar + effVar / 34);
+    const expectedGap = 1.2816 * expectedStd;
+    expect(expectedGap).toBeCloseTo(18.938, 2);
+    expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBeCloseTo(expectedGap, 4);
+    // Materially wide, not a rounding artifact.
+    expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBeGreaterThan(15);
+  });
+
+  it('contrast: a CONSTANT (month-lump flat-spread-shaped) series has zero measured variance -> a degenerate band', () => {
+    const flat = flatHistory('2026-05-01', 35, 100); // same total shape, no day-to-day swing
+    const { result } = computeScopeForecast({
+      history: flat,
+      asOfDate,
+      allowance: fixedAllowanceLine(1_000_000_000),
+      paidUsageEnabled: false,
+    });
+    expect(result.basis.dailyVariance).toBe(0);
+    expect(result.basis.effectiveVariance).toBe(0); // floor faded AND measured 0 -> band collapses
+    const firstProjected = result.dailySeries.find((d) => d.actualCumulative === undefined);
+    expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBe(0);
   });
 });

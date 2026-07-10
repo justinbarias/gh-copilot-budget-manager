@@ -16,12 +16,15 @@ import {
 } from '@copilot-budget/core';
 import {
   assembleCostCenterSeries,
+  assembleDailyBurnByScope,
   assembleEnterpriseSeries,
   assembleUserSeries,
   computeScopeForecast,
   expandMonthlyAggregates,
   type AssembleCreditsUsedRow,
   type AssembleUsageRow,
+  type DailyBurnByScope,
+  type DailyCreditsFactInput,
 } from '../forecast/compute.js';
 import { readScopedAuditChain, verifyStoredChain } from '../audit/writer.js';
 import { ALERTS } from '../msw/fixtures/alerts.js';
@@ -33,6 +36,7 @@ import {
   syncNow as ingestSnapshot,
   type IngestCostCenterMember,
   type IngestData,
+  type IngestDailyCreditsRow,
   type IngestForecastItem,
   type IngestMonthlyCreditsRow,
   type IngestResourceType,
@@ -354,6 +358,14 @@ interface ComputeSyncForecastsParams {
   seats: Seat[];
   budgetsRaw: BudgetItem[];
   loginToCostCenterName: Map<string, string>;
+  // Item 25 (forecast history rewire): when the source has banked daily billing
+  // facts (schema.ts's ai_credit_daily_fact -- github-source only, after the
+  // first fan-out), the caller assembles the real per-day enterprise/CC series
+  // and passes them here. Present === use them for the enterprise + CC scopes
+  // and BYPASS expandMonthlyAggregates entirely; absent (sim, or a live tenant
+  // before its first fan-out) === fall back to the month-lump path below,
+  // byte-identically. The user scope is unaffected either way.
+  dailyBurnByScope?: DailyBurnByScope;
 }
 
 // Task 5.4: computes + shapes one forecast per (scope, entity) for syncNow to
@@ -373,20 +385,27 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
   // series derive from "Copilot AI Credits" rows only -- a Copilot
   // Business/Premium Request row in the history would inflate every
   // enterprise/cost-center burn projection.
-  // Monthly-aggregate expansion (item 23): live months arrive as one
-  // aggregate row -- expandMonthlyAggregates spreads them into a flat daily
-  // series (closed month: total/daysInMonth; current month: MTD/elapsed) so
-  // core's trailing-7 run-rate never mistakes a month total for a daily rate
-  // (the live P50 ~= total x 31 blow-up). Per-day fixture rows pass through
-  // untouched -- simulation stays byte-identical.
-  const usageRows: AssembleUsageRow[] = expandMonthlyAggregates(
-    aiCreditItems(params.historicalUsageItems).map((i) => ({
-      date: i.date,
-      costCenterId: i.costCenterId,
-      quantity: i.quantity,
-    })),
-    params.asOfDate,
-  );
+  // Enterprise/CC history source (item 25, forecast history rewire): when the
+  // caller supplied banked daily billing facts (dailyBurnByScope -- github-
+  // source, post-first-fan-out), the enterprise + CC scopes read their REAL
+  // per-day series from those and skip the month-lump path entirely (usageRows
+  // is then unused). Otherwise (sim, or a live tenant before its first daily
+  // fan-out) fall back to expandMonthlyAggregates: item-23's flat spread of the
+  // R5 monthly aggregate (closed month: total/daysInMonth; current month:
+  // MTD/elapsed) so core's trailing-7 run-rate never mistakes a month total for
+  // a daily rate. Per-day fixture rows pass through untouched -- simulation
+  // stays byte-identical (sim never has daily facts).
+  const useDailyFacts = params.dailyBurnByScope !== undefined;
+  const usageRows: AssembleUsageRow[] = useDailyFacts
+    ? []
+    : expandMonthlyAggregates(
+        aiCreditItems(params.historicalUsageItems).map((i) => ({
+          date: i.date,
+          costCenterId: i.costCenterId,
+          quantity: i.quantity,
+        })),
+        params.asOfDate,
+      );
   const creditRows: AssembleCreditsUsedRow[] = params.userCreditItems.map((i) => ({
     date: i.date,
     userId: i.user_id,
@@ -399,7 +418,7 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
   // cliff), sized off the full licensed seat count -- the SAME basis
   // Overview.tsx's burn-down uses (ALLOWANCE_BASIS, above).
   {
-    const series = assembleEnterpriseSeries(usageRows, params.asOfDate);
+    const series = useDailyFacts ? params.dailyBurnByScope!.enterprise : assembleEnterpriseSeries(usageRows, params.asOfDate);
     const { result, mape } = computeScopeForecast({
       history: series,
       asOfDate: params.asOfDate,
@@ -429,7 +448,9 @@ function computeSyncForecasts(params: ComputeSyncForecastsParams): IngestForecas
     const memberCount = (resourcesById.get(cc.id) ?? []).filter((r) => r.type === 'User').length;
     const allowance = cc.included_usage_cap.enabled ? poolAllowanceLine(memberCount, ALLOWANCE_BASIS) : fixedAllowanceLine(0);
     const paidUsageEnabled = cc.included_usage_cap.enabled && cc.included_usage_cap.overflow === 'metered';
-    const series = assembleCostCenterSeries(usageRows, cc.id, params.asOfDate);
+    const series = useDailyFacts
+      ? (params.dailyBurnByScope!.costCenter.get(cc.id) ?? [])
+      : assembleCostCenterSeries(usageRows, cc.id, params.asOfDate);
     const { result, mape } = computeScopeForecast({ history: series, asOfDate: params.asOfDate, allowance, paidUsageEnabled });
     forecasts.push({ scope: 'cost_center', entityId: cc.id, computedAt, result, mape });
   }
@@ -827,6 +848,170 @@ export async function backfillMonthlyCredits(
       // proceed. §6.6: the error is NOT logged (it can embed a login/URL); the
       // month string alone is recorded for the summary.
       result.monthsFailed.push(month);
+    }
+  }
+  return result;
+}
+
+// ===========================================================================
+// Daily per-scope AI-credit backfill (billing ai_credit/usage DAY-grain report;
+// migration 0008 ai_credit_daily_fact). github-source only -- MSW has no
+// ai_credit/usage handler, so the sim path never fans out and this table stays
+// empty (simulation behavior + forecast pins byte-identical). This is the fix
+// for the enterprise/CC forecast's month-lump flat-spread: it banks REAL
+// per-day, per-scope aggregates the variance model can actually see swing in.
+// ===========================================================================
+
+// Same bounded-concurrency ceiling as the per-day cycle + monthly fan-outs: at
+// most 10 scope calls in flight per day (1 enterprise + N cost centers), to stay
+// under secondary rate limits.
+const DAILY_BACKFILL_CONCURRENCY = 10;
+
+// The trailing refresh window: a day D is refetched every sync when it is within
+// this many days of "today" (clock seam, never wall-clock) -- i.e. today and the
+// 3 prior calendar days (4 days total). Billing settles ~2 days after a day, so
+// a day fetched at D+0 may read low/zero and only reach its settled value a day
+// or two later; refetching the trailing window (and letting the newest snapshot
+// win at read) captures that settlement. Older days are banked append-once.
+const DAILY_REFRESH_WINDOW_DAYS = 3;
+
+// The accessibility window GitHub documents for the billing usage report ("only
+// data from the past 24 months"): the backward era-floor month scan never looks
+// further than this many months before the current month.
+const DAILY_BACKFILL_MAX_MONTH_SCAN = 24;
+
+// Winner-resolved daily billing facts for a source (schema.ts's
+// ai_credit_daily_fact): the LATEST snapshot per (date, cost center) wins. Each
+// sync writes at most one row per (date, scope), so this resolves to exactly one
+// row per (date, cost center) -- a refresh-window refetch is a newer snapshot
+// and supersedes the banked value for that day (capturing billing settlement).
+// No nonzero-preference (unlike credits_used_fact's read): the billing report
+// returns real per-day values incl. genuine zeros and never zero-fills for
+// retention, so latest-snapshot-wins is correct here. Returns the row array the
+// pure assembler (compute.ts's assembleDailyBurnByScope) consumes.
+export function readDailyCreditsFactsFor(db: Db, source: string): DailyCreditsFactInput[] {
+  const rows = db
+    .select({
+      date: schema.aiCreditDailyFact.date,
+      costCenterId: schema.aiCreditDailyFact.costCenterId,
+      creditsUsed: schema.aiCreditDailyFact.creditsUsed,
+      snapshotId: schema.aiCreditDailyFact.snapshotId,
+    })
+    .from(schema.aiCreditDailyFact)
+    .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.aiCreditDailyFact.snapshotId))
+    .where(eq(schema.snapshot.source, source))
+    .all();
+
+  const key = (date: string, ccId: string | null): string => `${date}|${ccId ?? '<ent>'}`;
+  const latestSnapByKey = new Map<string, number>();
+  for (const r of rows) {
+    const cur = latestSnapByKey.get(key(r.date, r.costCenterId));
+    if (cur === undefined || r.snapshotId > cur) latestSnapByKey.set(key(r.date, r.costCenterId), r.snapshotId);
+  }
+  const winners: DailyCreditsFactInput[] = [];
+  for (const r of rows) {
+    if (r.snapshotId !== latestSnapByKey.get(key(r.date, r.costCenterId))) continue; // superseded generation
+    winners.push({ date: r.date, costCenterId: r.costCenterId, creditsUsed: r.creditsUsed });
+  }
+  return winners;
+}
+
+export interface DailyBackfillResult {
+  rows: IngestDailyCreditsRow[];
+  /** Days whose fan-out (enterprise + every CC) succeeded and produced rows. */
+  daysPersisted: string[];
+  /** Days skipped because already banked and outside the refresh window. */
+  daysSkippedBanked: string[];
+  /** Banked days inside the refresh window that were deliberately refetched. */
+  daysRefreshed: string[];
+  /** Days whose fan-out threw -- persisted NOTHING (no partial-day rows), retried next sync. */
+  daysFailed: string[];
+  /** The month whose enterprise aggregate returned ZERO items -- the era floor that stopped the backward month scan (null if no data era exists / scan hit the 24-month cap). */
+  eraFloorMonth: string | null;
+}
+
+// 'YYYY-MM-DD' -> UTC ms at day start.
+function dayIsoToMs(iso: string): number {
+  return Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)));
+}
+
+// The daily fan-out. Era floor first: scan months backward from the current
+// month (one cheap enterprise month-aggregate probe each) until an empty month
+// -- the earliest month WITH data is the floor. Then enumerate every calendar
+// day from that month's day-1 through `today`; for each day, skip it if banked
+// AND outside the trailing refresh window, else fan out one aggregate per scope
+// (enterprise = no cost_center_id + one per cost center) and sum netQuantity into
+// one row per (day, scope). Each DAY is all-or-nothing: any scope call throwing
+// aborts that whole day (no partial rows) and the scan proceeds. §6.6: errors
+// are never logged (they can embed a URL); only the day string is recorded.
+export async function backfillDailyCredits(
+  octokit: Octokit,
+  enterprise: string,
+  opts: { today: string; costCenterIds: readonly string[]; bankedDates: ReadonlySet<string> },
+): Promise<DailyBackfillResult> {
+  const result: DailyBackfillResult = {
+    rows: [],
+    daysPersisted: [],
+    daysSkippedBanked: [],
+    daysRefreshed: [],
+    daysFailed: [],
+    eraFloorMonth: null,
+  };
+
+  // --- Era floor: earliest month WITH data (empty enterprise aggregate stops the scan). ---
+  const currentMonth = opts.today.slice(0, 7);
+  let earliestMonthWithData: string | null = null;
+  let month = currentMonth;
+  for (let scanned = 0; scanned < DAILY_BACKFILL_MAX_MONTH_SCAN; scanned++, month = previousMonth(month)) {
+    const [y, m] = month.split('-').map(Number) as [number, number];
+    let empty = false;
+    try {
+      const agg = await fetchAiCreditUsage(octokit, enterprise, { year: y, month: m });
+      empty = agg.usageItems.length === 0;
+    } catch {
+      // A failed month probe stops the backward scan (can't prove older data
+      // exists); whatever floor we already have stands. Retried next sync.
+      break;
+    }
+    if (empty) {
+      result.eraFloorMonth = month;
+      break;
+    }
+    earliestMonthWithData = month;
+  }
+  if (earliestMonthWithData === null) return result; // no data era at all -> nothing to fan out.
+
+  // --- Enumerate days [earliestMonthWithData-01 .. today] and fan out. ---
+  const firstDayMs = dayIsoToMs(`${earliestMonthWithData}-01`);
+  const todayMs = dayIsoToMs(opts.today);
+  const scopes: Array<string | null> = [null, ...opts.costCenterIds]; // null === enterprise/tenant total
+  for (let ms = firstDayMs; ms <= todayMs; ms += DAY_MS) {
+    const day = new Date(ms).toISOString().slice(0, 10);
+    const inRefreshWindow = todayMs - ms <= DAILY_REFRESH_WINDOW_DAYS * DAY_MS;
+    const banked = opts.bankedDates.has(day);
+    if (banked && !inRefreshWindow) {
+      result.daysSkippedBanked.push(day);
+      continue;
+    }
+    const [year, mon, dayNum] = day.split('-').map(Number) as [number, number, number];
+    try {
+      const perScope = await mapWithConcurrency(scopes, DAILY_BACKFILL_CONCURRENCY, async (ccId) => {
+        const report = await fetchAiCreditUsage(octokit, enterprise, {
+          year,
+          month: mon,
+          day: dayNum,
+          ...(ccId === null ? {} : { cost_center_id: ccId }),
+        });
+        return { costCenterId: ccId, creditsUsed: sumNetQuantity(report) };
+      });
+      // All scopes resolved (mapWithConcurrency's per-wave Promise.all would have
+      // thrown otherwise) -> commit this day's rows atomically.
+      for (const s of perScope) result.rows.push({ date: day, costCenterId: s.costCenterId, creditsUsed: s.creditsUsed });
+      result.daysPersisted.push(day);
+      if (banked && inRefreshWindow) result.daysRefreshed.push(day);
+    } catch {
+      // Day-level error isolation: no partial rows for this day; retried next sync.
+      result.daysFailed.push(day);
     }
   }
   return result;
@@ -1878,6 +2063,48 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       }
     }
 
+    // Daily per-scope AI-credit backfill (migration 0008) -- github-source ONLY,
+    // and it runs BEFORE the forecast so the enterprise/CC scopes can train on
+    // real per-day billing history instead of the R5 month-lump flat-spread. MSW
+    // has no ai_credit/usage handler, so the sim path never fans out and
+    // dailyBurnByScope stays undefined (computeSyncForecasts falls back to the
+    // month-lump path -- sim pins byte-identical). The banked facts are read once
+    // here (winner-resolved) and also drive the fan-out's banked-skip set; the
+    // fresh rows are then overlaid (a fresh row for a (date, scope) supersedes
+    // the banked one -- the same latest-snapshot-wins rule the read applies) and
+    // the merged set is folded into per-scope DailyBurn series. The fresh rows
+    // persist inside ingestSnapshot's transaction below.
+    let dailyBackfill: IngestDailyCreditsRow[] = [];
+    let dailyBurnByScope: DailyBurnByScope | undefined;
+    {
+      const bankedDaily = config.source === 'github' ? readDailyCreditsFactsFor(config.db, config.source) : [];
+      if (config.source === 'github') {
+        const backfill = await backfillDailyCredits(octokit, enterprise, {
+          today: currentDate(),
+          costCenterIds,
+          bankedDates: new Set(bankedDaily.map((r) => r.date)),
+        });
+        dailyBackfill = backfill.rows;
+        // §6.6-safe summary (days + counts only, never a login/URL).
+        console.info(
+          `[daily-backfill] persisted ${backfill.daysPersisted.length} day(s) / ${backfill.rows.length} row(s); ` +
+            `banked-skipped ${backfill.daysSkippedBanked.length}; refreshed ${backfill.daysRefreshed.length}; ` +
+            `failed ${backfill.daysFailed.length}; era-floor ${backfill.eraFloorMonth ?? 'none'}`,
+        );
+      }
+      // Use the daily-fact path only when facts exist for this source (banked or
+      // freshly fetched). Merge banked + fresh with fresh winning per (date,
+      // scope), then assemble per-scope series (pure, in compute.ts).
+      if (bankedDaily.length > 0 || dailyBackfill.length > 0) {
+        const merged = new Map<string, DailyCreditsFactInput>();
+        const mergeKey = (r: DailyCreditsFactInput | IngestDailyCreditsRow): string =>
+          `${r.date}|${r.costCenterId ?? '<ent>'}`;
+        for (const r of bankedDaily) merged.set(mergeKey(r), r);
+        for (const r of dailyBackfill) merged.set(mergeKey(r), { date: r.date, costCenterId: r.costCenterId, creditsUsed: r.creditsUsed });
+        dailyBurnByScope = assembleDailyBurnByScope([...merged.values()], currentDateObj());
+      }
+    }
+
     const forecasts = computeSyncForecasts({
       asOfDate: currentDateObj(),
       computedAt: currentDate(),
@@ -1891,6 +2118,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       seats,
       budgetsRaw,
       loginToCostCenterName,
+      dailyBurnByScope,
     });
 
     // Monthly per-user AI-credit backfill (migration 0007) -- github-source
@@ -1972,6 +2200,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       controls: live.controls,
       forecasts,
       monthlyBackfill,
+      dailyBackfill,
     };
 
     ingestSnapshot(config.db, config.source, data);

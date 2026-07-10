@@ -155,6 +155,56 @@ export function assembleCostCenterSeries(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Daily billing-fact assembly (item 25, forecast history rewire): live
+// enterprise/cost-center forecasts train on REAL per-day billing aggregates
+// (schema.ts's ai_credit_daily_fact) instead of the month-lump flat-spread
+// expandMonthlyAggregates produced. Each fact row already IS one day's truth
+// for one scope -- the enterprise (costCenterId null) row is the tenant total,
+// and each cost center has its own row -- so NO monthly spread is needed:
+// fold each scope's rows straight into DailyBurn[] via toDailyBurn (dedup by
+// day + sort + the same post-asOf look-ahead drop every series gets). The
+// enterprise series is the null-costCenter rows ONLY; it is NEVER Σ over the CC
+// rows, because cost centers may not partition the tenant (unassociated usage
+// exists) -- the daily fact table's own grain comment. This carries genuine
+// day-to-day variance into core's variance model, which the flat month-spread
+// could not (a constant daily series has zero measured variance -> a degenerate
+// band; see forecast.ts's variance path). Pure/DB-free like the rest of this
+// module: github-impl.ts reads the facts and hands the row array in.
+export interface DailyCreditsFactInput {
+  date: string; // 'YYYY-MM-DD'
+  /** NULL === the enterprise/tenant-total row; a cost-center id otherwise. */
+  costCenterId: string | null;
+  creditsUsed: number;
+}
+
+export interface DailyBurnByScope {
+  /** The tenant-total series (null-costCenter facts only). */
+  enterprise: DailyBurn[];
+  /** Per cost-center id, that cost center's own daily series. */
+  costCenter: Map<string, DailyBurn[]>;
+}
+
+export function assembleDailyBurnByScope(rows: readonly DailyCreditsFactInput[], asOfDate: Date): DailyBurnByScope {
+  const enterprise = toDailyBurn(
+    rows.filter((r) => r.costCenterId === null).map((r) => ({ date: r.date, credits: r.creditsUsed })),
+    asOfDate,
+  );
+  const costCenter = new Map<string, DailyBurn[]>();
+  const ccIds = new Set<string>();
+  for (const r of rows) if (r.costCenterId !== null) ccIds.add(r.costCenterId);
+  for (const ccId of ccIds) {
+    costCenter.set(
+      ccId,
+      toDailyBurn(
+        rows.filter((r) => r.costCenterId === ccId).map((r) => ({ date: r.date, credits: r.creditsUsed })),
+        asOfDate,
+      ),
+    );
+  }
+  return { enterprise, costCenter };
+}
+
 export interface AssembleCreditsUsedRow {
   date: string;
   userId: string;

@@ -55,6 +55,16 @@ export interface AiCreditUsageQuery {
   day?: number;
   /** The per-user fan-out filter (a seat login). Absent === the unfiltered month aggregate. */
   user?: string;
+  /**
+   * The per-cost-center fan-out filter (migration 0008 daily backfill). Absent
+   * === the enterprise/tenant-total aggregate. Same already-verified surface:
+   * `cost_center_id` (string, optional) is one of the OpenAPI query params this
+   * endpoint accepts (docs/api-surface-validation.md N1 / live-read smoke R7 --
+   * the machine-verified param list is year/month/day integers +
+   * organization/user/model/product/cost_center_id strings). No NEW endpoint or
+   * param is introduced by adding it here.
+   */
+  cost_center_id?: string;
 }
 
 /**

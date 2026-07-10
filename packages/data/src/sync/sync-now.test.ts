@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import type { BudgetControl, ControlState, ForecastResult, IncludedCapControl } from '@copilot-budget/core';
-import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, creditsUsedMonthlyFact, license, snapshot, usageFact } from '../db/schema.js';
+import { aiCreditDailyFact, controlSnapshot, costCenter, costCenterMember, creditsUsedFact, creditsUsedMonthlyFact, license, snapshot, usageFact } from '../db/schema.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
 import { getLastSyncedControls, getLatestForecast, getSyncStatus, syncNow, type IngestData, type IngestForecastItem } from './sync-now.js';
 
@@ -143,6 +143,40 @@ describe('syncNow', () => {
     expect(remainder.every((r) => r.userLogin === null)).toBe(true);
     const june = rows.find((r) => r.month === '2026-06' && r.userId === '1001');
     expect(june).toMatchObject({ userLogin: 'user-01', creditsUsed: 400 });
+  });
+
+  it('is a no-op for daily backfill when the field is omitted (sim / pre-first-fan-out)', () => {
+    const result = syncNow(db, 'msw', baseData);
+    expect(result.dailyBackfillRowCount).toBe(0);
+    expect(result.dailyBackfillDays).toBe(0);
+    expect(db.select().from(aiCreditDailyFact).all()).toHaveLength(0);
+  });
+
+  it('persists daily backfill rows (enterprise null-CC + per-CC) under the sync snapshot, on a populated DB (migration 0008)', () => {
+    // migration 0008 is a pure additive CREATE TABLE -- runMigrations (beforeEach)
+    // applied it. Two days, each: enterprise (null) + 2 CC rows = 3 rows/day = 6.
+    const data: IngestData = {
+      ...baseData,
+      dailyBackfill: [
+        { date: '2026-06-01', costCenterId: null, creditsUsed: 100 }, // tenant total
+        { date: '2026-06-01', costCenterId: 'cc-platform', creditsUsed: 60 },
+        { date: '2026-06-01', costCenterId: 'cc-data-analytics', creditsUsed: 30 },
+        { date: '2026-06-02', costCenterId: null, creditsUsed: 120 },
+        { date: '2026-06-02', costCenterId: 'cc-platform', creditsUsed: 70 },
+        { date: '2026-06-02', costCenterId: 'cc-data-analytics', creditsUsed: 40 },
+      ],
+    };
+    const result = syncNow(db, 'github', data);
+    expect(result.dailyBackfillRowCount).toBe(6);
+    expect(result.dailyBackfillDays).toBe(2);
+
+    const rows = db.select().from(aiCreditDailyFact).all();
+    expect(rows).toHaveLength(6);
+    expect(rows.every((r) => r.snapshotId === result.snapshotId)).toBe(true);
+    // The enterprise rows carry NULL cost_center_id; CC rows carry the id.
+    expect(rows.filter((r) => r.costCenterId === null)).toHaveLength(2);
+    const platformJun1 = rows.find((r) => r.date === '2026-06-01' && r.costCenterId === 'cc-platform');
+    expect(platformJun1).toMatchObject({ creditsUsed: 60 });
   });
 
   it('chunks large fact inserts across the 500-row boundary, all under one snapshot (SQLITE_MAX_VARIABLE_NUMBER guard)', () => {

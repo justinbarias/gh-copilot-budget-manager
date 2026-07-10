@@ -292,6 +292,30 @@ June alone, and re-syncs cost only the 1-call era-floor retry once every month i
 banked. Sim/MSW has no `ai_credit/usage` handler and never fans out (pins
 byte-identical).
 
+**ADOPTED for the daily per-scope forecast backfill (2026-07-10, item 25).**
+`ai_credit/usage` is now also read at **DAY grain** to feed the enterprise/
+cost-center forecast history: `syncNow` (github source only) fans out one
+aggregate per (day, scope) — enterprise = no `cost_center_id` (the tenant
+total), plus one call per cost center via the `cost_center_id` **string** filter
+— summing `netQuantity` into migration 0008 `ai_credit_daily_fact`, then
+assembles real per-day `DailyBurn[]` that BYPASS the R5 month-lump flat-spread
+(`expandMonthlyAggregates`) that had starved the variance model. **No new
+endpoint, path, or param** is introduced: the `day` **integer** and
+`cost_center_id` **string** params are both in the machine-verified N1 param
+list above (`year`/`month`/`day` integer; `…/cost_center_id` string), and the
+`day`-grain call is additionally live-probed (R7 section, 2026-06-24 data), so
+this adoption adds **no** new §6.9 obligation — the wrapper
+(`api-client/ai-credit-usage.ts`, `AiCreditUsageQuery.cost_center_id`) cites
+this section. Fan-out per Sync: an era-floor month scan (a few cheap enterprise
+month probes back to the first month with data) then every day of the data era
+× (1 + #CCs), banked-append-once EXCEPT a trailing 4-day refresh window (billing
+settles ~2 days; latest snapshot wins per (date, scope) at read). First live
+Sync ≈ (days since the June era floor) × (1 + ~6 CCs) ≈ 40 × 7 ≈ **280 calls**;
+steady state ≈ the 4 refreshed days × 7 ≈ **28 calls** + the month probes.
+Sim/MSW never fans out (no `ai_credit/usage` handler) so the daily-fact table
+stays empty and the forecast falls back to the month-lump path (pins
+byte-identical).
+
 **First live-contact finding (2026-07-08 smoke, unauthenticated).** The
 maintainer's first real live read smoke returned **`401 "Requires
 authentication"` on every read (R1–R6)** — a wiring bug, not a shape

@@ -40,6 +40,19 @@ export interface IngestMonthlyCreditsRow {
   creditsUsed: number;
 }
 
+/**
+ * Daily backfill (migration 0008 `ai_credit_daily_fact`): one row per (date,
+ * scope) from the billing ai_credit/usage DAY-grain fan-out. `costCenterId` NULL
+ * is the enterprise/tenant-total row; a cost-center id otherwise. `date` is
+ * 'YYYY-MM-DD'. github-source only -- sim/MSW never produces these (no
+ * ai_credit/usage handler), so the array is empty in sim.
+ */
+export interface IngestDailyCreditsRow {
+  date: string;
+  costCenterId: string | null;
+  creditsUsed: number;
+}
+
 export interface IngestCostCenter {
   id: string;
   name: string;
@@ -113,6 +126,15 @@ export interface IngestData {
    * rows persist inside the SAME sync transaction as everything else below.
    */
   monthlyBackfill?: IngestMonthlyCreditsRow[];
+  /**
+   * Daily per-scope AI-credit backfill rows to append (migration 0008). Each
+   * fanned-out day contributes one row per scope (enterprise + each cost
+   * center), assembled all-or-nothing per day by the caller (a day whose fan-out
+   * failed contributes none). Optional so existing test call sites and the sim
+   * path (which never backfills) can omit it. All rows persist inside the SAME
+   * sync transaction as everything else below.
+   */
+  dailyBackfill?: IngestDailyCreditsRow[];
 }
 
 export interface SyncResult {
@@ -126,6 +148,10 @@ export interface SyncResult {
   monthlyBackfillRowCount: number;
   /** Migration 0007: distinct months represented among those rows. 0 in sim. */
   monthlyBackfillMonths: number;
+  /** Migration 0008: total ai_credit_daily_fact rows persisted this sync (enterprise + per-CC across all fanned-out days). 0 in sim. */
+  dailyBackfillRowCount: number;
+  /** Migration 0008: distinct dates represented among those rows. 0 in sim. */
+  dailyBackfillDays: number;
 }
 
 /** Task 5.4: `getLatestForecast`'s return shape -- the latest persisted forecast for a (scope, entity). */
@@ -299,6 +325,30 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       );
     }
 
+    // Migration 0008: append this sync's daily per-scope AI-credit backfill rows
+    // (github-source only; empty in sim). Same append-only convention + chunking
+    // as the fact tables above, inside the SAME transaction -- a throw anywhere
+    // in this transaction rolls the whole sync back. The caller assembles these
+    // all-or-nothing per day (a day whose fan-out failed contributes none), so
+    // there is no partial-day row set at this layer. cost_center_id NULL is the
+    // enterprise/tenant-total row.
+    const dailyBackfill = data.dailyBackfill ?? [];
+    if (dailyBackfill.length > 0) {
+      chunked(dailyBackfill, (chunk) =>
+        tx
+          .insert(schema.aiCreditDailyFact)
+          .values(
+            chunk.map((row) => ({
+              snapshotId: snapshotRow.id,
+              date: row.date,
+              costCenterId: row.costCenterId,
+              creditsUsed: row.creditsUsed,
+            })),
+          )
+          .run(),
+      );
+    }
+
     // Task 5.4: one forecast row per (scope, entity), in the SAME transaction
     // as the snapshot/control writes above -- append-only, same convention
     // (never conditioned on "something changed"; every row references this
@@ -327,6 +377,8 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
       forecastCount: data.forecasts.length,
       monthlyBackfillRowCount: monthlyBackfill.length,
       monthlyBackfillMonths: new Set(monthlyBackfill.map((row) => row.month)).size,
+      dailyBackfillRowCount: dailyBackfill.length,
+      dailyBackfillDays: new Set(dailyBackfill.map((row) => row.date)).size,
     };
   });
 }

@@ -101,6 +101,39 @@ export const creditsUsedMonthlyFact = sqliteTable('credits_used_monthly_fact', {
   creditsUsed: real('credits_used').notNull(),
 });
 
+// Daily per-scope AI-credit aggregate (billing ai_credit/usage DAY-grain report,
+// migration 0008, maintainer-approved). GRAIN: one row per (snapshot, date,
+// scope) where scope is the enterprise (costCenterId NULL === the tenant total)
+// or a single cost center (costCenterId set). The enterprise row is the tenant
+// total, NOT the sum of the CC rows -- cost centers may not partition the tenant
+// (unassociated usage exists), so summing CC rows would undercount. Distinct
+// from usage_fact (per-model rows, R5 MONTHLY aggregates on the wire) and from
+// credits_used_fact (per-user-per-day from the Copilot metrics users-1-day
+// report, which zero-fills past retention): THIS table is the enterprise/cost-
+// center forecast's real per-DAY history, sourced from the billing report (which
+// HAS true day-grain history and does NOT zero-fill). It is the fix for the
+// month-lump flat-spread that starved the enterprise/CC variance model (the
+// forecast band was degenerate because expandMonthlyAggregates produced a
+// constant daily series). `date` is 'YYYY-MM-DD'. Banked-append-once per
+// (source, date) EXCEPT a trailing 4-day refresh window (billing settles ~2
+// days), so the reader takes the LATEST snapshot per (date, cost center) -- a
+// refresh-window refetch is a newer snapshot and wins, capturing the settled
+// value. No nonzero-preference rule (unlike credits_used_fact): billing returns
+// real per-day values including genuine zeros and never zero-fills for
+// retention, so latest-snapshot-wins is correct and matches this fact table's
+// billing sibling credits_used_monthly_fact. github-source ONLY -- simulation/
+// MSW has no ai_credit/usage handler, so this table stays empty in sim and the
+// forecast assembly falls back to the month-lump path (sim pins byte-identical).
+export const aiCreditDailyFact = sqliteTable('ai_credit_daily_fact', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  snapshotId: integer('snapshot_id')
+    .notNull()
+    .references(() => snapshot.id),
+  date: text('date').notNull(), // YYYY-MM-DD
+  costCenterId: text('cost_center_id').references(() => costCenter.id), // NULL === enterprise-level (tenant total)
+  creditsUsed: real('credits_used').notNull(),
+});
+
 // Read-only mirror of GitHub's budget object (PRD §2.1). No write path in MVP.
 export const budget = sqliteTable('budget', {
   id: text('id').primaryKey(),
