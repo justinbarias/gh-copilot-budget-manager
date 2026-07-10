@@ -7,9 +7,9 @@ import { desc } from 'drizzle-orm';
 import { driftedControlIds, poolAllowanceLine } from '@copilot-budget/core';
 import { assembleEnterpriseSeries, computeScopeForecast } from '../forecast/compute.js';
 import { server } from '../msw/server.js';
-import { BUDGET_IDS, COST_CENTER_IDS, ENTERPRISE_SLUG, GITHUB_API_BASE, HISTORICAL_USAGE_ITEMS, SIM_CURRENT_DATE, USAGE_ITEMS } from '../msw/fixtures/index.js';
+import { BUDGET_IDS, COST_CENTER_IDS, CREDITS_USED_ITEMS, ENTERPRISE_SLUG, GITHUB_API_BASE, HISTORICAL_CREDITS_USED_ITEMS, HISTORICAL_USAGE_ITEMS, SIM_CURRENT_DATE, USAGE_ITEMS } from '../msw/fixtures/index.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
-import { costCenter, costCenterMember, forecast as forecastTable, license, snapshot } from '../db/schema.js';
+import { costCenter, costCenterMember, creditsUsedFact, forecast as forecastTable, license, snapshot } from '../db/schema.js';
 import { createGitHubApiClient, type GitHubApiClientConfig } from './github-impl.js';
 import { setWriteArmed } from '../write/arming.js';
 
@@ -355,6 +355,45 @@ describe('createGitHubApiClient', () => {
       mtdBurnCredits: 4_930,
       entTeam: 'payments-eng',
     });
+  });
+
+  // Distribution D2 (maintainer-approved sync change, 2026-07-10): syncNow
+  // persists the prior-cycle per-user backfill (the SAME already-fetched
+  // records the forecast trains on) into credits_used_fact alongside the
+  // current cycle's, each row carrying the report's user_login.
+  it('syncNow persists the prior-cycle backfill into credits_used_fact, every row carrying user_login', async () => {
+    await client.syncNow();
+    const rows = db.select().from(creditsUsedFact).all();
+
+    // Backfill window (fetchHistoricalCreditsUsedItems): 2026-03-01 through
+    // 2026-05-31 -- 31 + 30 + 31 = 92 days, and the historical fixture
+    // generator emits one row per persona per day (5 personas; even the
+    // smallest weekend value rounds above zero, e.g. faisal-noor's March
+    // weekend 4180/13 x 0.7 x 0.3 = 67.5 -> 68). 5 x 92 = 460 rows.
+    const historical = rows.filter((r) => r.date < '2026-06-01');
+    expect(historical).toHaveLength(460);
+    expect(HISTORICAL_CREDITS_USED_ITEMS).toHaveLength(460); // the generator emits exactly the persisted set
+    expect(historical.every((r) => r.userLogin !== null)).toBe(true);
+    expect(rows.reduce((min, r) => (r.date < min ? r.date : min), rows[0]!.date)).toBe('2026-03-01');
+
+    // Hand-computed spot check: emily-zhao (user 5182), Monday 2026-03-02, a
+    // March weekday -- dailyRate 5480/13 x MONTH_RAMP[3] 0.7 = 295.0769...
+    // -> Math.round -> 295 (usage-history.ts's generator).
+    expect(historical.find((r) => r.userId === '5182' && r.date === '2026-03-02')).toMatchObject({
+      userLogin: 'emily-zhao',
+      creditsUsed: 295,
+    });
+
+    // Current-cycle rows still land, now with logins (liam-obrien's pinned
+    // 2026-06-03 row: 822 credits), and the total is backfill + the June
+    // cycle-window fixture rows (2026-06-01..14; the R6 fan-out serves the
+    // fixture rows verbatim, one JSONL record per row).
+    expect(rows.find((r) => r.date === '2026-06-03' && r.userId === '5107')).toMatchObject({
+      userLogin: 'liam-obrien',
+      creditsUsed: 822,
+    });
+    const juneWindowCount = CREDITS_USED_ITEMS.filter((i) => i.date >= '2026-06-01' && i.date <= '2026-06-14').length;
+    expect(rows).toHaveLength(460 + juneWindowCount);
   });
 
   it('ranks the full 81-user licensed roster by cycle-to-date credits used, descending', async () => {

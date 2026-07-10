@@ -15,6 +15,13 @@ export interface IngestUsageItem {
 export interface IngestCreditsUsedItem {
   date: string;
   userId: string;
+  /**
+   * Distribution D2 (migration 0005): the login the R6 users report carries
+   * alongside `user_id` (users-report.ts's UsersReportRecord). Required here
+   * -- the wire source always has it -- while the COLUMN stays nullable only
+   * for rows persisted before the migration existed.
+   */
+  userLogin: string;
   creditsUsed: number;
 }
 
@@ -34,6 +41,13 @@ export interface IngestCostCenterMember {
 
 export interface IngestLicense {
   userId: string;
+  /**
+   * Distribution D2 (migration 0005): the seat's `assignee.login`. Required
+   * here -- the seats listing always carries it -- while the COLUMN stays
+   * nullable only for rows persisted before the migration existed (the table
+   * is wholesale-replaced every sync, so one post-migration sync fills it).
+   */
+  userLogin: string;
   costCenterId: string | null;
   assignedAt: Date | null;
 }
@@ -174,6 +188,7 @@ export function syncNow(db: Db, source: 'msw' | 'github', data: IngestData): Syn
             snapshotId: snapshotRow.id,
             date: item.date,
             userId: item.userId,
+            userLogin: item.userLogin,
             creditsUsed: item.creditsUsed,
           })),
         )

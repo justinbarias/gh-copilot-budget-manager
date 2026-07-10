@@ -2,7 +2,7 @@ import path from 'node:path';
 import { app, ipcMain } from 'electron';
 import { createGitHubApiClient, setWriteArmed } from '@copilot-budget/data/api-client';
 import { createTenantConfigStore, resolveBaseUrl } from '@copilot-budget/data/tenant';
-import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageSummaryParams, WriteArmingRequest } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageDistributionWindowInput, UsageSummaryParams, WriteArmingRequest } from '@copilot-budget/data';
 import type { TenantConfigStore } from '@copilot-budget/data/tenant';
 import type { PatStore } from '@copilot-budget/data/pat';
 import { getDb } from './db';
@@ -136,6 +136,11 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
     client.setWriteArming(request),
   );
   ipcMain.handle('apiClient:listHeavyUsers', () => client.listHeavyUsers());
+  // Distribution D2: a pure local-SQLite read (no GitHub request, both
+  // modes). Same per-method channel pattern as every other bridged method.
+  ipcMain.handle('apiClient:getUsageDistribution', (_event, input: UsageDistributionWindowInput) =>
+    client.getUsageDistribution(input),
+  );
   ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());
   ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());
   ipcMain.handle('apiClient:syncNow', () => client.syncNow());

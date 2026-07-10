@@ -15,6 +15,7 @@ const apiClientBridge: ApiClient = {
   getWriteArmingState: () => ipcRenderer.invoke('apiClient:getWriteArmingState'),
   setWriteArming: (request) => ipcRenderer.invoke('apiClient:setWriteArming', request),
   listHeavyUsers: () => ipcRenderer.invoke('apiClient:listHeavyUsers'),
+  getUsageDistribution: (input) => ipcRenderer.invoke('apiClient:getUsageDistribution', input),
   listAlerts: () => ipcRenderer.invoke('apiClient:listAlerts'),
   getSyncStatus: () => ipcRenderer.invoke('apiClient:getSyncStatus'),
   syncNow: () => ipcRenderer.invoke('apiClient:syncNow'),

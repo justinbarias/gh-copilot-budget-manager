@@ -240,6 +240,65 @@ export interface HeavyUser {
   effectiveUlb: EffectiveUlb | null;
 }
 
+/** Distribution D2: the Usage-distribution screen's window selector -- rolling 1, 3, or 9 calendar months back from the latest synced day. */
+export interface UsageDistributionWindowInput {
+  months: 1 | 3 | 9;
+}
+
+export interface UsageDistributionUser {
+  /**
+   * The user's GitHub login, resolved by a documented fallback ladder (the
+   * synced mirror predates migration 0005, so old rows may carry no login):
+   * (1) the winning fact rows' `user_login` (latest-dated non-null row inside
+   * the window); (2) the license table's `user_login` (the seats listing's
+   * `assignee.login`, persisted at sync); (3) `String(userId)` -- the honest
+   * last resort for pre-migration rows that were never re-synced.
+   */
+  userLogin: string;
+  /** Via the license row's costCenterId -> cost_center.name join; null when unassigned (or the user has usage facts but no license row). */
+  costCenterName: string | null;
+  /** Total over [fromDate, toDate], rounded to the nearest integer at the end (facts are REAL). 0 for a licensed-but-inactive user. */
+  creditsUsed: number;
+}
+
+/**
+ * Distribution D2: per-user credit totals over a rolling window of synced
+ * history, read ENTIRELY from the local SQLite mirror (credits_used_fact +
+ * license + cost_center) -- no GitHub request, identical logic in both modes,
+ * source-scoped to this client's mode (CLAUDE.md §6.8).
+ *
+ * Coverage semantics (maintainer-approved union, 2026-07-10): the covered
+ * date range is the UNION of fact dates across ALL of this source's
+ * snapshots; for each date, the rows from the LATEST snapshot containing
+ * that date win (report data settles, so the newest ingestion of a day is
+ * the truth for that day; a day only present in an older snapshot still
+ * contributes). toDate = the max such date; the requested fromDate =
+ * toDate minus `months` calendar months plus one day (inclusive both ends;
+ * day-of-month clamped to the target month's length, so e.g. Jul 31 minus 1
+ * month + 1 day = Jul 1). When the requested start predates the earliest
+ * covered date, fromDate clamps to it and `truncated` is true.
+ *
+ * ROSTER RULE: `users` includes EVERY licensed user (license table), with
+ * creditsUsed 0 for those without usage in the window -- plus, defensively,
+ * any user with fact rows but no license row.
+ *
+ * SENTINEL: a DB with no synced per-user history at all for this source
+ * (fresh install, never synced) returns
+ * `{ fromDate: '', toDate: '', truncated: false, users: [] }` -- the UI
+ * renders an empty state. Empty-string dates never appear otherwise; all
+ * dates are YYYY-MM-DD UTC.
+ */
+export interface UsageDistributionWindow {
+  /** YYYY-MM-DD, actual coverage start (post-clamp); '' only in the sentinel. */
+  fromDate: string;
+  /** YYYY-MM-DD, latest day with synced data; '' only in the sentinel. */
+  toDate: string;
+  /** True when available history is shorter than the requested months. */
+  truncated: boolean;
+  /** Deterministically ordered: creditsUsed descending, then userLogin ascending. */
+  users: UsageDistributionUser[];
+}
+
 export interface Alert {
   id: string;
   severity: 'info' | 'warning' | 'critical';
@@ -398,6 +457,15 @@ export interface ApiClient {
   getWriteArmingState(): Promise<WriteArmingState>;
   setWriteArming(request: WriteArmingRequest): Promise<WriteArmingState>;
   listHeavyUsers(): Promise<HeavyUser[]>;
+  /**
+   * Distribution D2 (maintainer-approved interface): per-user credit totals
+   * over a rolling 1/3/9-calendar-month window of SYNCED history -- a pure
+   * local-SQLite read (no GitHub request, both modes identical, source-
+   * scoped). See UsageDistributionWindow's doc comment for the coverage
+   * (union/latest-wins), roster, and sentinel semantics. Throws on a months
+   * value outside 1|3|9 (the IPC boundary is untyped at runtime).
+   */
+  getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow>;
   listAlerts(): Promise<Alert[]>;
   getSyncStatus(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;

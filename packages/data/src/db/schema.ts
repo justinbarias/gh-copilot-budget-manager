@@ -29,6 +29,14 @@ export const costCenterMember = sqliteTable('cost_center_member', {
 export const license = sqliteTable('license', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   userId: text('user_id').notNull(),
+  // Distribution D2 (maintainer-approved migration 0005): the seat's GitHub
+  // login, persisted from the seats listing's `assignee.login` (the license
+  // sync source ALWAYS carries it -- github-impl.ts's Seat type). Nullable
+  // only because rows written before this column existed cannot be
+  // backfilled; the table is wholesale-replaced on every sync, so any
+  // post-migration sync fills it for every row. Read-side fallback when
+  // null: String(userId) (getUsageDistribution's documented ladder).
+  userLogin: text('user_login'),
   costCenterId: text('cost_center_id').references(() => costCenter.id),
   assignedAt: integer('assigned_at', { mode: 'timestamp_ms' }),
 });
@@ -55,6 +63,13 @@ export const creditsUsedFact = sqliteTable('credits_used_fact', {
     .references(() => snapshot.id),
   date: text('date').notNull(),
   userId: text('user_id').notNull(),
+  // Distribution D2 (maintainer-approved migration 0005): the user's GitHub
+  // login as the R6 users report delivered it alongside `user_id`
+  // (users-report.ts's UsersReportRecord carries both; only the numeric id
+  // was persisted before this column). Nullable because rows ingested before
+  // the migration cannot be backfilled -- read paths fall back to
+  // String(userId) when null (getUsageDistribution's documented ladder).
+  userLogin: text('user_login'),
   creditsUsed: real('credits_used').notNull(),
 });
 

@@ -1,4 +1,5 @@
 import { Octokit } from 'octokit';
+import { eq } from 'drizzle-orm';
 import {
   computeModelMix,
   cycleBounds,
@@ -87,6 +88,9 @@ import type {
   SetScenarioResult,
   StoredForecast,
   SyncStatus,
+  UsageDistributionUser,
+  UsageDistributionWindow,
+  UsageDistributionWindowInput,
   UsageSummary,
   UsageSummaryParams,
   WriteArmingRequest,
@@ -230,6 +234,22 @@ const USER_ULB_NEVER_METERS = false;
 // camelCase `discountAmount`, not the old snake_case that read as undefined.)
 function poolCreditsForItem(item: Pick<UsageItem, 'discountAmount'>): number {
   return Math.round(item.discountAmount * 100);
+}
+
+// Distribution D2: the rolling window's requested start -- `toDate` minus
+// `months` calendar months, plus one day (inclusive both ends; the brief's
+// example: toDate 2026-06-14, months 1 -> 2026-05-15). The day-of-month is
+// clamped to the target month's length BEFORE the +1 day, so month-end
+// anchors stay calendar-true instead of JS-rolling into the next month
+// (2026-07-31 minus 1 month would otherwise be "June 31" -> Jul 1 -> +1 =
+// Jul 2; clamped it is Jun 30 -> +1 = Jul 1, i.e. exactly the month of July).
+// Pure (no I/O, no wall clock); all dates YYYY-MM-DD UTC.
+function distributionWindowStart(toDate: string, months: 1 | 3 | 9): string {
+  const [y, m, d] = toDate.split('-').map(Number) as [number, number, number];
+  const targetMonthIndex = m - 1 - months; // Date.UTC normalizes negative month indices
+  const lastDayOfTargetMonth = new Date(Date.UTC(y, targetMonthIndex + 1, 0)).getUTCDate();
+  const anchor = Date.UTC(y, targetMonthIndex, Math.min(d, lastDayOfTargetMonth));
+  return new Date(anchor + DAY_MS).toISOString().slice(0, 10);
 }
 
 // budget_amount is USD (PRD §2.3); ULBs cap a person's *credit* consumption
@@ -918,6 +938,143 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     return rankHeavyUsers(users);
   }
 
+  // Distribution D2: per-user credit totals over a rolling 1/3/9-month
+  // window, read ENTIRELY from the local SQLite mirror -- NO GitHub request
+  // on this path (both sources run the identical query; §6.9 exempt by
+  // construction). Coverage is the maintainer-approved union/latest-wins
+  // (types.ts's UsageDistributionWindow doc): dates union across ALL of this
+  // source's snapshots; per date, the latest snapshot containing it wins.
+  // Source-scoped (CLAUDE.md §6.8) via the same snapshot join
+  // getLastSyncedControls/getLatestForecast use, so a sim session never
+  // aggregates live-synced facts as its own (and vice versa).
+  //
+  // NOTE (deliberate divergence from the D2 brief's wording, maintainer-
+  // ratified 2026-07-10): the brief said to follow listHeavyUsers' snapshot
+  // scoping and cost-center join -- but listHeavyUsers is a LIVE read (R6
+  // fan-out + seats + embedded CC resources), not a SQLite read, and its
+  // login-space CC join has no DB equivalent. The DB-native join is simpler:
+  // license.costCenterId -> cost_center.name (null when unassigned or when a
+  // fact-only user has no license row).
+  async function getUsageDistribution(input: UsageDistributionWindowInput): Promise<UsageDistributionWindow> {
+    const months = input.months;
+    // Runtime guard: the preload/IPC boundary is untyped at runtime, so the
+    // 1|3|9 literal type alone protects nothing (same rationale as
+    // setScenario's isScenarioId check; thrown rather than refused-shaped
+    // because an out-of-range months is a caller bug, not a mode condition).
+    if (months !== 1 && months !== 3 && months !== 9) {
+      throw new Error(`getUsageDistribution: months must be 1, 3, or 9 (got ${String(months)}).`);
+    }
+
+    const factRows = config.db
+      .select({
+        date: schema.creditsUsedFact.date,
+        userId: schema.creditsUsedFact.userId,
+        userLogin: schema.creditsUsedFact.userLogin,
+        creditsUsed: schema.creditsUsedFact.creditsUsed,
+        snapshotId: schema.creditsUsedFact.snapshotId,
+      })
+      .from(schema.creditsUsedFact)
+      .innerJoin(schema.snapshot, eq(schema.snapshot.id, schema.creditsUsedFact.snapshotId))
+      .where(eq(schema.snapshot.source, config.source))
+      .all();
+
+    // SENTINEL (types.ts): no per-user history for this source at all --
+    // fresh DB / never synced in this mode. Nothing to anchor a window to.
+    if (factRows.length === 0) {
+      return { fromDate: '', toDate: '', truncated: false, users: [] };
+    }
+
+    // Union/latest-wins: per date, the highest snapshotId containing that
+    // date is the winning generation; its rows are that day's truth.
+    const winnerSnapshotByDate = new Map<string, number>();
+    for (const row of factRows) {
+      const winner = winnerSnapshotByDate.get(row.date);
+      if (winner === undefined || row.snapshotId > winner) winnerSnapshotByDate.set(row.date, row.snapshotId);
+    }
+
+    let toDate = '';
+    let earliestDate = '';
+    for (const date of winnerSnapshotByDate.keys()) {
+      if (toDate === '' || date > toDate) toDate = date;
+      if (earliestDate === '' || date < earliestDate) earliestDate = date;
+    }
+
+    const requestedFrom = distributionWindowStart(toDate, months);
+    const truncated = requestedFrom < earliestDate;
+    const fromDate = truncated ? earliestDate : requestedFrom;
+
+    // Per-user window sums over the winning rows only, [fromDate, toDate]
+    // inclusive; the login candidate is the latest-dated non-null user_login
+    // among the user's winning in-window rows (rung 1 of the ladder).
+    interface DistAccumulator {
+      sum: number;
+      loginDate: string;
+      login: string | null;
+    }
+    const accByUserId = new Map<string, DistAccumulator>();
+    for (const row of factRows) {
+      if (row.snapshotId !== winnerSnapshotByDate.get(row.date)) continue; // superseded generation for this date
+      if (row.date < fromDate || row.date > toDate) continue;
+      let acc = accByUserId.get(row.userId);
+      if (!acc) {
+        acc = { sum: 0, loginDate: '', login: null };
+        accByUserId.set(row.userId, acc);
+      }
+      acc.sum += row.creditsUsed;
+      if (row.userLogin !== null && row.date >= acc.loginDate) {
+        acc.loginDate = row.date;
+        acc.login = row.userLogin;
+      }
+    }
+
+    // ROSTER RULE: every licensed user appears, zero-usage included; users
+    // with facts but no license row (shouldn't exist; defensive) follow.
+    const licenseRows = config.db.select().from(schema.license).all();
+    const costCenterNameById = new Map(
+      config.db
+        .select({ id: schema.costCenter.id, name: schema.costCenter.name })
+        .from(schema.costCenter)
+        .all()
+        .map((cc) => [cc.id, cc.name] as const),
+    );
+    const licenseByUserId = new Map(licenseRows.map((lic) => [lic.userId, lic] as const));
+
+    // Login fallback ladder (types.ts's UsageDistributionUser doc): winning
+    // fact login -> license login (migration 0005; the seats listing always
+    // carries assignee.login) -> String(userId), the honest last resort for
+    // pre-migration rows never re-synced. (userId is already TEXT, so the
+    // final rung is the raw column value.)
+    const toUser = (userId: string): UsageDistributionUser => {
+      const acc = accByUserId.get(userId);
+      const lic = licenseByUserId.get(userId);
+      const ccId = lic?.costCenterId ?? null;
+      return {
+        userLogin: acc?.login ?? lic?.userLogin ?? userId,
+        costCenterName: ccId === null ? null : (costCenterNameById.get(ccId) ?? null),
+        // Rounded ONCE at the end (facts are REAL) -- never per-row.
+        creditsUsed: Math.round(acc?.sum ?? 0),
+      };
+    };
+
+    const users: UsageDistributionUser[] = [];
+    const seenUserIds = new Set<string>();
+    for (const lic of licenseRows) {
+      if (seenUserIds.has(lic.userId)) continue;
+      seenUserIds.add(lic.userId);
+      users.push(toUser(lic.userId));
+    }
+    for (const userId of accByUserId.keys()) {
+      if (seenUserIds.has(userId)) continue;
+      seenUserIds.add(userId);
+      users.push(toUser(userId));
+    }
+
+    // Deterministic order (types.ts): creditsUsed desc, then login asc.
+    users.sort((a, b) => b.creditsUsed - a.creditsUsed || a.userLogin.localeCompare(b.userLogin));
+
+    return { fromDate, toDate, truncated, users };
+  }
+
   async function listAlerts(): Promise<Alert[]> {
     return ALERTS;
   }
@@ -1017,9 +1174,20 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
         quantity: item.quantity,
         netAmountUsd: item.netAmount,
       })),
-      creditsUsedItems: cycleCredits.records.map((item) => ({
+      // Distribution D2 (maintainer-approved sync change, 2026-07-10): persist
+      // the prior-cycle backfill TOO (the same already-fetched
+      // historicalCredits the forecast trains on), not just the current cycle
+      // -- getUsageDistribution's 1/3/9-month windows would otherwise only
+      // ever see ~one cycle of synced data. Disjoint by construction (the
+      // backfill ends the day before cycleStart), so this never double-writes
+      // a day. Each row now carries the report's user_login (migration 0005).
+      // FORECAST-INDEPENDENT: computeSyncForecasts above consumes the SAME
+      // in-memory arrays directly (userCreditItems) and never reads
+      // credits_used_fact back, so persisting more rows changes no forecast.
+      creditsUsedItems: [...historicalCredits, ...cycleCredits.records].map((item) => ({
         date: item.date,
         userId: item.user_id,
+        userLogin: item.user_login,
         creditsUsed: item.ai_credits_used,
       })),
       costCenters: costCentersRaw.map((cc) => ({ id: cc.id, name: cc.name, state: cc.state })),
@@ -1030,6 +1198,10 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
       // this is a best-effort join on login.
       licenses: seats.map((seat) => ({
         userId: String(seat.assignee.id),
+        // Distribution D2 (migration 0005): the seat source DOES carry the
+        // login (assignee.login) -- persisted so zero-usage licensed users
+        // (no fact rows) still resolve a login for the roster rule.
+        userLogin: seat.assignee.login,
         costCenterId: loginToCostCenter.get(seat.assignee.login) ?? null,
         assignedAt: new Date(seat.created_at),
       })),
@@ -1462,6 +1634,7 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     getWriteArmingState,
     setWriteArming,
     listHeavyUsers,
+    getUsageDistribution,
     listAlerts,
     getSyncStatus,
     syncNow,

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import type { BudgetControl, ControlState, ForecastResult, IncludedCapControl } from '@copilot-budget/core';
 import { controlSnapshot, costCenter, costCenterMember, creditsUsedFact, license, snapshot, usageFact } from '../db/schema.js';
 import { createDb, runMigrations, type Db } from '../db/client.js';
@@ -28,8 +29,8 @@ const baseData: IngestData = {
     { date: '2026-06-14', costCenterId: 'cc-data-analytics', userLogin: 'user-16', sku: 'ai_credits', quantity: 310, netAmountUsd: 0 },
   ],
   creditsUsedItems: [
-    { date: '2026-06-14', userId: '1001', creditsUsed: 420 },
-    { date: '2026-06-14', userId: '1016', creditsUsed: 310 },
+    { date: '2026-06-14', userId: '1001', userLogin: 'user-01', creditsUsed: 420 },
+    { date: '2026-06-14', userId: '1016', userLogin: 'user-16', creditsUsed: 310 },
   ],
   costCenters: [
     { id: 'cc-platform', name: 'Platform', state: 'active' },
@@ -40,8 +41,8 @@ const baseData: IngestData = {
     { costCenterId: 'cc-data-analytics', resourceType: 'user', resourceId: 'user-16' },
   ],
   licenses: [
-    { userId: '1001', costCenterId: 'cc-platform', assignedAt: new Date('2026-06-01T00:00:00Z') },
-    { userId: '1016', costCenterId: 'cc-data-analytics', assignedAt: new Date('2026-06-01T00:00:00Z') },
+    { userId: '1001', userLogin: 'user-01', costCenterId: 'cc-platform', assignedAt: new Date('2026-06-01T00:00:00Z') },
+    { userId: '1016', userLogin: 'user-16', costCenterId: 'cc-data-analytics', assignedAt: new Date('2026-06-01T00:00:00Z') },
   ],
   controls: [
     {
@@ -120,7 +121,7 @@ describe('syncNow', () => {
       usageItems: [
         { date: '2026-06-15', costCenterId: 'cc-platform', userLogin: 'user-01', sku: 'ai_credits', quantity: 50, netAmountUsd: 0 },
       ],
-      creditsUsedItems: [{ date: '2026-06-15', userId: '1001', creditsUsed: 50 }],
+      creditsUsedItems: [{ date: '2026-06-15', userId: '1001', userLogin: 'user-01', creditsUsed: 50 }],
     };
     const second = syncNow(db, 'msw', secondUsage);
 
@@ -136,6 +137,20 @@ describe('syncNow', () => {
     expect(db.select().from(costCenter).all()).toHaveLength(2);
     expect(db.select().from(costCenterMember).all()).toHaveLength(2);
     expect(db.select().from(license).all()).toHaveLength(2);
+  });
+
+  // Distribution D2 (migration 0005): both fact and license rows persist the
+  // user's login alongside the numeric id.
+  it('persists user_login on credits_used_fact and license rows', () => {
+    syncNow(db, 'msw', baseData);
+
+    const factRows = db.select().from(creditsUsedFact).all();
+    expect(factRows.find((r) => r.userId === '1001')).toMatchObject({ userLogin: 'user-01', creditsUsed: 420 });
+    expect(factRows.find((r) => r.userId === '1016')).toMatchObject({ userLogin: 'user-16', creditsUsed: 310 });
+
+    const licenseRows = db.select().from(license).all();
+    expect(licenseRows.find((r) => r.userId === '1001')).toMatchObject({ userLogin: 'user-01', costCenterId: 'cc-platform' });
+    expect(licenseRows.find((r) => r.userId === '1016')).toMatchObject({ userLogin: 'user-16' });
   });
 
   it('reports sync status derived from the latest snapshot, not a separate copy', () => {
@@ -365,25 +380,31 @@ describe('mode isolation (source-scoped reads)', () => {
 
 const REAL_MIGRATIONS_FOLDER = fileURLToPath(new URL('../../migrations', import.meta.url));
 
-function buildMigrations0000And0001OnlyFolder(rootDir: string): string {
-  const folder = path.join(rootDir, 'migrations-0000-0001-only');
+// Shared with the 0005 upgrade test below: builds a migrations folder holding
+// only the first `count` real migrations, so a test can stand up a database as
+// it existed at an earlier schema generation and then land the newer
+// migrations on top of real data.
+function buildPartialMigrationsFolder(rootDir: string, tags: readonly string[]): string {
+  const folder = path.join(rootDir, `migrations-first-${tags.length}-only`);
   mkdirSync(path.join(folder, 'meta'), { recursive: true });
 
-  for (const tag of ['0000_init', '0001_audit']) {
+  tags.forEach((tag, i) => {
     writeFileSync(path.join(folder, `${tag}.sql`), readFileSync(path.join(REAL_MIGRATIONS_FOLDER, `${tag}.sql`)));
-    writeFileSync(
-      path.join(folder, 'meta', `${tag === '0000_init' ? '0000_snapshot' : '0001_snapshot'}.json`),
-      readFileSync(path.join(REAL_MIGRATIONS_FOLDER, 'meta', `${tag === '0000_init' ? '0000_snapshot' : '0001_snapshot'}.json`)),
-    );
-  }
+    const snapshotName = `${String(i).padStart(4, '0')}_snapshot.json`;
+    writeFileSync(path.join(folder, 'meta', snapshotName), readFileSync(path.join(REAL_MIGRATIONS_FOLDER, 'meta', snapshotName)));
+  });
 
   const fullJournal = JSON.parse(readFileSync(path.join(REAL_MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8')) as {
     entries: unknown[];
   };
-  const truncatedJournal = { ...fullJournal, entries: fullJournal.entries.slice(0, 2) };
+  const truncatedJournal = { ...fullJournal, entries: fullJournal.entries.slice(0, tags.length) };
   writeFileSync(path.join(folder, 'meta', '_journal.json'), JSON.stringify(truncatedJournal));
 
   return folder;
+}
+
+function buildMigrations0000And0001OnlyFolder(rootDir: string): string {
+  return buildPartialMigrationsFolder(rootDir, ['0000_init', '0001_audit']);
 }
 
 describe('0002_control_snapshot migration -- upgrade path smoke test', () => {
@@ -425,6 +446,68 @@ describe('0002_control_snapshot migration -- upgrade path smoke test', () => {
       const lastSynced = getLastSyncedControls(upgradeDb, 'msw');
       expect(lastSynced).not.toBeNull();
       expect(lastSynced!.controls).toHaveLength(2);
+    } finally {
+      rmSync(upgradeTmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- Distribution D2 acceptance: migration 0005_user_login applies cleanly
+// on an existing database (additive only -- two nullable ADD COLUMNs). A
+// database at the 0004 generation with real fact + license rows (which, by
+// definition, predate the user_login columns) upgrades in place: existing
+// rows read back with userLogin null, and the very next sync persists logins
+// on its new rows without touching the old ones (facts are append-only; the
+// license table is wholesale-replaced, so it gains logins immediately). --
+
+describe('0005_user_login migration -- upgrade path smoke test', () => {
+  it('applies additively onto an existing 0004-generation database; old rows read back with null logins, the next sync fills new rows', () => {
+    const upgradeTmpDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-user-login-upgrade-test-'));
+    try {
+      const upgradeDb = createDb(path.join(upgradeTmpDir, 'upgrade.sqlite'));
+
+      // 1. Simulate the pre-existing database: 0000..0004 applied, no 0005.
+      const partialFolder = buildPartialMigrationsFolder(upgradeTmpDir, [
+        '0000_init',
+        '0001_audit',
+        '0002_control_snapshot',
+        '0003_forecast',
+        '0004_app_settings',
+      ]);
+      runMigrations(upgradeDb, partialFolder);
+
+      // 2. Seed pre-migration data via RAW SQL (the drizzle schema object now
+      // includes user_login, so inserting through it would fail against the
+      // 0004-generation table -- exactly the shape a real pre-upgrade DB has).
+      upgradeDb.run(sql`INSERT INTO snapshot (id, captured_at, source) VALUES (1, 1750000000000, 'msw')`);
+      upgradeDb.run(
+        sql`INSERT INTO credits_used_fact (snapshot_id, date, user_id, credits_used) VALUES (1, '2026-06-01', '1001', 120.5)`,
+      );
+      upgradeDb.run(sql`INSERT INTO license (user_id, cost_center_id, assigned_at) VALUES ('1001', NULL, NULL)`);
+
+      // 3. Land 0005 on top of the populated DB.
+      runMigrations(upgradeDb, REAL_MIGRATIONS_FOLDER);
+
+      // 4. Pre-existing rows survive, readable through the NEW schema, with
+      // the honest null login (no backfill is possible or attempted).
+      const preFacts = upgradeDb.select().from(creditsUsedFact).all();
+      expect(preFacts).toHaveLength(1);
+      expect(preFacts[0]).toMatchObject({ userId: '1001', userLogin: null, creditsUsed: 120.5 });
+      const preLicenses = upgradeDb.select().from(license).all();
+      expect(preLicenses).toHaveLength(1);
+      expect(preLicenses[0]).toMatchObject({ userId: '1001', userLogin: null });
+
+      // 5. The very next sync persists logins: its NEW fact rows carry them,
+      // the pre-migration fact row stays null (append-only, never updated),
+      // and the wholesale-replaced license table now carries logins.
+      syncNow(upgradeDb, 'msw', baseData);
+      const factRows = upgradeDb.select().from(creditsUsedFact).all();
+      expect(factRows).toHaveLength(3); // 1 legacy + baseData's 2
+      expect(factRows.filter((r) => r.userLogin === null)).toHaveLength(1);
+      expect(factRows.find((r) => r.date === '2026-06-14' && r.userId === '1001')).toMatchObject({ userLogin: 'user-01' });
+      const licenseRows = upgradeDb.select().from(license).all();
+      expect(licenseRows).toHaveLength(2);
+      expect(licenseRows.every((r) => r.userLogin !== null)).toBe(true);
     } finally {
       rmSync(upgradeTmpDir, { recursive: true, force: true });
     }
