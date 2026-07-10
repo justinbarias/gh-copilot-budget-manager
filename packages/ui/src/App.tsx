@@ -13,7 +13,7 @@ import { CostCentersTable } from './screens/CostCenters/CostCentersTable';
 import { Forecast } from './screens/Forecast/Forecast';
 import { Overview } from './screens/Overview/Overview';
 import { TokenHealth } from './screens/Settings/TokenHealth';
-import { UsersTable } from './screens/Users/UsersTable';
+import { UsersScreen } from './screens/Users/UsersScreen';
 import { ComingSoon } from './screens/_stubs/ComingSoon';
 import './App.css';
 
@@ -97,7 +97,10 @@ function renderScreen(
     case 'costcenters':
       return <CostCentersTable />;
     case 'users':
-      return <UsersTable />;
+      // Distribution D3: the Users screen is now a Table|Distribution toggle
+      // wrapper (Table stays the default = the prior behaviour); the new SVG
+      // distribution view is the second tab.
+      return <UsersScreen />;
     case 'audit':
       return <Audit />;
     case 'settings':

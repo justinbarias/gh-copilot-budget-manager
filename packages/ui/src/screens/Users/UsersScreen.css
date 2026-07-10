@@ -1,0 +1,46 @@
+/* Distribution D3: the Table|Distribution view toggle. The UsersTable already
+   owns its own outer padding (.users), so the toggle row sits above it with
+   matching section padding; the Distribution view sits directly beneath. */
+
+.users-screen__toggle-row {
+  padding: var(--space-section-y) var(--space-section-x) 0;
+}
+
+.users-screen__toggle {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.users-screen__toggle-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.users-screen__toggle-btn--active {
+  background: var(--surface-2);
+  color: #ffffff;
+}
+
+.users-screen__toggle-btn:not(.users-screen__toggle-btn--active):hover {
+  color: var(--text-default);
+}
+
+/* The Distribution view needs the same section padding UsersTable's .users
+   wrapper provides, since it renders as a direct sibling of the toggle row. */
+.users-screen > .distribution {
+  padding: 16px var(--space-section-x) 64px;
+  max-width: 1240px;
+}

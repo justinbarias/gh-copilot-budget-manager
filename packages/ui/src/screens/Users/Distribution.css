@@ -1,0 +1,239 @@
+/* Distribution D3 -- implemented against design/usage-distribution-mockup.html,
+   mapped onto the app's apex tokens (styles/tokens.css). */
+
+.distribution {
+  display: flex;
+  flex-direction: column;
+}
+
+.distribution__loading {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ---- header ---- */
+.distribution__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.distribution__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-default);
+}
+
+.distribution__sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  max-width: 560px;
+  line-height: 1.5;
+}
+
+.distribution__header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.distribution__date-caption {
+  font-size: 11px;
+  color: var(--text-neutral);
+}
+
+/* ---- window segmented control (matches the app's pill switch) ---- */
+.distribution__window {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.distribution__window-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.distribution__window-btn--active {
+  background: var(--surface-2);
+  color: #ffffff;
+}
+
+.distribution__window-btn:not(.distribution__window-btn--active):hover {
+  color: var(--text-default);
+}
+
+/* ---- chart card ---- */
+.distribution__card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 20px;
+}
+
+.distribution__chart-fade {
+  transition: opacity 150ms ease;
+}
+
+.distribution__chart-fade--fading {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .distribution__chart-fade {
+    transition: none;
+  }
+}
+
+.distribution__chart-wrap {
+  position: relative;
+}
+
+.distribution__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.distribution__tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  color: var(--text-default);
+  padding: 6px 9px;
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 10px));
+  z-index: 30;
+}
+
+.distribution__chart-footer {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-neutral);
+  line-height: 1.6;
+}
+
+.distribution__footer-note {
+  margin-top: 2px;
+  display: block;
+}
+
+/* ---- tiles ---- */
+.distribution__tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.distribution__tile {
+  background: var(--canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.distribution__tile-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-neutral);
+  font-weight: 600;
+}
+
+.distribution__tile-value {
+  font-size: 22px;
+  font-weight: 500;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.distribution__tile-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* ---- insight strip ---- */
+.distribution__insight {
+  margin-top: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 16px 18px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.distribution__insight-glyph {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(141, 214, 255, 0.12);
+  color: var(--blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.distribution__insight-text {
+  font-size: 13px;
+  color: var(--text-default);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ---- empty state ---- */
+.distribution__empty-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-card);
+  padding: 20px 22px;
+}
+
+.distribution__empty-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-default);
+  margin-bottom: 6px;
+}
+
+.distribution__empty-body {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+@media (max-width: 920px) {
+  .distribution__tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
