@@ -159,6 +159,52 @@
   line-height: 1.5;
 }
 
+/* Global Sync affordance in the footer pane -- same visual language as the
+   token/mode lines above it (subtle surface, hairline border, muted text). */
+.nav__footer-sync {
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.nav__footer-sync-button {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  color: var(--text-default);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.nav__footer-sync-button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.nav__footer-sync-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Self-sufficient sync-detail line -- deliberately NOT sharing the
+   .nav__footer-detail class (the token/mode line uses that, and nav.spec.ts
+   pins `.nav__footer-detail` to exactly one element). Copies the three
+   .nav__footer-detail rules it needs plus its own top margin. */
+.nav__sync-detail {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-neutral);
+  line-height: 1.5;
+}
+
+.nav__sync-detail--error {
+  color: var(--red);
+}
+
 /* Task 6.7: Auto-balance at-risk badge (active simulation scenario's firing
    at-risk count). Red pill, pushed to the row's trailing edge. */
 .nav__item-badge {

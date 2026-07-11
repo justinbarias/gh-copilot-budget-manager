@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ApiClient } from '@copilot-budget/data';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { ApiClient, SyncStatus } from '@copilot-budget/data';
 
 // Typing this object as ApiClient means the compiler enforces that every
 // interface method is bridged, with the right signature, per-method channel
@@ -47,5 +47,15 @@ contextBridge.exposeInMainWorld('api', {
   clearPat: (): Promise<void> => ipcRenderer.invoke('pat:clear'),
   hasPat: (): Promise<boolean> => ipcRenderer.invoke('pat:hasPat'),
   getMode: (): Promise<'simulation' | 'live'> => ipcRenderer.invoke('mode:get'),
+  // Push-events extra (NOT an ApiClient method -- a WindowApi-only affordance,
+  // like setPat/getMode above): main broadcasts sync progress/result on
+  // 'apiClient:syncStatusChanged', the renderer subscribes here. Returns an
+  // unsubscribe. An HTTP host would satisfy the same WindowApi shape with
+  // polling/SSE at this layer, leaving the ApiClient interface unchanged.
+  onSyncStatusChanged: (listener: (status: SyncStatus) => void): (() => void) => {
+    const channelListener = (_event: IpcRendererEvent, status: SyncStatus): void => listener(status);
+    ipcRenderer.on('apiClient:syncStatusChanged', channelListener);
+    return () => ipcRenderer.removeListener('apiClient:syncStatusChanged', channelListener);
+  },
   ...apiClientBridge,
 });

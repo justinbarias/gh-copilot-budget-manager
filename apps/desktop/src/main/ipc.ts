@@ -1,8 +1,8 @@
 import path from 'node:path';
-import { app, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { createGitHubApiClient, setWriteArmed } from '@copilot-budget/data/api-client';
 import { createTenantConfigStore, resolveBaseUrl } from '@copilot-budget/data/tenant';
-import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, TenantConfig, UsageDistributionWindowInput, UsageSummaryParams, WriteArmingRequest } from '@copilot-budget/data';
+import type { ApiClient, ApplyPlanInput, ControlState, CostCenterMappingInput, ForecastScope, Plan, ScenarioId, SyncStatus, TenantConfig, UsageDistributionWindowInput, UsageSummaryParams, WriteArmingRequest } from '@copilot-budget/data';
 import type { TenantConfigStore } from '@copilot-budget/data/tenant';
 import type { PatStore } from '@copilot-budget/data/pat';
 import { getDb } from './db';
@@ -13,6 +13,32 @@ import { getPatStore } from './pat-bridge';
 // see the resolution in buildClient below. Simulation is forced by default
 // (main/mode.ts), so today this only ever talks to MSW.
 const SIM_ENTERPRISE_SLUG = 'dewr';
+
+// Sync-as-a-global-affordance (nav footer) plumbing. Sync Now moved out of the
+// Settings screen into the nav footer, so its progress/result must reach every
+// window regardless of which screen is showing -- pushed over a broadcast
+// channel rather than only returned to the invoking IPC call.
+//
+// §6.6: SyncStatus carries only dates + boolean flags (lastSyncedAt,
+// inProgress, perUserDataThroughDay) -- never PAT/token/login material -- so it
+// is safe to broadcast to all renderers and to log. Nothing secret crosses
+// this channel.
+const SYNC_STATUS_CHANNEL = 'apiClient:syncStatusChanged';
+
+// One module-level in-flight sync promise, shared across ALL invokers AND
+// across client rebuilds (`client` is mutable, rebuilt on PAT/tenant change).
+// A second apiClient:syncNow while one runs returns this SAME promise
+// (idempotent) rather than starting a second sync. Cleared in a finally so a
+// mid-sync rebuild can never orphan it (finishing on the old client's promise
+// is fine; the flag always clears). Module scope (not closed over `client`) is
+// deliberate: the guard must survive a client swap.
+let inFlightSync: Promise<SyncStatus> | null = null;
+
+function broadcastSyncStatus(status: SyncStatus): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send(SYNC_STATUS_CHANNEL, status);
+  }
+}
 
 // Non-secret tenant pointer, persisted as plain JSON under userData (NOT
 // safeStorage -- it carries no secret; the PAT stays in pat.enc). Same
@@ -148,7 +174,31 @@ export async function registerApiClientIpcHandlers(source: 'msw' | 'github'): Pr
   );
   ipcMain.handle('apiClient:listAlerts', () => client.listAlerts());
   ipcMain.handle('apiClient:getSyncStatus', () => client.getSyncStatus());
-  ipcMain.handle('apiClient:syncNow', () => client.syncNow());
+  // Concurrency-guarded Sync Now with progress broadcasts. A second invoke
+  // while a sync runs returns the SAME in-flight promise (no second sync). On
+  // start we broadcast the last-known status flipped to inProgress: true; on
+  // settle we broadcast the resolved SyncStatus (success) or the last-known
+  // status flipped back to inProgress: false plus rethrow (failure). §6.6: the
+  // broadcast payload is a SyncStatus only -- no token/login material.
+  ipcMain.handle('apiClient:syncNow', () => {
+    if (inFlightSync) return inFlightSync;
+    const run = async (): Promise<SyncStatus> => {
+      const lastKnown = await client.getSyncStatus();
+      broadcastSyncStatus({ ...lastKnown, inProgress: true });
+      try {
+        const final = await client.syncNow();
+        broadcastSyncStatus(final);
+        return final;
+      } catch (err) {
+        broadcastSyncStatus({ ...lastKnown, inProgress: false });
+        throw err;
+      }
+    };
+    inFlightSync = run().finally(() => {
+      inFlightSync = null;
+    });
+    return inFlightSync;
+  });
   ipcMain.handle('apiClient:getControls', () => client.getControls());
   ipcMain.handle('apiClient:getLastSyncedControls', () => client.getLastSyncedControls());
   ipcMain.handle('apiClient:getForecast', (_event, scope: ForecastScope, entityId?: string) =>

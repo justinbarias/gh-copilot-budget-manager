@@ -149,10 +149,11 @@ test('Overview: after Sync Now, the pool lens gains the forecast overlay + proje
   try {
     const window = await app.firstWindow();
 
-    // Sync via the real Settings UI (settings.spec.ts's own convention).
-    await window.locator('.nav').getByRole('button', { name: 'Settings' }).click();
-    await window.getByRole('button', { name: /sync now/i }).click();
-    await expect(window.getByText(/last synced:/i)).toBeVisible();
+    // Sync via the global nav-footer affordance -- it's in the nav sidebar on
+    // every screen, so no navigation is needed. The full "Last synced: …" text
+    // lives in the row's title attribute (the visible line is compact).
+    await window.getByTestId('nav-sync-button').click();
+    await expect(window.getByTestId('nav-sync-detail')).toHaveAttribute('title', /last synced:/i);
 
     await window.locator('.nav').getByRole('button', { name: 'Overview' }).click();
     const chart = window.getByTestId('burndown-chart');

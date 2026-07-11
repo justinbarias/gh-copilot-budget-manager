@@ -57,3 +57,27 @@
   min-height: 0;
   overflow-y: auto;
 }
+
+/* Global sync-completion toast -- same fixed bottom-right placement and visual
+   language as UsersTable's .users-toast (surface, radius, shadow), so transient
+   toasts read as one family. The success case keeps the green-tinted border;
+   the failure case swaps to a red-tinted one (app-toast--error). */
+.app-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 40;
+  max-width: 420px;
+  background: var(--surface-2);
+  border: 1px solid rgba(95, 237, 131, 0.5);
+  border-radius: var(--radius-panel);
+  padding: 12px 16px;
+  font-size: 12.5px;
+  color: var(--text-default);
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.app-toast--error {
+  border-color: rgba(255, 123, 114, 0.6);
+}

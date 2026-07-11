@@ -58,10 +58,18 @@ test('Sim banner is always visible and Settings drives PAT + Sync Now', async ()
     expect(await getMode(window)).toBe('simulation');
     await expect(window.getByText(/simulation mode/i)).toBeVisible();
 
-    // Sync Now: human-operable trigger wired to Task 1.6's syncNow/getSyncStatus.
-    await expect(window.getByText(/never synced/i)).toBeVisible();
-    await window.getByRole('button', { name: /sync now/i }).click();
-    await expect(window.getByText(/last synced:/i)).toBeVisible();
+    // Sync Now moved out of Settings into the GLOBAL nav-footer affordance
+    // (data-testid nav-sync-button), visible on every screen. The detail line
+    // reads "Never synced" until a sync runs, then a compact "Synced <day>"
+    // with the full "Last synced: …" text carried in the row's title attribute.
+    await expect(window.getByTestId('nav-sync-detail')).toHaveText(/never synced/i);
+    await window.getByTestId('nav-sync-button').click();
+    // On completion the global app-shell toast confirms the refresh app-wide
+    // (role="status", generic text -- no token/login detail per §6.6, auto-
+    // dismisses ~3.8s). Assert it BEFORE the compact detail so we catch it
+    // inside its dwell window.
+    await expect(window.getByRole('status').filter({ hasText: 'Sync complete — data refreshed' })).toBeVisible();
+    await expect(window.getByTestId('nav-sync-detail')).toHaveAttribute('title', /last synced:/i);
   } finally {
     await app.close();
     rmSync(dbDir, { recursive: true, force: true });

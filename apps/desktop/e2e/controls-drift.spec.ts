@@ -95,23 +95,23 @@ async function openControlsCaps(window: Page): Promise<void> {
   await expect(window.getByText(/auto-computed from attributed licenses; choose block or overflow\./)).toBeVisible();
 }
 
-// Sync via the Settings screen (Task 1.6/1.7's human-operable Sync Now),
-// exactly as the task brief calls for -- not window.api.syncNow() directly --
-// so the drift baseline this spec arranges is captured through the same path
-// a real admin would use.
-async function syncViaSettings(window: Page): Promise<void> {
-  await window.locator('.nav').getByRole('button', { name: 'Settings' }).click();
-  await window.getByRole('button', { name: /sync now/i }).click();
-  await expect(window.getByText(/last synced:/i)).toBeVisible();
+// Sync via the GLOBAL nav-footer Sync affordance (moved out of Settings) --
+// the same human-operable path a real admin now uses, not window.api.syncNow()
+// directly -- so the drift baseline this spec arranges is captured through the
+// real UI. It's in the nav sidebar on every screen, so no navigation is needed;
+// the full "Last synced: …" text lives in the row's title attribute.
+async function syncViaNav(window: Page): Promise<void> {
+  await window.getByTestId('nav-sync-button').click();
+  await expect(window.getByTestId('nav-sync-detail')).toHaveAttribute('title', /last synced:/i);
 }
 
-test('sync via Settings, then neither the ULB, Spending, nor Caps tabs show any drift marker (synced == live)', async () => {
+test('sync via the nav footer, then neither the ULB, Spending, nor Caps tabs show any drift marker (synced == live)', async () => {
   const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-drift-none-'));
   const dbPath = path.join(dbDir, 'test.sqlite');
   const app = await launchAppAtDbPath(dbPath);
   try {
     const window = await app.firstWindow();
-    await syncViaSettings(window);
+    await syncViaNav(window);
 
     await openControlsUlb(window);
     await expect(window.locator('.controls-table__drift')).toHaveCount(0);
@@ -138,7 +138,7 @@ test('a data-layer-arranged drift shows the marker + full-set honesty after rela
   const firstApp = await launchAppAtDbPath(dbPath);
   try {
     const firstWindow = await firstApp.firstWindow();
-    await syncViaSettings(firstWindow);
+    await syncViaNav(firstWindow);
   } finally {
     // Close BEFORE mutating the file out of process, so there's no lock
     // contention between this test's own connection and the mutate script's.
@@ -210,7 +210,7 @@ test('a row that is BOTH staged and drifted requires a second confirmation, and 
   const firstApp = await launchAppAtDbPath(dbPath);
   try {
     const firstWindow = await firstApp.firstWindow();
-    await syncViaSettings(firstWindow);
+    await syncViaNav(firstWindow);
   } finally {
     await firstApp.close();
   }
@@ -273,7 +273,7 @@ test('the drift marker also renders on the Included-usage caps grid (cap-family 
   const firstApp = await launchAppAtDbPath(dbPath);
   try {
     const firstWindow = await firstApp.firstWindow();
-    await syncViaSettings(firstWindow);
+    await syncViaNav(firstWindow);
   } finally {
     await firstApp.close();
   }

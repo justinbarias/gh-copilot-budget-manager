@@ -56,10 +56,11 @@ test('Forecast screen: pre-sync empty state, then enterprise + heavy-user scopes
     await expect(screen.getByTestId('forecast-empty-state')).toBeVisible();
     await expect(screen.getByTestId('forecast-runway')).toHaveCount(0);
 
-    // Sync via the real Settings UI (settings.spec.ts's own convention).
-    await window.locator('.nav').getByRole('button', { name: 'Settings' }).click();
-    await window.getByRole('button', { name: /sync now/i }).click();
-    await expect(window.getByText(/last synced:/i)).toBeVisible();
+    // Sync via the global nav-footer affordance -- it's in the nav sidebar on
+    // every screen, so no navigation is needed. The full "Last synced: …" text
+    // lives in the row's title attribute (the visible line is compact).
+    await window.getByTestId('nav-sync-button').click();
+    await expect(window.getByTestId('nav-sync-detail')).toHaveAttribute('title', /last synced:/i);
 
     // --- Post-sync: back to Forecast, default (Enterprise) scope. ---
     await window.locator('.nav').getByRole('button', { name: 'Forecast' }).click();

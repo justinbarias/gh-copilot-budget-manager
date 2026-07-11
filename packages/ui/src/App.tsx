@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cycleBounds } from '@copilot-budget/core';
 import type { ScenarioId, ScenarioSummary, WriteArmingState } from '@copilot-budget/data';
 import { ApiClientProvider, useApiClient } from './lib/api-client-context';
+import { SyncProvider, useSync } from './lib/sync-context';
 import { SimBanner } from './components/SimBanner';
 import { LiveBanner } from './components/LiveBanner';
 import { ScenarioSelector } from './components/ScenarioSelector';
@@ -108,6 +109,52 @@ function renderScreen(
     default:
       return <ComingSoon screenName={SCREEN_TITLES[screen]} />;
   }
+}
+
+// Auto-dismiss window for the global sync toast -- matches UsersTable's
+// TOAST_MS convention so every transient toast in the app dwells the same time.
+const TOAST_MS = 3800;
+
+// Content area, inside SyncProvider so it can read syncedVersion. Composed
+// remount key `${scenarioVersion}:${syncedVersion}`: a scenario switch OR a
+// successful sync changes the key, remounting the current screen so its
+// mount-only data effects re-fetch. Nav sits OUTSIDE this key (never remounts),
+// keeping the provider subscription + footer state alive across the remount.
+function AppContent({ scenarioVersion, children }: { scenarioVersion: number; children: ReactNode }) {
+  const { syncedVersion } = useSync();
+  return (
+    <div className="app-shell__content" key={`${scenarioVersion}:${syncedVersion}`}>
+      {children}
+    </div>
+  );
+}
+
+// Global sync toast: on each completion (success or failure) it shows a generic
+// message for TOAST_MS, then auto-dismisses. §6.6: generic text only -- no
+// error details, tokens, or logins (the footer detail's title carries the
+// failure message). Keys off lastCompletion.seq, which advances once per
+// completion, so a repeated same-outcome sync still re-triggers the toast.
+function SyncToast() {
+  const { lastCompletion } = useSync();
+  const [toast, setToast] = useState<{ seq: number; ok: boolean } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!lastCompletion) return;
+    setToast(lastCompletion);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(null), TOAST_MS);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [lastCompletion]);
+
+  if (!toast) return null;
+  return (
+    <div className={toast.ok ? 'app-toast' : 'app-toast app-toast--error'} role="status">
+      {toast.ok ? 'Sync complete — data refreshed' : 'Sync failed'}
+    </div>
+  );
 }
 
 // Two-column shell per design/README.md "Global shell & navigation": fixed
@@ -232,13 +279,20 @@ function AppShell() {
           the wrong banner. */}
       {mode === 'simulation' && <SimBanner />}
       {mode === 'live' && <LiveBanner armed={armingState?.armed === true} />}
-      <div className="app-shell__body">
-        <Nav
-          screen={screen}
-          onNavigate={navigate}
-          autoBalanceBadge={mode === 'simulation' ? (activeScenario?.atRiskCount ?? 0) : 0}
-        />
-        <main className="app-shell__main">
+      {/* SyncProvider wraps BOTH Nav and the content: it must survive all
+          navigation AND scenario switches (Nav is never remount-keyed; the
+          content is keyed by scenarioVersion) so the nav-footer Sync
+          affordance keeps its subscription + in-flight state. scenarioVersion
+          is threaded in so the provider re-reads status against a new fixture
+          world without being remounted. */}
+      <SyncProvider scenarioVersion={scenarioVersion}>
+        <div className="app-shell__body">
+          <Nav
+            screen={screen}
+            onNavigate={navigate}
+            autoBalanceBadge={mode === 'simulation' ? (activeScenario?.atRiskCount ?? 0) : 0}
+          />
+          <main className="app-shell__main">
           <header className="app-shell__topbar">
             <h1 className="app-shell__title">{SCREEN_TITLES[screen]}</h1>
             {cycleLabel && <span className="app-shell__cycle">{cycleLabel}</span>}
@@ -251,13 +305,21 @@ function AppShell() {
               />
             )}
           </header>
-          {/* scenarioVersion remounts every screen on a scenario switch, so
-              each screen's data effects re-run against the new fixture world. */}
-          <div className="app-shell__content" key={scenarioVersion}>
-            {renderScreen(screen, navigate, controlsInitialFamily, { armingState, onArmingRefresh: refreshArmingState })}
-          </div>
-        </main>
-      </div>
+          {/* Remount-keyed content lives in AppContent (inside SyncProvider) so
+              it can read syncedVersion: a scenario switch OR a successful sync
+              remounts the current screen and its mount-only effects re-fetch. */}
+            <AppContent scenarioVersion={scenarioVersion}>
+              {renderScreen(screen, navigate, controlsInitialFamily, {
+                armingState,
+                onArmingRefresh: refreshArmingState,
+              })}
+            </AppContent>
+          </main>
+        </div>
+        {/* Inside SyncProvider so it can consume completion events; fixed-
+            position, so its DOM location within the body is immaterial. */}
+        <SyncToast />
+      </SyncProvider>
     </div>
   );
 }
