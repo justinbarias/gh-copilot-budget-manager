@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { computeUsageDistribution, countAbove, type ControlState, type UserCreditUsage } from '@copilot-budget/core';
 import type { UsageDistributionWindow, UserMonthObservationsResult } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { DistributionChart, fmtCredits, fmtDollars } from './DistributionChart';
 import './Distribution.css';
 
@@ -218,7 +219,29 @@ export function Distribution() {
   if (controls === null || !activeLoaded || distribution === null) {
     return (
       <div className="distribution" data-testid="distribution">
-        <p className="distribution__loading">Loading…</p>
+        <SkeletonGroup>
+          {/* pill row -- approximates the lens (Totals/Per month) + window
+              (1/3/9 months) tab groups in DistributionHeader. */}
+          <div className="distribution__skeleton-pills">
+            <Skeleton variant="pill" width={90} />
+            <Skeleton variant="pill" width={90} />
+            <Skeleton variant="pill" width={70} />
+            <Skeleton variant="pill" width={70} />
+            <Skeleton variant="pill" width={70} />
+          </div>
+          {/* large chart block -- approximates .distribution__card's histogram */}
+          <div className="distribution__card">
+            <Skeleton variant="block" height={240} />
+          </div>
+          {/* 4-block tile row -- approximates .distribution__tiles' P30/P50/
+              P95/Spread tiles */}
+          <div className="distribution__skeleton-tiles">
+            <Skeleton variant="block" height={90} />
+            <Skeleton variant="block" height={90} />
+            <Skeleton variant="block" height={90} />
+            <Skeleton variant="block" height={90} />
+          </div>
+        </SkeletonGroup>
       </div>
     );
   }

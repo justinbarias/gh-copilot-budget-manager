@@ -3,6 +3,7 @@ import { isUserAtRiskOfUlbBlock, type EffectiveUlb } from '@copilot-budget/core'
 import type { CostCenterSummary, HeavyUser, StoredForecast } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { ModelMixBar } from '../../components/ModelMixBar';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { Sparkline } from '../../components/Sparkline';
 import { BulkUlbModal } from './BulkUlbModal';
 import { ReassignCostCenterModal } from './ReassignCostCenterModal';
@@ -90,7 +91,8 @@ const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
   { id: 'no-usage', label: 'No usage' },
 ];
 
-const PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 
 export function UsersTable() {
   const api = useApiClient();
@@ -101,6 +103,7 @@ export function UsersTable() {
   const [ccFilter, setCcFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   // Task 4.11's write affordances: per-row "Set ULB" (individual-ULB modal)
   // and multi-select -> bulk-ULB modal. Both route through the SAME
@@ -225,16 +228,22 @@ export function UsersTable() {
     });
   }, [users, search, ccFilter, statusFilter]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const clampedPage = Math.min(page, pageCount - 1);
   // Memoized (not a plain `filtered.slice(...)` in the render body) so its
   // reference is stable across renders that don't actually change the
   // visible page -- the Task 5.8 forecast-fetch effect below depends on it,
   // and an unstable reference would re-run that effect (and re-check the
   // cache) on every unrelated re-render (toast timers, selection toggles…).
+  // `pageSize` is now a dep too (a rows-per-page change must recompute the
+  // slice), which does not weaken that stability guarantee: it only changes
+  // when the admin explicitly picks a new page size, at which point `page`
+  // is also reset to 0 by the same handler -- so the forecast-fetch effect
+  // still only re-runs on a genuine visible-page change, never on unrelated
+  // re-renders (toast timers, selection toggles…).
   const pageUsers = useMemo(
-    () => filtered.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE),
-    [filtered, clampedPage],
+    () => filtered.slice(clampedPage * pageSize, (clampedPage + 1) * pageSize),
+    [filtered, clampedPage, pageSize],
   );
 
   // Header checkbox is "select all ON THIS PAGE" (design/README.md §6) --
@@ -299,7 +308,17 @@ export function UsersTable() {
     return (
       <section className="users" aria-label="Users">
         <h2 className="users__title">Users</h2>
-        <p className="users__loading">Loading…</p>
+        <SkeletonGroup>
+          {/* controls line (search/filter/status row) */}
+          <Skeleton variant="line" width="70%" />
+          {/* header line (table column headings) */}
+          <Skeleton variant="line" width="40%" />
+          <div className="users__card users__skeleton-rows">
+            {Array.from({ length: 10 }, (_, i) => (
+              <Skeleton key={i} variant="line" />
+            ))}
+          </div>
+        </SkeletonGroup>
       </section>
     );
   }
@@ -308,7 +327,7 @@ export function UsersTable() {
   const showingLabel =
     filtered.length === 0
       ? '0 results'
-      : `Showing ${clampedPage * PAGE_SIZE + 1}–${Math.min((clampedPage + 1) * PAGE_SIZE, filtered.length)} of ${filtered.length}`;
+      : `Showing ${clampedPage * pageSize + 1}–${Math.min((clampedPage + 1) * pageSize, filtered.length)} of ${filtered.length}`;
 
   return (
     <section className="users" aria-label="Users">
@@ -483,6 +502,25 @@ export function UsersTable() {
           >
             Next ›
           </button>
+          <label className="users__page-size">
+            <span className="users__page-size-label">Rows per page</span>
+            <select
+              className="users__page-size-select"
+              aria-label="Rows per page"
+              data-testid="users-page-size"
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(0);
+              }}
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
 

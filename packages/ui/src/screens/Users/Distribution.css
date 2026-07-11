@@ -6,11 +6,6 @@
   flex-direction: column;
 }
 
-.distribution__loading {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 /* ---- header ---- */
 .distribution__header {
   display: flex;
@@ -245,6 +240,32 @@
 
 @media (max-width: 920px) {
   .distribution__tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ---- loading skeleton ---- */
+/* Pill row -- approximates the lens + window tab groups (see
+   .distribution__mode/.distribution__window above), right-aligned to match
+   .distribution__header-right's layout. */
+.distribution__skeleton-pills {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* 4-block tile row -- same grid as .distribution__tiles, reused so the
+   skeleton's rhythm matches the loaded tile row exactly. */
+.distribution__skeleton-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 20px;
+}
+
+@media (max-width: 920px) {
+  .distribution__skeleton-tiles {
     grid-template-columns: repeat(2, 1fr);
   }
 }

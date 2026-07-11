@@ -177,3 +177,58 @@ test('Users table renders the ranked fixture roster with working search, filters
     rmSync(dbDir, { recursive: true, force: true });
   }
 });
+
+// Task (page-size selector): 81 licensed seats total (licenses.ts's SEATS,
+// recomputed here rather than copied -- see the header comment above), same
+// roster the base test pins. Default page size is unchanged (10/page, 9
+// pages) -- this test only exercises the NEW "Rows per page" control's
+// effect on the pager math: 25/page over 81 users -> ceil(81/25) = 4 pages
+// (25 + 25 + 25 + 6), so page 1 shows "Showing 1–25 of 81" with exactly 25
+// rows rendered, and "Page 1 / 4".
+test('Users table page-size selector updates the pager math', async () => {
+  const appDir = path.join(__dirname, '..');
+  const dbDir = mkdtempSync(path.join(tmpdir(), 'copilot-budget-e2e-users-pagesize-'));
+  const app = await electron.launch({
+    args: [appDir],
+    cwd: appDir,
+    env: { ...process.env, COPILOT_BUDGET_DB_PATH: path.join(dbDir, 'test.sqlite') },
+  });
+
+  try {
+    const window = await app.firstWindow();
+    await window.locator('.nav').getByRole('button', { name: 'Users' }).click();
+    const screen = window.locator('.users');
+    await expect(screen).toBeVisible();
+
+    const rows = screen.locator('.users-table__row');
+    // Baseline: default page size is still 10 (unchanged behavior).
+    await expect(rows).toHaveCount(10);
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 9');
+
+    const pageSizeSelect = screen.getByTestId('users-page-size');
+    await expect(pageSizeSelect).toHaveValue('10');
+
+    await pageSizeSelect.selectOption('25');
+
+    await expect(rows).toHaveCount(25);
+    await expect(screen.locator('.users__showing')).toHaveText('Showing 1–25 of 81');
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 4');
+
+    // Changing the page size resets to page 1 even from a later page.
+    await screen.getByRole('button', { name: 'Next ›' }).click();
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 2 / 4');
+    await pageSizeSelect.selectOption('50');
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 1 / 2');
+    await expect(screen.locator('.users__showing')).toHaveText('Showing 1–50 of 81');
+    await expect(rows).toHaveCount(50);
+
+    // Last page of 50/page: 81 - 50 = 31 remaining rows.
+    await screen.getByRole('button', { name: 'Next ›' }).click();
+    await expect(screen.locator('.users__page-label')).toHaveText('Page 2 / 2');
+    await expect(screen.locator('.users__showing')).toHaveText('Showing 51–81 of 81');
+    await expect(rows).toHaveCount(31);
+  } finally {
+    await app.close();
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+});
