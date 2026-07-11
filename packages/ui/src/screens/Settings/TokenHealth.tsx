@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useApiClient } from '../../lib/api-client-context';
-import type { PatValidation, ReadSmokeResult, SyncStatus, TenantConfig, WriteArmingState } from '@copilot-budget/data';
+import type {
+  PatValidation,
+  ReadSmokeEndpointResult,
+  ReadSmokeResult,
+  ReadSmokeStatus,
+  TenantConfig,
+  WriteArmingState,
+} from '@copilot-budget/data';
 import './TokenHealth.css';
 
 // Task 9.3-lite: App lifts the arming state (one source of truth shared with
@@ -11,17 +18,9 @@ interface TokenHealthProps {
   onArmingRefresh: () => void;
 }
 
-function formatSyncStatus(status: SyncStatus | null): string {
-  if (!status) return 'Loading…';
-  if (status.inProgress) return 'Syncing…';
-  if (!status.lastSyncedAt) return 'Never synced';
-  // Trailing-gap surface (SyncStatus.perUserDataThroughDay): live, a Sync run
-  // before GitHub generates today's per-user report legitimately covers only
-  // through an earlier day — say so instead of implying full coverage. Absent
-  // (undefined) before the first sync of this process; omitted then.
-  const coverage = status.perUserDataThroughDay ? ` — per-user data through ${status.perUserDataThroughDay}` : '';
-  return `Last synced: ${new Date(status.lastSyncedAt).toLocaleString()}${coverage}`;
-}
+// Sync Now moved to the global nav-footer affordance (SyncProvider +
+// Nav.tsx); its status formatting now lives in lib/sync-context.tsx
+// (formatSyncStatus). This screen no longer owns any sync state.
 
 type HostKind = TenantConfig['hostKind'];
 
@@ -91,6 +90,26 @@ function readSmokeToText(result: ReadSmokeResult): string {
   return [header, ...rows, '', result.localCoverageText, '', result.wireR6Text].join('\n');
 }
 
+// Task 9.2-follow-up (2026-07-11, maintainer decision): the card no longer
+// renders the per-row results table or the two diagnostics <pre> blocks --
+// the maintainer troubleshoots exclusively from the copied report
+// (readSmokeToText, above, unchanged). The card's on-screen surface reduces
+// to a compact per-status tally so an at-a-glance "did it come back clean"
+// read survives without echoing any login/detail strings inline.
+const SMOKE_STATUS_ORDER: ReadSmokeStatus[] = ['ok', 'shape_mismatch', 'http_error', 'skipped'];
+
+function summarizeSmokeCounts(results: ReadSmokeEndpointResult[]): string {
+  const counts = new Map<ReadSmokeStatus, number>();
+  for (const r of results) counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
+  return SMOKE_STATUS_ORDER.filter((status) => (counts.get(status) ?? 0) > 0)
+    .map((status) => `${counts.get(status)} ${status}`)
+    .join(' · ');
+}
+
+function hasSmokeAttention(results: ReadSmokeEndpointResult[]): boolean {
+  return results.some((r) => r.status !== 'ok');
+}
+
 export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) {
   const api = useApiClient();
 
@@ -98,8 +117,6 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
   const [hasPat, setHasPat] = useState<boolean | null>(null);
   const [patInput, setPatInput] = useState('');
   const [patBusy, setPatBusy] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [syncing, setSyncing] = useState(false);
 
   // Task 9.3-lite: the PERSISTED mode selection (app_settings 'app_mode') --
   // distinct from `mode`, which is the RESOLVED mode of the running process.
@@ -130,12 +147,11 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.getMode(), api.hasPat(), api.getSyncStatus(), api.getTenantConfig(), api.getAppModeSetting()]).then(
-      ([m, pat, status, tenant, selection]) => {
+    Promise.all([api.getMode(), api.hasPat(), api.getTenantConfig(), api.getAppModeSetting()]).then(
+      ([m, pat, tenant, selection]) => {
         if (cancelled) return;
         setMode(m);
         setHasPat(pat);
-        setSyncStatus(status);
         setModeSelection(selection);
         if (tenant) {
           setHostKind(tenant.hostKind);
@@ -208,16 +224,6 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
       onArmingRefresh();
     } finally {
       setArmBusy(false);
-    }
-  }
-
-  async function handleSyncNow() {
-    setSyncing(true);
-    try {
-      const result = await api.syncNow();
-      setSyncStatus(result);
-    } finally {
-      setSyncing(false);
     }
   }
 
@@ -548,49 +554,13 @@ export function TokenHealth({ armingState, onArmingRefresh }: TokenHealthProps) 
         )}
 
         {smoke && !smoke.refused && (
-          <table className="token-health__smoke-table" data-testid="smoke-results">
-            <thead>
-              <tr>
-                <th>Row</th>
-                <th>Endpoint</th>
-                <th>Status</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {smoke.results.map((r) => (
-                <tr key={r.docRef} className={`token-health__smoke-row token-health__smoke-row--${r.status}`}>
-                  <td className="mono">{r.docRef}</td>
-                  <td className="mono">{r.endpoint}</td>
-                  <td className="mono">{r.status}</td>
-                  <td>{r.details}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <p
+            className={`mono token-health__hint${hasSmokeAttention(smoke.results) ? ' token-health__hint--warn' : ''}`}
+            data-testid="smoke-summary"
+          >
+            Ran {smoke.ranAt} — {summarizeSmokeCounts(smoke.results)}
+          </p>
         )}
-
-        {smoke && !smoke.refused && (
-          <div className="token-health__smoke-diagnostics" data-testid="smoke-diagnostics">
-            <pre className="mono token-health__smoke-section" data-testid="smoke-local-coverage">
-              {smoke.localCoverageText}
-            </pre>
-            <pre className="mono token-health__smoke-section" data-testid="smoke-wire-r6">
-              {smoke.wireR6Text}
-            </pre>
-          </div>
-        )}
-      </div>
-
-      <div className="token-health__card">
-        <h2 className="token-health__title">Sync</h2>
-        <div className="token-health__row">
-          <span className="token-health__label">Status</span>
-          <span className="mono">{formatSyncStatus(syncStatus)}</span>
-        </div>
-        <button type="button" onClick={handleSyncNow} disabled={syncing || syncStatus?.inProgress}>
-          {syncing ? 'Syncing…' : 'Sync now'}
-        </button>
       </div>
     </section>
   );
