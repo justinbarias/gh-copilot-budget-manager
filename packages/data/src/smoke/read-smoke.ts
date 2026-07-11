@@ -746,14 +746,30 @@ export async function runR7(
   octokit: Octokit,
   enterprise: string,
   currentMonth: { year: number; month: number },
+  yesterday: { year: number; month: number; day: number },
 ): Promise<ReadSmokeEndpointResult> {
   const endpoint = `${AI_CREDIT_PATH} (+ premium_request/usage)`;
+  const yesterdayIso = `${yesterday.year}-${String(yesterday.month).padStart(2, '0')}-${String(yesterday.day).padStart(2, '0')}`;
   const calls: AiCreditProbeCall[] = [
     {
       label: `current[${currentMonth.year}-${String(currentMonth.month).padStart(2, '0')}] shape`,
       path: 'ai_credit',
       params: { year: currentMonth.year, month: currentMonth.month },
       summarize: summarizeAiCreditShape,
+    },
+    // CURRENT-MONTH DAY-GRAIN evidence probe (live incident 2026-07-11): the only
+    // day-grain call ever run was 2026-06-24, a CLOSED month -- current-month
+    // day-grain behavior was never verified, and it turned out to return ZERO on
+    // this tenant (billing day-grain appears to materialize only for closed
+    // months; observed, not spec'd). This probes YESTERDAY (clock-seam, never
+    // wall-clock) so the maintainer's next smoke pins current-month day-grain
+    // definitively and can watch it settle over time. Rendered like the closed-
+    // month day probe below (per-SKU breakdown + total line).
+    {
+      label: `ai_credit yesterday[${yesterdayIso}] day`,
+      path: 'ai_credit',
+      params: { year: yesterday.year, month: yesterday.month, day: yesterday.day },
+      summarize: summarizeAiCreditRollup,
     },
     {
       label: 'ai_credit June-2026 rollup',

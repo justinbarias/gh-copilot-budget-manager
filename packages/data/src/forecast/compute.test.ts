@@ -332,3 +332,187 @@ describe('daily-fact forecast: materially wide variance band (item 25)', () => {
     expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBe(0);
   });
 });
+
+// ===========================================================================
+// Hybrid enterprise assembly + trailing-zero trim (live incident 2026-07-11).
+// This tenant's billing ai_credit DAY-grain returns 0 for the CURRENT month
+// (real only for closed months), so a billing-only enterprise series read flat
+// 0 all cycle (P50=0, flat actual line). The fix: where the billing daily value
+// is 0/absent, the enterprise series falls back to the per-user metrics daily Σ
+// for that day; and every scope trims consecutive trailing zeros (not-yet-
+// reported days, indistinguishable from settling lag). Interior zeros stay.
+// ===========================================================================
+describe('assembleDailyBurnByScope hybrid enterprise fallback (live incident 2026-07-11)', () => {
+  const asOf = new Date('2026-06-14T00:00:00.000Z');
+
+  it('billing 0 + metrics 500 -> 500 (metrics fills the billing gap)', () => {
+    const rows: DailyCreditsFactInput[] = [{ date: '2026-06-01', costCenterId: null, creditsUsed: 0 }];
+    const fallback = new Map([['2026-06-01', 500]]);
+    expect(assembleDailyBurnByScope(rows, asOf, { enterpriseFallbackByDate: fallback }).enterprise).toEqual([
+      { date: '2026-06-01', credits: 500 },
+    ]);
+  });
+
+  it('billing 300 + metrics 500 -> 300 (billing wins whenever it has a nonzero value)', () => {
+    const rows: DailyCreditsFactInput[] = [{ date: '2026-06-01', costCenterId: null, creditsUsed: 300 }];
+    const fallback = new Map([['2026-06-01', 500]]);
+    expect(assembleDailyBurnByScope(rows, asOf, { enterpriseFallbackByDate: fallback }).enterprise).toEqual([
+      { date: '2026-06-01', credits: 300 },
+    ]);
+  });
+
+  it('trailing days where BOTH billing and metrics are 0 are trimmed', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-01', costCenterId: null, creditsUsed: 100 },
+      { date: '2026-06-02', costCenterId: null, creditsUsed: 0 },
+    ];
+    const fallback = new Map([['2026-06-02', 0]]); // both 0 on the trailing day
+    expect(assembleDailyBurnByScope(rows, asOf, { enterpriseFallbackByDate: fallback }).enterprise).toEqual([
+      { date: '2026-06-01', credits: 100 },
+    ]);
+  });
+
+  it('an INTERIOR zero (billing 0, metrics 0, real days both sides) is KEPT as 0', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-01', costCenterId: null, creditsUsed: 100 },
+      { date: '2026-06-02', costCenterId: null, creditsUsed: 0 },
+      { date: '2026-06-03', costCenterId: null, creditsUsed: 120 },
+    ];
+    const fallback = new Map([['2026-06-02', 0]]);
+    expect(assembleDailyBurnByScope(rows, asOf, { enterpriseFallbackByDate: fallback }).enterprise).toEqual([
+      { date: '2026-06-01', credits: 100 },
+      { date: '2026-06-02', credits: 0 }, // interior quiet day preserved
+      { date: '2026-06-03', credits: 120 },
+    ]);
+  });
+
+  it('a metrics-only date (billing feed never reported it) still contributes via the union', () => {
+    const rows: DailyCreditsFactInput[] = [{ date: '2026-06-01', costCenterId: null, creditsUsed: 100 }];
+    const fallback = new Map([
+      ['2026-06-01', 999], // billing 100 > 0 wins over this
+      ['2026-06-02', 250], // no billing row at all -> metrics fills it
+    ]);
+    expect(assembleDailyBurnByScope(rows, asOf, { enterpriseFallbackByDate: fallback }).enterprise).toEqual([
+      { date: '2026-06-01', credits: 100 },
+      { date: '2026-06-02', credits: 250 },
+    ]);
+  });
+});
+
+describe('assembleDailyBurnByScope trailing-zero trim (all scopes)', () => {
+  const asOf = new Date('2026-06-14T00:00:00.000Z');
+
+  it('CC series [100,120,0,0] -> [100,120] (trailing zeros dropped)', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-01', costCenterId: 'cc-a', creditsUsed: 100 },
+      { date: '2026-06-02', costCenterId: 'cc-a', creditsUsed: 120 },
+      { date: '2026-06-03', costCenterId: 'cc-a', creditsUsed: 0 },
+      { date: '2026-06-04', costCenterId: 'cc-a', creditsUsed: 0 },
+    ];
+    expect(assembleDailyBurnByScope(rows, asOf).costCenter.get('cc-a')).toEqual([
+      { date: '2026-06-01', credits: 100 },
+      { date: '2026-06-02', credits: 120 },
+    ]);
+  });
+
+  it('CC series [100,0,120] -> unchanged (interior zero kept)', () => {
+    const rows: DailyCreditsFactInput[] = [
+      { date: '2026-06-01', costCenterId: 'cc-a', creditsUsed: 100 },
+      { date: '2026-06-02', costCenterId: 'cc-a', creditsUsed: 0 },
+      { date: '2026-06-03', costCenterId: 'cc-a', creditsUsed: 120 },
+    ];
+    expect(assembleDailyBurnByScope(rows, asOf).costCenter.get('cc-a')).toEqual([
+      { date: '2026-06-01', credits: 100 },
+      { date: '2026-06-02', credits: 0 },
+      { date: '2026-06-03', credits: 120 },
+    ]);
+  });
+});
+
+// End-to-end shaped like the live incident: a 35-day contiguous enterprise
+// series spanning 2026-06-07 .. 2026-07-11 (asOf), split by provenance --
+//   - JUNE days (06-07..06-30): REAL billing day-grain (nonzero).
+//   - JULY days (07-01..07-11): billing day-grain ZERO (the tenant's current-
+//     month behavior) but per-user metrics Σ carry real values.
+// The block-value construction ([90,110,80,120,100] per 7-day block) is the same
+// flat-weekday-index series the item-25 variance test uses, so every model number
+// is hand-derivable AND every weekday index is 1 (35 = 5x7 contiguous days ->
+// each weekday sees each block value exactly once -> weekday mean == overall mean).
+describe('hybrid assembly end-to-end (live incident shape: June billing + July metrics)', () => {
+  const BLOCK_VALUES = [90, 110, 80, 120, 100];
+  const START_MS = Date.parse('2026-06-07T00:00:00.000Z'); // day0
+  const asOfDate = new Date('2026-07-11T00:00:00.000Z'); // day34
+  const dayIso = (i: number): string => new Date(START_MS + i * DAY_MS).toISOString().slice(0, 10);
+  const blockAt = (i: number): number => BLOCK_VALUES[Math.floor(i / 7)]!;
+
+  // June = day0..day23 (2026-06-07..06-30); July = day24..day34 (2026-07-01..07-11).
+  const JUNE_LAST_INDEX = 23;
+
+  // Billing facts: June carries the real block value; July is all zeros.
+  const billingRows: DailyCreditsFactInput[] = Array.from({ length: 35 }, (_, i) => ({
+    date: dayIso(i),
+    costCenterId: null,
+    creditsUsed: i <= JUNE_LAST_INDEX ? blockAt(i) : 0,
+  }));
+  // Metrics Σ per date: July carries the real block value; June carries a WRONG
+  // value (999) that billing must override -- proving billing wins on June days.
+  const fallbackByDate = new Map<string, number>(
+    Array.from({ length: 35 }, (_, i) => [dayIso(i), i <= JUNE_LAST_INDEX ? 999 : blockAt(i)] as const),
+  );
+
+  const expectedSeries = Array.from({ length: 35 }, (_, i) => ({ date: dayIso(i), credits: blockAt(i) }));
+
+  it('assembles June-billing + July-metrics into the full block series (billing wins June, metrics fills July)', () => {
+    const { enterprise } = assembleDailyBurnByScope(billingRows, asOfDate, { enterpriseFallbackByDate: fallbackByDate });
+    expect(enterprise).toEqual(expectedSeries);
+  });
+
+  it('CONTRAST: billing-only assembly (no fallback) trims ALL trailing July zeros -> the flat-0 bug', () => {
+    const { enterprise } = assembleDailyBurnByScope(billingRows, asOfDate);
+    // Every July day was 0 -> trimmed as trailing; the series ends on 2026-06-30
+    // (day23), so July's current cycle has NO history -> the P50=0 / flat-actual
+    // symptom the maintainer reported.
+    expect(enterprise).toHaveLength(24);
+    expect(enterprise[enterprise.length - 1]).toEqual({ date: '2026-06-30', credits: blockAt(JUNE_LAST_INDEX) });
+  });
+
+  it('the hybrid series yields a nonzero run-rate, nonzero July P50, and a materially wide band (hand-derived)', () => {
+    const history = assembleDailyBurnByScope(billingRows, asOfDate, { enterpriseFallbackByDate: fallbackByDate }).enterprise;
+    const { result } = computeScopeForecast({
+      history,
+      asOfDate,
+      allowance: fixedAllowanceLine(1_000_000_000), // huge -> never exhausts; band is allowance-independent
+      paidUsageEnabled: false,
+    });
+
+    // Run-rate is nonzero (the bug drove it to 0).
+    expect(result.basis.runRate).toBeGreaterThan(0);
+
+    // Model numbers, hand-derived exactly as the item-25 variance test:
+    //   nEstim = 35 - settling(1) = 34; estimation = [90x7,110x7,80x7,120x7,100x6],
+    //   mean 100; SS = 700+700+2800+2800 = 7000; dailyVariance = 7000/33; floor
+    //   faded (nEstim 34 >= 14) -> effectiveVariance = dailyVariance.
+    expect(result.basis.nEstim).toBe(34);
+    expect(result.basis.dailyVariance).toBeCloseTo(7000 / 33, 6);
+    expect(result.basis.effectiveVariance).toBeCloseTo(7000 / 33, 6);
+
+    // July cumulative at asOf (2026-07-11) is NONZERO -- the crux of the fix.
+    // Current cycle = July; actual July burn = day24..27 (07-01..04) 120 each +
+    // day28..34 (07-05..11) 100 each = 4*120 + 7*100 = 1180.
+    const asOfPoint = result.dailySeries.find((d) => d.date === '2026-07-11');
+    expect(asOfPoint).toBeDefined();
+    expect(asOfPoint!.actualCumulative).toBe(1180);
+    expect(asOfPoint!.p50Cumulative).toBe(1180);
+
+    // First projected day (2026-07-12, kProjected=1) band gap:
+    //   std = sqrt(effVar + effVar/nEstim); gap = zP90(1.2816) * std ~= 18.938.
+    const firstProjected = result.dailySeries.find((d) => d.actualCumulative === undefined);
+    expect(firstProjected).toBeDefined();
+    expect(firstProjected!.date).toBe('2026-07-12');
+    const effVar = 7000 / 33;
+    const expectedGap = 1.2816 * Math.sqrt(effVar + effVar / 34);
+    expect(expectedGap).toBeCloseTo(18.938, 2);
+    expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBeCloseTo(expectedGap, 4);
+    expect(firstProjected!.p90Cumulative - firstProjected!.p50Cumulative).toBeGreaterThan(15);
+  });
+});

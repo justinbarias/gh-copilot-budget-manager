@@ -2101,7 +2101,26 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
           `${r.date}|${r.costCenterId ?? '<ent>'}`;
         for (const r of bankedDaily) merged.set(mergeKey(r), r);
         for (const r of dailyBackfill) merged.set(mergeKey(r), { date: r.date, costCenterId: r.costCenterId, creditsUsed: r.creditsUsed });
-        dailyBurnByScope = assembleDailyBurnByScope([...merged.values()], currentDateObj());
+
+        // Hybrid enterprise fallback (live incident 2026-07-11): this tenant's
+        // billing ai_credit DAY-grain returns 0 for the CURRENT month (real only
+        // for closed months -- observed, not spec'd), so a billing-only
+        // enterprise series read flat 0 for the whole current cycle. Where the
+        // billing daily value is 0/absent, the enterprise series falls back to
+        // the per-user metrics daily credits Σ for that day -- the SAME in-memory
+        // arrays the forecast trains on ([...historicalCredits,
+        // ...cycleCredits.records]), summed by date. Metrics Σ UNDERESTIMATES the
+        // billing total (unattributed/lag gap: live July metrics Σ≈110.6k vs
+        // billing month 133k), but it is real fresh signal; billing wins whenever
+        // it has a nonzero value. Persistence is unchanged (billing zeros keep
+        // being banked); when the endpoint starts returning real current-month
+        // day values, the refresh window + latest-snapshot-wins lets billing
+        // naturally re-win. Sim never reaches here (no daily facts).
+        const enterpriseFallbackByDate = new Map<string, number>();
+        for (const item of [...historicalCredits, ...cycleCredits.records]) {
+          enterpriseFallbackByDate.set(item.date, (enterpriseFallbackByDate.get(item.date) ?? 0) + item.ai_credits_used);
+        }
+        dailyBurnByScope = assembleDailyBurnByScope([...merged.values()], currentDateObj(), { enterpriseFallbackByDate });
       }
     }
 
@@ -2414,7 +2433,19 @@ export function createGitHubApiClient(config: GitHubApiClientConfig): ApiClient 
     // clock seam (never wall-clock). §6.9-validated against ghec.2026-03-10.json
     // (see runR7's doc comment + api-surface-validation.md's R7 entry).
     const nowObj = currentDateObj();
-    results.push(await runR7(octokit, enterprise, { year: nowObj.getUTCFullYear(), month: nowObj.getUTCMonth() + 1 }));
+    // The clock-seam YESTERDAY (never wall-clock) -- the R7 current-month day-grain
+    // evidence probe. Lets the maintainer's next smoke definitively pin whether
+    // billing ai_credit day-grain returns real values for the CURRENT month
+    // (observed zero on 2026-07-11 -- the live incident the hybrid assembly fixes).
+    const yesterdayObj = new Date(nowObj.getTime() - DAY_MS);
+    results.push(
+      await runR7(
+        octokit,
+        enterprise,
+        { year: nowObj.getUTCFullYear(), month: nowObj.getUTCMonth() + 1 },
+        { year: yesterdayObj.getUTCFullYear(), month: yesterdayObj.getUTCMonth() + 1, day: yesterdayObj.getUTCDate() },
+      ),
+    );
 
     // Live per-month all-zero diagnostics (2026-07-10). Section 1: what got
     // PERSISTED (source-scoped DB coverage). Section 2: what the R6 historical

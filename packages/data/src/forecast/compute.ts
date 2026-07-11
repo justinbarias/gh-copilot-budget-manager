@@ -185,20 +185,88 @@ export interface DailyBurnByScope {
   costCenter: Map<string, DailyBurn[]>;
 }
 
-export function assembleDailyBurnByScope(rows: readonly DailyCreditsFactInput[], asOfDate: Date): DailyBurnByScope {
-  const enterprise = toDailyBurn(
+export interface AssembleDailyBurnOptions {
+  /**
+   * Hybrid enterprise fallback (live incident 2026-07-11): the per-day metrics
+   * Σ (Σ per-user creditsUsed for that date) the ENTERPRISE series falls back to
+   * on any day the billing daily fact is 0 or absent. Motivation: this tenant's
+   * billing ai_credit day-grain returns ZERO for the CURRENT month (real only
+   * for closed months), while per-user metrics for those same days ARE real --
+   * so a billing-only enterprise series read flat 0 for the whole current cycle
+   * (P50=0, flat actual line). Billing wins whenever it has a nonzero value; the
+   * metrics Σ is the fresh-signal floor otherwise. NOTE: the metrics Σ
+   * UNDERESTIMATES the true billing total (unattributed/lag gap -- live evidence:
+   * metrics July Σ≈110.6k vs billing month-grain 133k), but it is real fresh
+   * data, which is strictly better than a flat 0. When the billing endpoint
+   * later starts returning real current-month day values, billing naturally
+   * re-wins (the refresh window + latest-snapshot-wins picks them up).
+   * Cost-center series get NO fallback (metrics carry no CC attribution here).
+   */
+  enterpriseFallbackByDate?: ReadonlyMap<string, number>;
+}
+
+// Drop consecutive zero-credit days at the END of a series -- not-yet-reported
+// trailing days, indistinguishable from billing-settling lag, so treated as
+// "no data yet" rather than genuine zeros. INTERIOR zeros are KEPT (a real quiet
+// day mid-series is genuine signal the variance model should see). The
+// forecaster's own settling window then applies on top of this. Applied to
+// every assembled scope (enterprise after the hybrid merge, and each CC).
+function trimTrailingZeros(series: readonly DailyBurn[]): DailyBurn[] {
+  let end = series.length;
+  while (end > 0 && series[end - 1]!.credits === 0) end--;
+  return series.slice(0, end);
+}
+
+// Enterprise hybrid: billing daily value per day, falling back to the metrics Σ
+// for that date wherever billing is 0/absent (see AssembleDailyBurnOptions). The
+// date domain is the UNION of billing enterprise dates and fallback dates (both
+// clamped to asOfDate) so a day the billing feed never reported but metrics did
+// still contributes its fresh signal. Without a fallback map this is exactly the
+// old billing-only enterprise fold.
+function assembleEnterpriseHybrid(
+  rows: readonly DailyCreditsFactInput[],
+  fallbackByDate: ReadonlyMap<string, number> | undefined,
+  asOfDate: Date,
+): DailyBurn[] {
+  const billing = toDailyBurn(
     rows.filter((r) => r.costCenterId === null).map((r) => ({ date: r.date, credits: r.creditsUsed })),
     asOfDate,
   );
+  if (fallbackByDate === undefined) return billing;
+
+  const asOfMs = Date.UTC(asOfDate.getUTCFullYear(), asOfDate.getUTCMonth(), asOfDate.getUTCDate());
+  const billingByDate = new Map(billing.map((d) => [d.date, d.credits] as const));
+  const dates = new Set<string>(billing.map((d) => d.date));
+  for (const date of fallbackByDate.keys()) {
+    if (dayStartMs(date) <= asOfMs) dates.add(date);
+  }
+  return [...dates]
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((date) => {
+      const billed = billingByDate.get(date) ?? 0;
+      // billing wins whenever it has a positive value; else the metrics Σ; else 0.
+      const credits = billed > 0 ? billed : (fallbackByDate.get(date) ?? 0);
+      return { date, credits };
+    });
+}
+
+export function assembleDailyBurnByScope(
+  rows: readonly DailyCreditsFactInput[],
+  asOfDate: Date,
+  opts?: AssembleDailyBurnOptions,
+): DailyBurnByScope {
+  const enterprise = trimTrailingZeros(assembleEnterpriseHybrid(rows, opts?.enterpriseFallbackByDate, asOfDate));
   const costCenter = new Map<string, DailyBurn[]>();
   const ccIds = new Set<string>();
   for (const r of rows) if (r.costCenterId !== null) ccIds.add(r.costCenterId);
   for (const ccId of ccIds) {
     costCenter.set(
       ccId,
-      toDailyBurn(
-        rows.filter((r) => r.costCenterId === ccId).map((r) => ({ date: r.date, credits: r.creditsUsed })),
-        asOfDate,
+      trimTrailingZeros(
+        toDailyBurn(
+          rows.filter((r) => r.costCenterId === ccId).map((r) => ({ date: r.date, credits: r.creditsUsed })),
+          asOfDate,
+        ),
       ),
     );
   }

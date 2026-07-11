@@ -202,7 +202,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
     return { seats: [{ assignee: { login: STUB_LOGIN, id: 1, type: 'User' } }] };
   }
 
-  it('issues the four documented windows plus the seat-fetch + user-scoped calls, and reports one ok row with five labeled parts', async () => {
+  it('issues the five documented windows (incl. the yesterday day-grain probe) plus the seat-fetch + user-scoped calls, and reports one ok row', async () => {
     const seen: Array<{ route: string; params: Record<string, unknown> }> = [];
     const octokit = stubOctokit((route, params) => {
       seen.push({ route, params });
@@ -210,33 +210,37 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
       return envelope([aiItem({ netQuantity: 400 })]);
     });
 
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
 
     expect(result.docRef).toBe('R7');
     expect(result.status).toBe('ok');
     expect(result.endpoint).toContain('ai_credit/usage');
     expect(result.endpoint).toContain('premium_request/usage');
 
-    expect(seen).toHaveLength(6);
+    expect(seen).toHaveLength(7);
 
     // Call #1: current month (from the injected clock), ai_credit path, shape probe.
     expect(seen[0]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 7 } });
     expect(result.details).toContain('current[2026-07] shape:');
-    // Call #2: June 2026 rollup.
-    expect(seen[1]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 6 } });
+    // Call #2: YESTERDAY day-grain (from the injected clock's yesterday) -- the
+    // current-month day-grain evidence probe (live incident 2026-07-11).
+    expect(seen[1]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 7, day: 10 } });
+    expect(result.details).toContain('ai_credit yesterday[2026-07-10] day:');
+    // Call #3: June 2026 rollup.
+    expect(seen[2]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 6 } });
     expect(result.details).toContain('ai_credit June-2026 rollup:');
-    // Call #3: one June day.
-    expect(seen[2]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 6, day: 24 } });
+    // Call #4: one June day.
+    expect(seen[3]).toEqual({ route: AI, params: { enterprise: 'acme-corp', year: 2026, month: 6, day: 24 } });
     expect(result.details).toContain('ai_credit 2026-06-24 day:');
-    // Call #4: premium_request April 2026 -- the pre-June billing era, on the sibling path.
-    expect(seen[3]).toEqual({ route: PREMIUM, params: { enterprise: 'acme-corp', year: 2026, month: 4 } });
+    // Call #5: premium_request April 2026 -- the pre-June billing era, on the sibling path.
+    expect(seen[4]).toEqual({ route: PREMIUM, params: { enterprise: 'acme-corp', year: 2026, month: 4 } });
     expect(result.details).toContain('premium_request April-2026 rollup:');
-    // Call #5a: the internal seat fetch -- per_page: 1, the ALREADY-validated
+    // Call #6a: the internal seat fetch -- per_page: 1, the ALREADY-validated
     // seats path (R1), no new endpoint (§6.9 statement).
-    expect(seen[4]).toEqual({ route: SEATS, params: { enterprise: 'acme-corp', per_page: 1 } });
-    // Call #5b: the user-scoped ai_credit probe, using the fetched login as the
+    expect(seen[5]).toEqual({ route: SEATS, params: { enterprise: 'acme-corp', per_page: 1 } });
+    // Call #6b: the user-scoped ai_credit probe, using the fetched login as the
     // `?user=` value -- the same validated path + already-pinned `user` param.
-    expect(seen[5]).toEqual({ route: AI, params: { enterprise: 'acme-corp', user: STUB_LOGIN, year: 2026, month: 6 } });
+    expect(seen[6]).toEqual({ route: AI, params: { enterprise: 'acme-corp', user: STUB_LOGIN, year: 2026, month: 6 } });
     expect(result.details).toContain('user-scoped June probe (first seat):');
     // §6.6: the login fetched internally must never appear in the rendered row.
     expect(result.details).not.toContain(STUB_LOGIN);
@@ -248,7 +252,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
       return envelope([aiItem()]);
     });
 
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
     expect(result.status).toBe('ok');
     expect(result.details).toContain('user-scoped June probe (first seat): skipped (no seat available to sample)');
   });
@@ -264,7 +268,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
       return envelope([aiItem()]);
     });
 
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
     expect(result.status).toBe('http_error');
     expect(result.details).toContain('ai_credit 2026-06-24 day=HTTP 500: Server Error');
     // The other calls still reported their summaries (independent error handling).
@@ -290,7 +294,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
       return envelope([aiItem()]);
     });
 
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
     expect(result.status).toBe('http_error');
     // The login must NOT survive anywhere in the rendered row...
     expect(result.details).not.toContain(STUB_LOGIN);
@@ -306,7 +310,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
       return envelope([aiItem()]);
     });
 
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
     expect(result.status).toBe('http_error');
     expect(result.details).toContain('user-scoped June probe (first seat)=HTTP 401: Bad credentials');
     // The four documented-window calls still reported cleanly.
@@ -315,7 +319,7 @@ describe('runR7 (the R7 row against a stubbed wire)', () => {
 
   it('flags a shape mismatch when a successful response omits usageItems', async () => {
     const octokit = stubOctokit(() => ({ timePeriod: { year: 2026, month: 6 }, enterprise: 'acme-corp' }));
-    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 });
+    const result = await runR7(octokit, 'acme-corp', { year: 2026, month: 7 }, { year: 2026, month: 7, day: 10 });
     expect(result.status).toBe('shape_mismatch');
     expect(result.details).toContain('SHAPE_MISMATCH (no usageItems in envelope)');
   });

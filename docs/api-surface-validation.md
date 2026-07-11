@@ -240,20 +240,29 @@ verbatim from the schema:
 refused whole in sim; §6.6 output = counts/dates/sums/field-name-lists/
 product-label-VALUES only, never a login/id/enterprise/cost-center value —
 see the 2026-07-10 addendum below for why product/sku/model values are safe
-to print). One row, **five** independently error-reported sub-calls (revised
-2026-07-10 — was four; see the addendum for why the rollup format changed):
+to print). One row, **six** independently error-reported sub-calls (revised
+2026-07-11 — was five; added the yesterday day-grain evidence probe, see the
+2026-07-11 hybrid-assembly note below):
 1. **current month** (`year`+`month` from the clock seam) on `ai_credit/usage` —
    `summarizeAiCreditShape`: envelope key list, first-usageItem key list, item
    count, and the user-granularity mechanism.
-2. **June 2026** (`year=2026&month=6`) — `summarizeAiCreditRollup`: an
+2. **yesterday** (clock-seam current date − 1 day, `year`+`month`+`day`; never
+   wall-clock) on `ai_credit/usage` — same rollup as the June-day probe. Added
+   2026-07-11 as the **current-month day-grain evidence probe**: the only
+   day-grain call ever run was 2026-06-24 (a CLOSED month), so current-month
+   day-grain behavior had never been verified — and it turned out to read ZERO
+   (see the hybrid-assembly note below). This probe lets the maintainer's next
+   smoke definitively pin current-month day-grain and watch it settle over time.
+3. **June 2026** (`year=2026&month=6`) — `summarizeAiCreditRollup`: an
    **unfiltered** per-`(product, sku)` breakdown (n / distinct-model count /
    Σ`netQuantity` / Σ`netAmount` per group, capped at 8 with an "…N more"
    note) plus a total line (items / Σ`netQuantity` / nonzero count). *(Is
    June per-user history really there, and what do the real labels say.)*
-3. **2026-06-24** (`year=2026&month=6&day=24`) — same rollup, per-day grain.
-4. **premium_request/usage April 2026** (`year=2026&month=4`) — same rollup, the
+4. **2026-06-24** (`year=2026&month=6&day=24`) — same rollup, per-day grain
+   (a CLOSED-month day; contrast with the yesterday probe #2).
+5. **premium_request/usage April 2026** (`year=2026&month=4`) — same rollup, the
    pre-June billing era.
-5. **user-scoped June probe** (added 2026-07-10) — fetches the first seat's
+6. **user-scoped June probe** (added 2026-07-10) — fetches the first seat's
    login internally (`per_page: 1` against the already-validated `seats`
    path, R1) and calls `ai_credit/usage?user=<login>&year=2026&month=6`,
    proving the `?user=` fan-out mechanism end to end; renders item count, the
@@ -315,6 +324,42 @@ steady state ≈ the 4 refreshed days × 7 ≈ **28 calls** + the month probes.
 Sim/MSW never fans out (no `ai_credit/usage` handler) so the daily-fact table
 stays empty and the forecast falls back to the month-lump path (pins
 byte-identical).
+
+**Current-month day-grain reads ZERO — hybrid assembly adopted (2026-07-11,
+OBSERVED not spec'd; hedge accordingly).** One sync after the daily-fact rewire
+landed, the maintainer's screenshot showed the enterprise forecast flat at 0k
+(P50 = 0; a small P90 ≈ 28.9k from June-vs-July variance). Root cause pinned on
+the wire: the billing `ai_credit/usage` **DAY-grain** call returns **zero for
+the CURRENT month** on this tenant, while the **MONTH-grain** call for the same
+month shows real MTD (~133k in July). The daily backfill faithfully persisted
+those zeros, so the enterprise history was *real June days + ten zero July days*
+→ trailing-7 and cycle-to-date both 0. The only day-grain call previously run
+was 2026-06-24 (a **closed** month, which reads real) — current-month day-grain
+had never been verified. **Working hypothesis (NOT documented by GitHub):
+billing day-grain materializes only for closed months; the current month is
+available at month-grain only, presumably still settling.** Treat as observed,
+not contractual — the new R7 **yesterday** probe (#2 above) exists to keep
+pinning it, and it may start returning real current-month days at any point.
+
+**Fix — Hybrid enterprise series + trailing-zero trim** (`forecast/compute.ts`
+`assembleDailyBurnByScope`, wired in `github-impl.ts` `syncNow`): where the
+billing daily value is **0 or absent**, the ENTERPRISE series falls back to the
+**per-user metrics daily Σ** for that day (the same in-memory
+`[...historicalCredits, ...cycleCredits.records]` the forecast already trains
+on, summed by date); billing **wins whenever it has a nonzero value**. The
+metrics Σ **underestimates** the billing total (unattributed/lag gap — live
+evidence: metrics July Σ ≈ 110.6k vs billing month-grain 133k) but is real fresh
+signal, strictly better than a flat 0. All scopes (enterprise post-hybrid, each
+CC) then **trim consecutive trailing zeros** (not-yet-reported days,
+indistinguishable from billing-settling lag; interior zeros are KEPT). The
+forecaster's own settling window applies on top. **Persistence is unchanged** —
+billing zeros keep being banked; when the endpoint later returns real
+current-month day values, the refresh window + latest-snapshot-wins lets billing
+naturally re-win. **§6.9:** no new API surface — the yesterday probe reuses the
+already-machine-verified `ai_credit/usage` path with the pinned
+`year`/`month`/`day` **integer** params (N1 + R7 above); the hybrid fallback
+consumes already-fetched in-memory metrics, issuing no new request. **Sim/MSW**
+never has daily facts, so it stays on the month-lump path (pins byte-identical).
 
 **First live-contact finding (2026-07-08 smoke, unauthenticated).** The
 maintainer's first real live read smoke returned **`401 "Requires
