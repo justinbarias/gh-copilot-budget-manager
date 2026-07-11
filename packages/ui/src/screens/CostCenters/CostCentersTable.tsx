@@ -9,6 +9,7 @@ import {
 } from '@copilot-budget/core';
 import type { CostCenterSummary } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { DrillModal } from './DrillModal';
 import { NewCostCenterModal } from './NewCostCenterModal';
 import './CostCentersTable.css';
@@ -113,7 +114,14 @@ export function CostCentersTable() {
     return (
       <section className="cost-centers" aria-label="Cost centers">
         <h2 className="cost-centers__title">Cost centers</h2>
-        <p className="cost-centers__loading">Loading…</p>
+        <SkeletonGroup>
+          <Skeleton variant="line" width="28%" />
+          <div className="cost-centers__card cost-centers__skeleton-rows">
+            {Array.from({ length: 6 }, (_, i) => (
+              <Skeleton key={i} variant="line" />
+            ))}
+          </div>
+        </SkeletonGroup>
       </section>
     );
   }

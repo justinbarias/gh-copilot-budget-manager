@@ -50,9 +50,13 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
-.cost-centers__loading {
-  color: var(--text-muted);
-  font-size: 13px;
+/* Skeleton-loader row rhythm inside the same .cost-centers__card shell the
+   loaded table uses -- see components/Skeleton.tsx. */
+.cost-centers__skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 18px;
 }
 
 .cost-centers__caption {

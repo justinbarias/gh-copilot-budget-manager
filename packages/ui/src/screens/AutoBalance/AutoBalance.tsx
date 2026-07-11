@@ -10,6 +10,7 @@ import {
 } from '@copilot-budget/core';
 import type { RebalanceContextResult } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { TriggerCard } from './TriggerCard';
 import { EnvelopeBar } from './components/EnvelopeBar';
 import { GrantsTable } from './GrantsTable';
@@ -159,6 +160,25 @@ export function AutoBalance() {
   );
 }
 
+// Shared by both modes' "rebalance context still fetching" branch below --
+// three card-shaped blocks echoing the loaded ①trigger/②envelope/③table
+// rhythm, rather than either mode inventing its own shape.
+function AbContextSkeleton() {
+  return (
+    <SkeletonGroup>
+      <div className="ab-card">
+        <Skeleton variant="block" height={90} />
+      </div>
+      <div className="ab-card">
+        <Skeleton variant="block" height={140} />
+      </div>
+      <div className="ab-card">
+        <Skeleton variant="block" height={220} />
+      </div>
+    </SkeletonGroup>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Pool mode -- ①→④ from real engine outputs.
 // ---------------------------------------------------------------------------
@@ -174,7 +194,7 @@ interface PoolModeProps {
 
 function PoolMode({ result, appMode, abAlloc, setAbAlloc, liftedCaps, setLiftedCaps }: PoolModeProps) {
   if (result === null) {
-    return <div className="ab-loading">Loading rebalancer context…</div>;
+    return <AbContextSkeleton />;
   }
   if (!result.available) {
     return (
@@ -346,7 +366,7 @@ interface MeteredModeProps {
 
 function MeteredMode({ result, appMode, abAlloc, setAbAlloc }: MeteredModeProps) {
   if (result === null) {
-    return <div className="ab-loading">Loading rebalancer context…</div>;
+    return <AbContextSkeleton />;
   }
   if (!result.available) {
     return (

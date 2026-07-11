@@ -14,6 +14,7 @@ import { BurndownChart, type BurndownForecastLayer, type BurndownPoint } from '.
 import { RunwayTile } from '../../components/RunwayTile';
 import { MeteredBudgetBar } from '../../components/MeteredBudgetBar';
 import { CliffBanner } from '../../components/CliffBanner';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { cycleForecastView } from '../../lib/forecastDerive';
 import { AlertsList } from './AlertsList';
 import './Overview.css';
@@ -133,7 +134,20 @@ export function Overview({ onNavigateToForecast, onNavigateToAudit }: OverviewPr
   if (!summary) {
     return (
       <section className="overview" aria-label="Overview">
-        <p className="overview__loading">Loading…</p>
+        <SkeletonGroup>
+          <div className="overview__chart-card">
+            <Skeleton variant="block" height={220} />
+          </div>
+          <div className="overview__tiles">
+            <Skeleton variant="block" height={84} />
+            <Skeleton variant="block" height={84} />
+            <Skeleton variant="block" height={84} />
+            <Skeleton variant="block" height={84} />
+          </div>
+          <Skeleton variant="line" width="58%" />
+          <Skeleton variant="line" width="46%" />
+          <Skeleton variant="line" width="52%" />
+        </SkeletonGroup>
       </section>
     );
   }

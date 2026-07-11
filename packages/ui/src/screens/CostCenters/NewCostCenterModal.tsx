@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CapOverflow, ControlState, CostCenterControl } from '@copilot-budget/core';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { CostCenterPlanRail } from './CostCenterPlanRail';
 import { useCostCenterPlanRail } from './useCostCenterPlanRail';
 import '../Controls/NewUlbModal.css';
@@ -109,7 +110,11 @@ export function NewCostCenterModal({ onClose, onApplied }: NewCostCenterModalPro
 
         <div className="new-ulb-modal__body">
           {rail.loading ? (
-            <p className="cc-lifecycle-modal__loading">Loading…</p>
+            <SkeletonGroup>
+              <Skeleton variant="line" />
+              <Skeleton variant="line" width="80%" />
+              <Skeleton variant="line" width="60%" />
+            </SkeletonGroup>
           ) : (
             <>
               <label className="new-ulb-modal__label" htmlFor="new-cc-name">

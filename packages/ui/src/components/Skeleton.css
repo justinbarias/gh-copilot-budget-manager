@@ -1,0 +1,59 @@
+/* Shared skeleton-loader primitives (replaces every screen's old plain
+   "Loading…" text -- see CLAUDE.md's build-order note on layout-shaped
+   loading states). One fill/shimmer recipe, three shape variants; callers
+   size instances via width/height props and place them inside the SAME
+   wrapper classNames the loaded layout uses, so the skeleton approximates
+   that layout's rhythm without a second, parallel set of layout CSS. */
+
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-gap);
+}
+
+.skeleton {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+  flex: none;
+}
+
+.skeleton--line {
+  width: 100%;
+  height: 13px;
+  border-radius: var(--radius-pill);
+}
+
+.skeleton--block {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-panel);
+}
+
+.skeleton--pill {
+  width: 84px;
+  height: 28px;
+  border-radius: 9999px;
+}
+
+/* Reduced-motion-safe: the shimmer sweep only exists when the OS hasn't
+   asked for reduced motion (same recipe as Nav.css's nav-brand-pulse) --
+   outside that media query the fill is static, never assuming motion is
+   welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, var(--surface-3), transparent);
+    animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

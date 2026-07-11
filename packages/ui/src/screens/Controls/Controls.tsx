@@ -17,6 +17,7 @@ import {
 } from '@copilot-budget/core';
 import type { ApplyPlanResult, CostCenterSummary, DryRunResult, HeavyUser, LastSyncedControls } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { parseCredits, parseRecipients } from '../../lib/creditsInput';
 import { ControlsTable, type RowUtilization, type SpendingEnforcementFilter, type SpendingLimitRowModel, type SpendingScopeFilter } from './ControlsTable';
 import { IncludedCapsGrid, type IncludedCapRowModel } from './IncludedCapsGrid';
@@ -662,7 +663,20 @@ export function Controls({ onNavigateToAutoBalance, initialFamily }: ControlsPro
   if (live === null || meters === null || mode === null || heavyUsers === null || costCentersList === null) {
     return (
       <section className="controls" aria-label="Controls">
-        <p className="controls__loading">Loading…</p>
+        <SkeletonGroup>
+          <div className="controls__toolbar">
+            <Skeleton variant="pill" width={90} />
+            <Skeleton variant="pill" width={110} />
+            <Skeleton variant="pill" width={100} />
+          </div>
+          <div className="controls__body">
+            <div className="controls__main">
+              {Array.from({ length: 6 }, (_, i) => (
+                <Skeleton key={i} variant="line" />
+              ))}
+            </div>
+          </div>
+        </SkeletonGroup>
       </section>
     );
   }

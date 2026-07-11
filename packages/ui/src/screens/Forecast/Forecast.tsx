@@ -5,6 +5,7 @@ import { useApiClient } from '../../lib/api-client-context';
 import { BurndownChart, type BurndownForecastLayer, type BurndownPoint } from '../../components/BurndownChart';
 import { MeteredBudgetBar } from '../../components/MeteredBudgetBar';
 import { BacktestChart } from '../../components/BacktestChart';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { CostCenterScope } from './CostCenterScope';
 import { crossingDay, cycleForecastView, formatCredits, formatUsd, isoForCycleDay } from '../../lib/forecastDerive';
 import './Forecast.css';
@@ -130,7 +131,20 @@ export function Forecast({ onNavigateToControlsCaps }: ForecastProps) {
   if (summary === null || heavyUsers === null || costCenters === null || controls === null) {
     return (
       <section className="forecast" aria-label="Forecast">
-        <p className="forecast__loading">Loading…</p>
+        <SkeletonGroup>
+          <div className="forecast__toolbar">
+            <Skeleton variant="pill" width={100} />
+            <Skeleton variant="pill" width={120} />
+            <Skeleton variant="pill" width={90} />
+          </div>
+          <div className="forecast__card">
+            <Skeleton variant="block" height={200} />
+          </div>
+          <div className="forecast__bottom-grid">
+            <Skeleton variant="block" height={140} />
+            <Skeleton variant="block" height={140} />
+          </div>
+        </SkeletonGroup>
       </section>
     );
   }

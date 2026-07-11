@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AuditChainEvent, AuditChainVerification } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { auditChainToCsv, auditChainToJson, downloadTextFile } from '../../lib/auditExport';
 import { AuditEventRow, type ChainStatus } from './AuditEvent';
 import './Audit.css';
@@ -160,7 +161,14 @@ export function Audit() {
   if (events === null) {
     return (
       <section className="audit">
-        <p className="audit__loading">Loading…</p>
+        <SkeletonGroup>
+          <Skeleton variant="line" width="24%" />
+          <div className="audit__list">
+            {Array.from({ length: 6 }, (_, i) => (
+              <Skeleton key={i} variant="block" height={54} />
+            ))}
+          </div>
+        </SkeletonGroup>
       </section>
     );
   }

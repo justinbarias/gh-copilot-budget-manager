@@ -11,6 +11,7 @@ import {
 import type { CostCenterSummary, HeavyUser } from '@copilot-budget/data';
 import { useApiClient } from '../../lib/api-client-context';
 import { RunwayTile, type RunwayTileTone } from '../../components/RunwayTile';
+import { Skeleton, SkeletonGroup } from '../../components/Skeleton';
 import { CostCenterPlanRail } from './CostCenterPlanRail';
 import { removeUserFromOtherCostCenters } from './costCenterMembership';
 import { useCostCenterPlanRail } from './useCostCenterPlanRail';
@@ -309,7 +310,11 @@ export function DrillModal({ costCenter, onClose, onApplied }: DrillModalProps) 
           <div className="drill-modal__section-title">Membership</div>
 
           {rail.loading ? (
-            <p className="cc-lifecycle-modal__loading">Loading membership…</p>
+            <SkeletonGroup label="Loading membership">
+              <Skeleton variant="line" />
+              <Skeleton variant="line" width="80%" />
+              <Skeleton variant="line" width="60%" />
+            </SkeletonGroup>
           ) : (
             <>
               <ul className="cc-members-editor__list">

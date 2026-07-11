@@ -3,11 +3,6 @@
   max-width: 1240px;
 }
 
-.overview__loading {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 .overview__lens-row {
   display: flex;
   align-items: center;

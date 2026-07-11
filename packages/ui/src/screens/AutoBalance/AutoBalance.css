@@ -7,11 +7,6 @@
   max-width: 1360px;
 }
 
-.ab-loading {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 .ab-card {
   background: var(--surface);
   border: 1px solid var(--surface-2);

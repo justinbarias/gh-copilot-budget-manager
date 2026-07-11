@@ -3,11 +3,6 @@
   max-width: 1360px;
 }
 
-.controls__loading {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 .controls__toolbar {
   display: flex;
   justify-content: space-between;
